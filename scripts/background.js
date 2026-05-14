@@ -3,11 +3,11 @@
 
 // Import all modules (order matters — dependencies first)
 importScripts(
-  "storage.js",
-  "voyagerClient.js",
-  "rateLimiter.js",
-  "llmClient.js",
-  "pipeline.js",
+  "../services/storage.js",
+  "../services/voyagerClient.js",
+  "../services/rateLimiter.js",
+  "../services/llmClient.js",
+  "../services/pipeline.js",
 );
 
 // ─── Message Handling ────────────────────────────────────────────
