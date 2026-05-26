@@ -1,10 +1,9 @@
 // ─── Rate Limiter & Safety ────────────────────────────────────────
-// Enforces human-like delays, daily limits, and auto-pause on errors.
-
-let consecutiveApiErrors = 0;
+// Enforces human-like delays and daily connection limits.
+// Error tracking has moved to services/resilience.js (CircuitBreaker).
 
 /**
- * Random delay between min and max milliseconds (human-like pacing)
+ * Random delay between min and max milliseconds (human-like pacing).
  */
 function delay(minMs, maxMs) {
   const ms = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
@@ -12,21 +11,23 @@ function delay(minMs, maxMs) {
 }
 
 /**
- * Delay between API calls (1-3 seconds)
+ * Delay between successive LinkedIn API calls (1.5–3.7 s).
+ * Applied at the application layer, before calling voyagerGet/voyagerPost.
  */
 function apiDelay() {
-  return delay(1000, 3000);
+  return delay(1500, 3700);
 }
 
 /**
- * Delay between connection requests (2-5 minutes)
+ * Delay between connection-send requests.
+ * TESTING VALUE: 5–10 s. PRODUCTION VALUE: 120_000–300_000 (2–5 min).
  */
 function connectionDelay() {
-  return delay(2 * 60 * 1000, 5 * 60 * 1000);
+  return delay(5 * 1000, 10 * 1000);
 }
 
 /**
- * Check if we can still send connections today
+ * Check if we can still send connections today.
  */
 async function canSendConnection() {
   const config = await getConfig();
@@ -35,7 +36,7 @@ async function canSendConnection() {
 }
 
 /**
- * Get remaining connection slots for today
+ * Get remaining connection slots for today.
  */
 async function getRemainingSlots() {
   const config = await getConfig();
@@ -44,40 +45,15 @@ async function getRemainingSlots() {
 }
 
 /**
- * Track API errors — auto-pause after 5 consecutive failures
- */
-function trackApiError(error) {
-  consecutiveApiErrors++;
-  console.warn(
-    `[RateLimiter] API error #${consecutiveApiErrors}:`,
-    error?.message || error,
-  );
-  if (consecutiveApiErrors >= 5) {
-    console.error(
-      "[RateLimiter] 5 consecutive API errors — auto-pausing pipeline",
-    );
-    return true; // signal to pause
-  }
-  return false;
-}
-
-/**
- * Reset error counter on successful API call
- */
-function resetApiErrors() {
-  consecutiveApiErrors = 0;
-}
-
-/**
  * Validate LinkedIn session is still active.
- * Called periodically (every 30 min via alarm).
+ * Called once at pipeline start and every 30 min via alarm — NOT in hot loops.
  */
 async function validateSession() {
   const loggedIn = await isLinkedInLoggedIn();
   if (!loggedIn) {
-    console.warn("[RateLimiter] LinkedIn session invalid — pausing pipeline");
-    await setPipelineStatus("paused");
-    await addActivityEntry("⚠️ LinkedIn session expired — pipeline paused");
+    console.warn('[RateLimiter] LinkedIn session invalid — pausing pipeline');
+    await setPipelineStatus('paused');
+    await addActivityEntry('⚠️ LinkedIn session expired — pipeline paused');
     return false;
   }
   return true;
@@ -85,15 +61,13 @@ async function validateSession() {
 
 // ─── Exports ─────────────────────────────────────────────────────
 
-if (typeof globalThis !== "undefined") {
+if (typeof globalThis !== 'undefined') {
   Object.assign(globalThis, {
     delay,
     apiDelay,
     connectionDelay,
     canSendConnection,
     getRemainingSlots,
-    trackApiError,
-    resetApiErrors,
     validateSession,
   });
 }

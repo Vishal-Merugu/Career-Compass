@@ -19,7 +19,15 @@
     "48": "assets/icons/icon48.png",
     "128": "assets/icons/icon128.png"
   },
-  "permissions": ["cookies", "storage", "activeTab", "tabs", "alarms"],
+  "permissions": [
+    "cookies",
+    "storage",
+    "activeTab",
+    "tabs",
+    "alarms",
+    "notifications",
+    "scripting"
+  ],
   "host_permissions": [
     "https://www.linkedin.com/*",
     "http://*/*",

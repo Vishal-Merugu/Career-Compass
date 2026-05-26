@@ -28,103 +28,253 @@
         </div>
         <div class="header__status" id="statusBadge">
           <span class="status-dot" id="statusDot"></span>
-          <span
-            id="statusText"
-            style="
-              font-family: &quot;JetBrains Mono&quot;, monospace;
-              font-size: 10px;
-              font-weight: 700;
-            "
-            >Ready</span
-          >
+          <span id="statusText" class="status-text">Ready</span>
         </div>
       </header>
 
       <!-- Navigation -->
       <nav class="tabs">
-        <button class="tab active" data-tab="outreach">Outreach</button>
-        <button class="tab" data-tab="dashboard">Dashboard</button>
-        <button class="tab" data-tab="activity">Activity</button>
-        <button class="tab" data-tab="config">Settings</button>
-        <button class="tab" data-tab="history">History</button>
+        <button class="tab active" data-tab="finder" title="People Finder">
+          🔍 Finder
+        </button>
+        <button class="tab" data-tab="connect" title="Mass Connector">
+          🔗 Connect
+        </button>
+        <button class="tab" data-tab="results" title="Results & Export">
+          📊 Results
+        </button>
+        <button class="tab" data-tab="settings" title="Settings">
+          ⚙️ Config
+        </button>
       </nav>
 
-      <!-- Outreach Panel (Default) -->
-      <section class="panel active" id="tab-outreach">
+      <!-- TAB 1: People Finder -->
+      <section class="panel active" id="tab-finder">
         <div class="form-group">
-          <label>> Target Keywords</label>
-          <input type="text" id="cfgKeywords" placeholder="KW_01, KW_02..." />
-        </div>
-        <div class="form-group">
-          <label>> Target Locations</label>
+          <label>> Company LinkedIn URL</label>
           <input
             type="text"
-            id="cfgLocations"
-            placeholder="LOC_01, LOC_02..."
+            id="pfCompanyUrl"
+            placeholder="https://linkedin.com/company/siemens"
           />
         </div>
         <div class="form-group">
-          <label>> Daily Connection Limit</label>
-          <input type="number" id="cfgDailyLimit" value="15" />
+          <label>> Search Prompt (AI Filtering)</label>
+          <textarea id="pfPrompt" style="height: 180px">
+Target Role: Software Engineer / Product Manager
+
+EVALUATION CRITERIA:
+Approve this profile (decision: ACCEPT) if the person meets ANY of the following conditions:
+
+TIER 1 — Direct hiring power:
+- HR Manager, HR Director, Head of HR, People Operations
+- Technical Recruiter, Talent Acquisition, Sourcer
+- CTO, VP of Engineering, Engineering Director
+- Head of Product, VP of Product
+- Founder, Co-founder, CEO (especially at startups)
+
+TIER 2 — Strong referral or influence power:
+- Engineering Manager, Team Lead, Tech Lead
+- Product Manager, Senior PM
+- Senior Engineer or Staff Engineer (can refer internally)
+- Department Head or Director in a relevant team
+
+TIER 3 — Moderate value (approve selectively):
+- Mid-level engineers or PMs with 3+ years at the company (likely has referral ability or internal connections)
+
+REJECT if the person is:
+- An intern, student, or entry-level with less than 1 year at company (Evaluate seniority based on overall career history. If they have 3+ years of total experience, former senior roles, or founder background, they are NOT entry-level).
+- In a completely unrelated department (e.g. Finance, Legal, Sales)
+- A contractor or consultant with no internal hiring influence</textarea
+          >
         </div>
         <div class="form-group">
-          <label>> About Me (Context for AI)</label>
+          <label>> Max Results to Find</label>
+          <input type="number" id="pfMaxResults" value="100" />
+        </div>
+        <button
+          class="btn btn-primary"
+          id="btnStartFinder"
+          style="margin-top: 12px"
+        >
+          <span class="loader"></span>
+          <span class="btn-text">Start Finder</span>
+        </button>
+
+        <div
+          id="pfProgressContainer"
+          class="progress-container"
+          style="display: none; margin-top: 20px"
+        >
+          <div class="progress-bar">
+            <div class="progress-fill" id="pfProgressFill"></div>
+          </div>
+          <div class="progress-text" id="pfProgressText">Starting...</div>
+        </div>
+      </section>
+
+      <!-- TAB 2: Mass Connector -->
+      <section class="panel" id="tab-connect">
+        <div
+          style="
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 12px;
+          "
+        >
+          <button
+            class="btn btn-secondary"
+            id="btnMcUploadCsv"
+            style="flex: 1; padding: 8px; font-size: 11px"
+          >
+            📄 Upload CSV
+          </button>
+          <input
+            type="file"
+            id="mcCsvInput"
+            accept=".csv"
+            style="display: none"
+          />
+
+          <select
+            id="mcColumnSelect"
+            style="flex: 1; min-height: 33px; font-size: 11px; display: none"
+          >
+            <option value="">Select URL Column...</option>
+          </select>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 12px">
+          <label>> LinkedIn URLs (Comma-separated or one per line)</label>
           <textarea
-            id="cfgUserContext"
-            placeholder="Introduce yourself... e.g. I am a CS student looking for internships."
+            id="mcUrls"
+            placeholder="https://linkedin.com/in/johndoe&#10;https://linkedin.com/in/janedoe"
+            style="height: 80px"
           ></textarea>
+          <div
+            style="
+              font-family: 'JetBrains Mono', monospace;
+              font-size: 9px;
+              color: var(--tech-accent);
+              margin-top: 4px;
+            "
+            id="mcCount"
+          >
+            0 URLs loaded
+          </div>
         </div>
+
         <div class="form-group">
-          <label>> Target Geo ID</label>
-          <input type="text" id="cfgTargetGeoId" placeholder="101282230" />
+          <label>> Connection Note Prompt (Context)</label>
+          <textarea
+            id="mcPrompt"
+            placeholder="I'm looking for backend engineering roles. Ask about their tech stack."
+            style="height: 60px"
+          ></textarea>
         </div>
 
         <button
           class="btn btn-primary"
-          id="btnSaveConfigOutreach"
+          id="btnStartConnector"
           style="margin-top: 12px"
         >
           <span class="loader"></span>
-          <span class="btn-text">Save Outreach Config</span>
+          <span class="btn-text">Start Connector</span>
         </button>
-      </section>
 
-      <!-- Dashboard Panel -->
-      <section class="panel" id="tab-dashboard">
-        <div class="stats-grid">
-          <div class="stat-card">
-            <span class="stat-value" id="statConnections">0</span>
-            <span class="stat-label">Requests Sent</span>
+        <div
+          id="mcProgressContainer"
+          class="progress-container"
+          style="display: none; margin-top: 20px"
+        >
+          <div class="progress-bar">
+            <div class="progress-fill" id="mcProgressFill"></div>
           </div>
-          <div class="stat-card">
-            <span class="stat-value" id="statLimit">15</span>
-            <span class="stat-label">Daily Limit</span>
-          </div>
-          <div class="stat-card">
-            <span class="stat-value" id="statJobs">0</span>
-            <span class="stat-label">Leads Found</span>
-          </div>
-          <div class="stat-card" style="border-color: var(--tech-cyan)">
-            <span class="stat-value" id="statCompanies">0</span>
-            <span class="stat-label">Companies</span>
-          </div>
+          <div class="progress-text" id="mcProgressText">Starting...</div>
         </div>
       </section>
 
-      <!-- Activity Panel -->
-      <section class="panel flex-panel" id="tab-activity">
-        <div class="form-group flex-group">
-          <label>> Live Activity Log</label>
-          <div class="activity-log flex-log" id="activityLog">
-            <div class="log-empty">
-              // Pipeline inactive. Waiting for start command...
-            </div>
-          </div>
+      <!-- TAB 4: Results & Export -->
+      <section class="panel" id="tab-results">
+        <div class="form-group">
+          <label>> Select Workflow Run</label>
+          <select id="resRunSelect">
+            <option value="">Loading runs...</option>
+          </select>
+        </div>
+        <div
+          class="results-stats"
+          id="resStats"
+          style="
+            display: none;
+            justify-content: space-between;
+            margin-bottom: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: var(--tech-cyan);
+          "
+        >
+          <span id="resCount">0 results</span>
+          <span id="resDate"></span>
+        </div>
+        <div
+          class="results-actions"
+          style="display: flex; gap: 8px; margin-bottom: 16px"
+        >
+          <button
+            class="btn btn-secondary"
+            id="btnExportCsv"
+            disabled
+            style="flex: 1; padding: 8px; font-size: 11px"
+          >
+            Export CSV
+          </button>
+          <button
+            class="btn btn-primary"
+            id="btnPipeConnect"
+            disabled
+            style="flex: 1; padding: 8px; font-size: 11px"
+          >
+            Pipe to Connect →
+          </button>
+        </div>
+        <div
+          style="
+            background: #000;
+            border: 1px solid var(--tech-border);
+            border-radius: var(--radius-sharp);
+            height: 250px;
+            overflow-y: auto;
+          "
+        >
+          <table class="history-table" id="resultsTable">
+            <thead>
+              <tr id="resultsThead">
+                <th>Entity</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody id="resultsBody">
+              <tr>
+                <td
+                  colspan="2"
+                  style="
+                    text-align: center;
+                    color: var(--tech-muted);
+                    padding: 20px;
+                  "
+                >
+                  Select a run to view results
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </section>
 
-      <!-- Config/Settings Panel -->
-      <section class="panel" id="tab-config">
+      <!-- TAB 5: Settings -->
+      <section class="panel" id="tab-settings">
         <div class="form-group">
           <label>> LLM Provider</label>
           <select id="cfgLlmProvider">
@@ -133,7 +283,6 @@
             <option value="openrouter">OpenRouter</option>
           </select>
         </div>
-
         <div class="form-group" id="groupLlmUrl">
           <label>> Base URL</label>
           <input
@@ -142,7 +291,6 @@
             placeholder="http://localhost:11434"
           />
         </div>
-
         <div class="form-group" id="groupLlmApiKey" style="display: none">
           <label>> API Key</label>
           <input
@@ -151,7 +299,6 @@
             placeholder="Enter API Key"
           />
         </div>
-
         <div class="form-group">
           <label id="lblLlmModel">> AI Model (Fetch to Populate)</label>
           <div style="display: flex; gap: 8px; align-items: stretch">
@@ -165,25 +312,13 @@
               title="Test Connection / Fetch Models"
             >
               <span class="loader"></span>
-              <span class="btn-text">Test AI Connection</span>
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-              >
-                <path
-                  d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"
-                ></path>
-              </svg>
+              <span class="btn-text">Test AI</span>
             </button>
           </div>
           <div
             id="llmStatusText"
             style="
-              font-family: &quot;JetBrains Mono&quot;, monospace;
+              font-family: 'JetBrains Mono', monospace;
               font-size: 10px;
               color: var(--tech-muted);
               margin-top: 6px;
@@ -191,6 +326,21 @@
           >
             Not Connected
           </div>
+        </div>
+        <div class="form-group">
+          <label>> Daily Connection Limit</label>
+          <input type="number" id="cfgDailyLimit" value="15" />
+        </div>
+        <div class="form-group">
+          <label>> Target Geo ID</label>
+          <input type="text" id="cfgTargetGeoId" placeholder="101282230" />
+        </div>
+        <div class="form-group">
+          <label>> Discover Emails</label>
+          <select id="cfgEmailFinderEnabled">
+            <option value="true">Enabled (Mailmeteor + Guess)</option>
+            <option value="false">Disabled</option>
+          </select>
         </div>
 
         <button
@@ -201,105 +351,34 @@
           <span class="loader"></span>
           <span class="btn-text">Save Configuration</span>
         </button>
-        <button
-          class="btn btn-secondary"
-          id="btnReset"
-          style="margin-top: 24px; font-size: 11px"
-        >
-          <span class="loader"></span>
-          <span class="btn-text">Reset Daily Counter</span>
-        </button>
-        <button
-          class="btn btn-danger"
-          id="btnResetAll"
-          style="margin-top: 12px; font-size: 10px; padding: 8px"
-        >
-          // Reset All Data
-        </button>
       </section>
 
-      <!-- Logs/History Panel -->
-      <section class="panel" id="tab-history">
+      <!-- Persistent Command Bar -->
+      <footer class="command-bar">
         <div
           style="
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 16px;
+            margin-bottom: 8px;
           "
         >
-          <label
+          <span
             style="
-              margin: 0;
-              font-family: &quot;JetBrains Mono&quot;, monospace;
-              font-size: 11px;
-              color: var(--tech-accent);
+              font-family: 'JetBrains Mono', monospace;
+              font-size: 10px;
+              color: var(--tech-muted);
             "
-            >Sent History</label
+            id="activeWorkflowName"
+            >No active workflow</span
           >
-          <button
-            class="btn btn-secondary"
-            id="btnExportCSV"
-            style="width: auto; padding: 6px 12px; font-size: 10px"
-          >
-            Export CSV
-          </button>
         </div>
-
-        <div
-          style="
-            background: #000;
-            border: 1px solid var(--tech-border);
-            border-radius: var(--radius-sharp);
-          "
-        >
-          <table class="history-table" id="historyTable">
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Entity Name</th>
-                <th>Result</th>
-              </tr>
-            </thead>
-            <tbody id="historyBody">
-              <tr>
-                <td
-                  colspan="3"
-                  style="
-                    text-align: center;
-                    color: var(--tech-muted);
-                    padding: 20px;
-                  "
-                >
-                  // No records found.
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <!-- Persistent Command Bar -->
-      <footer class="command-bar">
         <div class="command-actions">
-          <button class="btn btn-primary" id="btnStart">
-            <span class="loader"></span>
-            <svg
-              id="startIcon"
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-            >
-              <polygon points="5 3 19 12 5 21 5 3"></polygon>
-            </svg>
-            <span class="btn-text">Launch</span>
-          </button>
-          <button class="btn btn-warning" id="btnPause">
+          <button class="btn btn-warning" id="btnGlobalPause" disabled>
             <span class="loader"></span>
             <span class="btn-text">Pause</span>
           </button>
-          <button class="btn btn-danger" id="btnStop">
+          <button class="btn btn-danger" id="btnGlobalStop" disabled>
             <span class="loader"></span>
             <span class="btn-text">Stop</span>
           </button>
@@ -320,18 +399,10 @@
         </svg>
         <h2 id="authTitle">LinkedIn Required</h2>
         <p id="authMessage">
-          Please open this extension on an active LinkedIn tab to use the
-          outreach pipeline.
+          Please open this extension on an active LinkedIn tab.
         </p>
       </div>
     </div>
-
     <script src="popup.js"></script>
-    <!-- Hidden Compatibility -->
-    <div style="display: none">
-      <span id="logCount">0</span>
-      <span id="llmDot"></span>
-      <span id="statusBadge"></span>
-    </div>
   </body>
 </html>

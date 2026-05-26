@@ -1,0 +1,31 @@
+{
+  "name": "careercompass",
+  "version": "1.0.0",
+  "description": "**AI-powered job discovery and professional outreach engine.**",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Vishal-Merugu/Career-Compass.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Vishal-Merugu/Career-Compass/issues"
+  },
+  "homepage": "https://github.com/Vishal-Merugu/Career-Compass#readme",
+  "devDependencies": {
+    "eslint": "^10.4.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.5",
+    "globals": "^17.6.0",
+    "prettier": "^3.8.3"
+  }
+}

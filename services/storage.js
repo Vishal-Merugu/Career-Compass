@@ -2,15 +2,16 @@
 // Typed wrappers around chrome.storage.local for all extension state.
 
 const DEFAULT_CONFIG = {
-  keywords: "Werkstudent, Internship, Praktikum",
-  locations: "Erlangen, Nuremberg, Munich",
+  keywords: 'Werkstudent, Internship, Praktikum',
+  locations: 'Erlangen, Nuremberg, Munich',
   dailyLimit: 15,
-  llmProvider: "ollama", // 'ollama' | 'gemini' | 'openrouter' | 'custom'
-  llmApiKey: "",
-  llmUrl: "http://localhost:11434",
-  llmModel: "qwen2.5:1.5b",
-  userContext: "",
-  targetGeoId: "101282230",
+  llmProvider: 'ollama', // 'ollama' | 'gemini' | 'openrouter' | 'custom'
+  llmApiKey: '',
+  llmUrl: 'http://localhost:11434',
+  llmModel: 'qwen2.5:1.5b',
+  userContext: '',
+  targetGeoId: '101282230',
+  emailFinderEnabled: true,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────
@@ -27,33 +28,33 @@ async function storageSet(key, value) {
 // ─── Config ───────────────────────────────────────────────────────
 
 async function getConfig() {
-  const config = await storageGet("config");
+  const config = await storageGet('config');
   // Merge with defaults so new fields are always present
   const finalConfig = { ...DEFAULT_CONFIG, ...config };
 
   // Migration: Clear old hardcoded IP
-  if (finalConfig.llmUrl && finalConfig.llmUrl.includes("192.168.31.217")) {
-    finalConfig.llmUrl = "http://localhost:11434";
+  if (finalConfig.llmUrl && finalConfig.llmUrl.includes('192.168.31.217')) {
+    finalConfig.llmUrl = 'http://localhost:11434';
   }
 
   return finalConfig;
 }
 
 async function setConfig(config) {
-  await storageSet("config", config);
+  await storageSet('config', config);
 }
 
 // ─── Processed Companies (dedup) ─────────────────────────────────
 
 async function getProcessedCompanies() {
-  return (await storageGet("processedCompanies")) || [];
+  return (await storageGet('processedCompanies')) || [];
 }
 
 async function addProcessedCompany(companyId) {
   const list = await getProcessedCompanies();
   if (!list.includes(companyId)) {
     list.push(companyId);
-    await storageSet("processedCompanies", list);
+    await storageSet('processedCompanies', list);
   }
 }
 
@@ -65,14 +66,14 @@ async function isCompanyProcessed(companyId) {
 // ─── Contacted Profiles (dedup) ──────────────────────────────────
 
 async function getContactedProfiles() {
-  return (await storageGet("contactedProfiles")) || [];
+  return (await storageGet('contactedProfiles')) || [];
 }
 
 async function addContactedProfile(profileId) {
   const list = await getContactedProfiles();
   if (!list.includes(profileId)) {
     list.push(profileId);
-    await storageSet("contactedProfiles", list);
+    await storageSet('contactedProfiles', list);
   }
 }
 
@@ -84,7 +85,7 @@ async function isProfileContacted(profileId) {
 // ─── Outreach Log ────────────────────────────────────────────────
 
 async function getOutreachLog() {
-  return (await storageGet("outreachLog")) || [];
+  return (await storageGet('outreachLog')) || [];
 }
 
 async function addLogEntry(entry) {
@@ -95,13 +96,13 @@ async function addLogEntry(entry) {
   });
   // Keep last 500 entries
   if (log.length > 500) log.length = 500;
-  await storageSet("outreachLog", log);
+  await storageSet('outreachLog', log);
 }
 
 // ─── Activity Log (last 20 for dashboard) ────────────────────────
 
 async function getActivityLog() {
-  return (await storageGet("activityLog")) || [];
+  return (await storageGet('activityLog')) || [];
 }
 
 async function addActivityEntry(message) {
@@ -111,17 +112,17 @@ async function addActivityEntry(message) {
     time: new Date().toISOString(),
   });
   if (log.length > 20) log.length = 20;
-  await storageSet("activityLog", log);
+  await storageSet('activityLog', log);
 }
 
 // ─── Daily Stats ─────────────────────────────────────────────────
 
 function getTodayKey() {
-  return new Date().toISOString().split("T")[0]; // YYYY-MM-DD
+  return new Date().toISOString().split('T')[0]; // YYYY-MM-DD
 }
 
 async function getDailyStats() {
-  const stats = await storageGet("dailyStats");
+  const stats = await storageGet('dailyStats');
   if (!stats || stats.date !== getTodayKey()) {
     // Auto-reset on new day
     const fresh = {
@@ -131,7 +132,7 @@ async function getDailyStats() {
       companiesProcessed: 0,
       targetsFound: 0,
     };
-    await storageSet("dailyStats", fresh);
+    await storageSet('dailyStats', fresh);
     return fresh;
   }
   return stats;
@@ -140,14 +141,14 @@ async function getDailyStats() {
 async function updateDailyStats(updates) {
   const stats = await getDailyStats();
   Object.assign(stats, updates);
-  await storageSet("dailyStats", stats);
+  await storageSet('dailyStats', stats);
   return stats;
 }
 
 async function incrementDailyStat(key, amount = 1) {
   const stats = await getDailyStats();
   stats[key] = (stats[key] || 0) + amount;
-  await storageSet("dailyStats", stats);
+  await storageSet('dailyStats', stats);
   return stats;
 }
 
@@ -159,39 +160,8 @@ async function resetDailyStats() {
     companiesProcessed: 0,
     targetsFound: 0,
   };
-  await storageSet("dailyStats", fresh);
+  await storageSet('dailyStats', fresh);
   return fresh;
-}
-
-// ─── Pipeline State (for pause/resume) ───────────────────────────
-
-async function getPipelineState() {
-  return (
-    (await storageGet("pipelineState")) || {
-      status: "idle", // 'running' | 'paused' | 'idle'
-      currentStep: 0,
-      jobQueue: [],
-      companyQueue: [],
-      targetQueue: [],
-      profileQueue: [],
-      messageQueue: [],
-    }
-  );
-}
-
-async function setPipelineState(state) {
-  await storageSet("pipelineState", state);
-}
-
-async function getPipelineStatus() {
-  const state = await getPipelineState();
-  return state.status;
-}
-
-async function setPipelineStatus(status) {
-  const state = await getPipelineState();
-  state.status = status;
-  await storageSet("pipelineState", state);
 }
 
 // ─── Reset ───────────────────────────────────────────────────────
@@ -204,7 +174,7 @@ async function clearAllData() {
 // ─── Export ──────────────────────────────────────────────────────
 
 // Make available globally for other scripts (no module system in MV3 service worker imports)
-if (typeof globalThis !== "undefined") {
+if (typeof globalThis !== 'undefined') {
   Object.assign(globalThis, {
     DEFAULT_CONFIG,
     getConfig,
@@ -223,10 +193,6 @@ if (typeof globalThis !== "undefined") {
     updateDailyStats,
     incrementDailyStat,
     resetDailyStats,
-    getPipelineState,
-    setPipelineState,
-    getPipelineStatus,
-    setPipelineStatus,
     clearAllData,
   });
 }

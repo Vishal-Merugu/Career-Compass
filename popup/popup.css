@@ -1,5 +1,5 @@
 /* ─── V5: Technical Dark (Command Center) ─────────────────────── */
-@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap");
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap');
 
 :root {
   --tech-bg: #030712;
@@ -20,7 +20,7 @@
 body {
   width: 440px;
   height: 600px; /* Force fixed height to stop global scroll */
-  font-family: "Plus Jakarta Sans", sans-serif;
+  font-family: 'Plus Jakarta Sans', sans-serif;
   background-color: var(--tech-bg);
   background-image:
     linear-gradient(rgba(31, 41, 55, 0.4) 1px, transparent 1px),
@@ -68,7 +68,7 @@ body {
   height: 48px;
 }
 .auth-overlay h2 {
-  font-family: "JetBrains Mono", monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 14px;
   color: var(--tech-accent);
   margin: 0 0 12px 0;
@@ -135,7 +135,7 @@ body {
   color: var(--tech-muted);
   padding: 10px;
   border-radius: var(--radius-sharp);
-  font-family: "JetBrains Mono", monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
@@ -182,7 +182,7 @@ body {
 }
 
 .stat-card::before {
-  content: "";
+  content: '';
   position: absolute;
   top: 0;
   left: 0;
@@ -202,7 +202,7 @@ body {
 
 .stat-value {
   display: block;
-  font-family: "JetBrains Mono", monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 28px;
   font-weight: 700;
   color: var(--tech-text);
@@ -237,7 +237,7 @@ body {
 }
 .form-group label {
   display: block;
-  font-family: "JetBrains Mono", monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   color: var(--tech-accent);
   margin-bottom: 8px;
@@ -253,7 +253,7 @@ select {
   border-radius: var(--radius-sharp);
   padding: 12px;
   color: var(--tech-cyan);
-  font-family: "JetBrains Mono", monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 13px;
   outline: none;
   transition: all 0.2s ease;
@@ -280,7 +280,7 @@ input:focus {
 }
 
 .btn {
-  font-family: "JetBrains Mono", monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-weight: 700;
   padding: 14px;
   border-radius: var(--radius-sharp);
@@ -360,7 +360,7 @@ input:focus {
   padding: 12px;
   height: 200px;
   overflow-y: auto;
-  font-family: "JetBrains Mono", monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
 }
 
@@ -397,7 +397,7 @@ input:focus {
 .history-table {
   width: 100%;
   border-collapse: collapse;
-  font-family: "JetBrains Mono", monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
 }
 .history-table th {
@@ -470,6 +470,20 @@ input:focus {
   animation: status-pulse 2s infinite ease-in-out;
 }
 
+/* Stopped Halfway */
+.status-dot.stoppedHalfway {
+  background: #f97316;
+  box-shadow: 0 0 10px #f97316;
+  animation: none;
+}
+
+/* Error */
+.status-dot.error {
+  background: #ef4444;
+  box-shadow: 0 0 10px #ef4444;
+  animation: none;
+}
+
 /* ─── Command Bar (Footer) ──────────────────────────────────────── */
 .command-bar {
   margin-top: auto;
@@ -489,7 +503,7 @@ input:focus {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-family: "JetBrains Mono", monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 9px;
   color: var(--tech-muted);
   text-transform: uppercase;
@@ -511,4 +525,51 @@ input:focus {
 .command-actions #btnStart {
   flex: 2;
   font-size: 13px;
+}
+
+/* ─── Workflow UI Additions ─────────────────────────────────────── */
+.progress-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.progress-bar {
+  height: 6px;
+  background: var(--tech-surface);
+  border: 1px solid var(--tech-border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--tech-accent);
+  width: 0%;
+  transition: width 0.3s ease;
+  box-shadow: var(--glow-accent);
+}
+.progress-text {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--tech-muted);
+}
+
+/* ─── Deprecation Warning Banner ────────────────────────────────── */
+.deprecation-banner {
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  padding: 10px 14px;
+  border-radius: var(--radius-sharp);
+  margin-bottom: 16px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #f59e0b; /* Amber */
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.deprecation-banner strong {
+  text-transform: uppercase;
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.05em;
+  font-size: 10px;
 }
