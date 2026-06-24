@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CareerCompass</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="app">
+      <!-- Header -->
+      <header class="header">
+        <div class="header__brand">
+          <div class="header__icon">
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+            >
+              <rect x="2" y="2" width="20" height="20" rx="2" ry="2" />
+              <path d="M12 18V12M12 12V6M12 12H6M12 12H18" />
+            </svg>
+          </div>
+          <h1 class="header__title">CareerCompass</h1>
+        </div>
+        <div class="header__status" id="statusBadge">
+          <span class="status-dot" id="statusDot"></span>
+          <span id="statusText" class="status-text">Ready</span>
+        </div>
+      </header>
+
+      <!-- Navigation -->
+      <nav class="tabs">
+        <button class="tab active" data-tab="finder" title="People Finder">
+          🔍 Finder
+        </button>
+        <button class="tab" data-tab="connect" title="Mass Connector">
+          🔗 Connect
+        </button>
+        <button class="tab" data-tab="results" title="Results & Export">
+          📊 Results
+        </button>
+        <button class="tab" data-tab="settings" title="Settings">
+          ⚙️ Config
+        </button>
+      </nav>
+
+      <!-- TAB 1: People Finder -->
+      <section class="panel active" id="tab-finder">
+        <div class="form-group">
+          <label>> Company LinkedIn URL</label>
+          <input
+            type="text"
+            id="pfCompanyUrl"
+            placeholder="https://linkedin.com/company/siemens"
+          />
+        </div>
+        <div class="form-group">
+          <label>> Search Prompt (AI Filtering)</label>
+          <textarea id="pfPrompt" style="height: 180px">
+Target Role: Software Engineer / Product Manager
+
+EVALUATION CRITERIA:
+Approve this profile (decision: ACCEPT) if the person meets ANY of the following conditions:
+
+TIER 1 — Direct hiring power:
+- HR Manager, HR Director, Head of HR, People Operations
+- Technical Recruiter, Talent Acquisition, Sourcer
+- CTO, VP of Engineering, Engineering Director
+- Head of Product, VP of Product
+- Founder, Co-founder, CEO (especially at startups)
+
+TIER 2 — Strong referral or influence power:
+- Engineering Manager, Team Lead, Tech Lead
+- Product Manager, Senior PM
+- Senior Engineer or Staff Engineer (can refer internally)
+- Department Head or Director in a relevant team
+
+TIER 3 — Moderate value (approve selectively):
+- Mid-level engineers or PMs with 3+ years at the company (likely has referral ability or internal connections)
+
+REJECT if the person is:
+- An intern, student, or entry-level with less than 1 year at company (Evaluate seniority based on overall career history. If they have 3+ years of total experience, former senior roles, or founder background, they are NOT entry-level).
+- In a completely unrelated department (e.g. Finance, Legal, Sales)
+- A contractor or consultant with no internal hiring influence</textarea
+          >
+        </div>
+        <div class="form-group">
+          <label>> Max Results to Find</label>
+          <input type="number" id="pfMaxResults" value="100" />
+        </div>
+        <button
+          class="btn btn-primary"
+          id="btnStartFinder"
+          style="margin-top: 12px"
+        >
+          <span class="loader"></span>
+          <span class="btn-text">Start Finder</span>
+        </button>
+
+        <div
+          id="pfProgressContainer"
+          class="progress-container"
+          style="display: none; margin-top: 20px"
+        >
+          <div class="progress-bar">
+            <div class="progress-fill" id="pfProgressFill"></div>
+          </div>
+          <div class="progress-text" id="pfProgressText">Starting...</div>
+        </div>
+      </section>
+
+      <!-- TAB 2: Mass Connector -->
+      <section class="panel" id="tab-connect">
+        <div
+          style="
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 12px;
+          "
+        >
+          <button
+            class="btn btn-secondary"
+            id="btnMcUploadCsv"
+            style="flex: 1; padding: 8px; font-size: 11px"
+          >
+            📄 Upload CSV
+          </button>
+          <input
+            type="file"
+            id="mcCsvInput"
+            accept=".csv"
+            style="display: none"
+          />
+
+          <select
+            id="mcColumnSelect"
+            style="flex: 1; min-height: 33px; font-size: 11px; display: none"
+          >
+            <option value="">Select URL Column...</option>
+          </select>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 12px">
+          <label>> LinkedIn URLs (Comma-separated or one per line)</label>
+          <textarea
+            id="mcUrls"
+            placeholder="https://linkedin.com/in/johndoe&#10;https://linkedin.com/in/janedoe"
+            style="height: 80px"
+          ></textarea>
+          <div
+            style="
+              font-family: 'JetBrains Mono', monospace;
+              font-size: 9px;
+              color: var(--tech-accent);
+              margin-top: 4px;
+            "
+            id="mcCount"
+          >
+            0 URLs loaded
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>> Connection Note Prompt (Context)</label>
+          <textarea
+            id="mcPrompt"
+            placeholder="I'm looking for backend engineering roles. Ask about their tech stack."
+            style="height: 60px"
+          ></textarea>
+        </div>
+
+        <button
+          class="btn btn-primary"
+          id="btnStartConnector"
+          style="margin-top: 12px"
+        >
+          <span class="loader"></span>
+          <span class="btn-text">Start Connector</span>
+        </button>
+
+        <div
+          id="mcProgressContainer"
+          class="progress-container"
+          style="display: none; margin-top: 20px"
+        >
+          <div class="progress-bar">
+            <div class="progress-fill" id="mcProgressFill"></div>
+          </div>
+          <div class="progress-text" id="mcProgressText">Starting...</div>
+        </div>
+      </section>
+
+      <!-- TAB 4: Results & Export -->
+      <section class="panel" id="tab-results">
+        <div class="form-group">
+          <label>> Select Workflow Run</label>
+          <select id="resRunSelect">
+            <option value="">Loading runs...</option>
+          </select>
+        </div>
+        <div
+          class="results-stats"
+          id="resStats"
+          style="
+            display: none;
+            justify-content: space-between;
+            margin-bottom: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: var(--tech-cyan);
+          "
+        >
+          <span id="resCount">0 results</span>
+          <span id="resDate"></span>
+        </div>
+        <div
+          class="results-actions"
+          style="display: flex; gap: 8px; margin-bottom: 16px"
+        >
+          <button
+            class="btn btn-secondary"
+            id="btnExportCsv"
+            disabled
+            style="flex: 1; padding: 8px; font-size: 11px"
+          >
+            Export CSV
+          </button>
+          <button
+            class="btn btn-primary"
+            id="btnPipeConnect"
+            disabled
+            style="flex: 1; padding: 8px; font-size: 11px"
+          >
+            Pipe to Connect →
+          </button>
+        </div>
+        <div
+          style="
+            background: #000;
+            border: 1px solid var(--tech-border);
+            border-radius: var(--radius-sharp);
+            height: 250px;
+            overflow-y: auto;
+          "
+        >
+          <table class="history-table" id="resultsTable">
+            <thead>
+              <tr id="resultsThead">
+                <th>Entity</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody id="resultsBody">
+              <tr>
+                <td
+                  colspan="2"
+                  style="
+                    text-align: center;
+                    color: var(--tech-muted);
+                    padding: 20px;
+                  "
+                >
+                  Select a run to view results
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- TAB 5: Settings -->
+      <section class="panel" id="tab-settings">
+        <div class="form-group">
+          <label>> LLM Provider</label>
+          <select id="cfgLlmProvider">
+            <option value="ollama">Ollama (Local / Hosted)</option>
+            <option value="gemini">Gemini API</option>
+            <option value="openrouter">OpenRouter</option>
+          </select>
+        </div>
+        <div class="form-group" id="groupLlmUrl">
+          <label>> Base URL</label>
+          <input
+            type="text"
+            id="cfgLlmUrl"
+            placeholder="http://localhost:11434"
+          />
+        </div>
+        <div class="form-group" id="groupLlmApiKey" style="display: none">
+          <label>> API Key</label>
+          <input
+            type="password"
+            id="cfgLlmApiKey"
+            placeholder="Enter API Key"
+          />
+        </div>
+        <div class="form-group">
+          <label id="lblLlmModel">> AI Model (Fetch to Populate)</label>
+          <div style="display: flex; gap: 8px; align-items: stretch">
+            <select id="cfgLlmModel" style="flex: 1; min-height: 38px">
+              <option value="">Select a model...</option>
+            </select>
+            <button
+              class="btn btn-secondary"
+              id="btnCheckLlm"
+              style="padding: 0 12px; width: auto; flex-shrink: 0"
+              title="Test Connection / Fetch Models"
+            >
+              <span class="loader"></span>
+              <span class="btn-text">Test AI</span>
+            </button>
+          </div>
+          <div
+            id="llmStatusText"
+            style="
+              font-family: 'JetBrains Mono', monospace;
+              font-size: 10px;
+              color: var(--tech-muted);
+              margin-top: 6px;
+            "
+          >
+            Not Connected
+          </div>
+        </div>
+        <div class="form-group">
+          <label>> Daily Connection Limit</label>
+          <input type="number" id="cfgDailyLimit" value="15" />
+        </div>
+        <div class="form-group">
+          <label>> Target Geo ID</label>
+          <input type="text" id="cfgTargetGeoId" placeholder="101282230" />
+        </div>
+        <div class="form-group">
+          <label>> Discover Emails</label>
+          <select id="cfgEmailFinderEnabled">
+            <option value="true">Enabled (Mailmeteor + Guess)</option>
+            <option value="false">Disabled</option>
+          </select>
+        </div>
+
+        <button
+          class="btn btn-primary"
+          id="btnSaveConfig"
+          style="margin-top: 24px"
+        >
+          <span class="loader"></span>
+          <span class="btn-text">Save Configuration</span>
+        </button>
+      </section>
+
+      <!-- Persistent Command Bar -->
+      <footer class="command-bar">
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+          "
+        >
+          <span
+            style="
+              font-family: 'JetBrains Mono', monospace;
+              font-size: 10px;
+              color: var(--tech-muted);
+            "
+            id="activeWorkflowName"
+            >No active workflow</span
+          >
+        </div>
+        <div class="command-actions">
+          <button class="btn btn-warning" id="btnGlobalPause" disabled>
+            <span class="loader"></span>
+            <span class="btn-text">Pause</span>
+          </button>
+          <button class="btn btn-danger" id="btnGlobalStop" disabled>
+            <span class="loader"></span>
+            <span class="btn-text">Stop</span>
+          </button>
+        </div>
+      </footer>
+
+      <div id="authOverlay" class="auth-overlay">
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <path
+            d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+          ></path>
+        </svg>
+        <h2 id="authTitle">LinkedIn Required</h2>
+        <p id="authMessage">
+          Please open this extension on an active LinkedIn tab.
+        </p>
+      </div>
+
+      <!-- Login / Register Overlay -->
+      <div
+        id="loginOverlay"
+        class="auth-overlay"
+        style="display: none; background: rgba(0, 0, 0, 0.95); z-index: 2000"
+      >
+        <h2 style="margin-bottom: 16px; color: var(--tech-accent)">
+          CareerCompass Login
+        </h2>
+        <div
+          class="form-group"
+          style="
+            text-align: left;
+            width: 80%;
+            max-width: 300px;
+            margin-bottom: 12px;
+          "
+        >
+          <label>> Email</label>
+          <input type="email" id="authEmail" placeholder="user@example.com" />
+        </div>
+        <div
+          class="form-group"
+          style="
+            text-align: left;
+            width: 80%;
+            max-width: 300px;
+            margin-bottom: 16px;
+          "
+        >
+          <label>> Password</label>
+          <input type="password" id="authPassword" placeholder="••••••••" />
+        </div>
+        <div style="display: flex; gap: 8px; width: 80%; max-width: 300px">
+          <button class="btn btn-primary" id="btnLogin" style="flex: 1">
+            Login
+          </button>
+          <button class="btn btn-secondary" id="btnRegister" style="flex: 1">
+            Register
+          </button>
+        </div>
+        <p
+          id="authErrorMsg"
+          style="
+            color: #ef4444;
+            font-size: 11px;
+            margin-top: 12px;
+            height: 14px;
+          "
+        ></p>
+      </div>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>

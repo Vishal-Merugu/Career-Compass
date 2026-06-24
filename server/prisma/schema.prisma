@@ -1,0 +1,232 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  passwordHash  String
+  telegramId    String?   @unique
+  apiKey        String    @unique @default(uuid())
+  createdAt     DateTime  @default(now())
+
+  session       LinkedInSession?
+  config        UserConfig?
+  workflowRuns  WorkflowRun[]
+  outreachLogs  OutreachLog[]
+  activityLogs  ActivityLog[]
+  dailyStats    DailyStats[]
+  companyQueue  CompanyQueue[]
+  searchJobs    SearchJob[]
+}
+
+model LinkedInSession {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  csrfToken   String
+  liAtCookie  String
+  isValid     Boolean  @default(true)
+  lastChecked DateTime @default(now())
+  expiresAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserConfig {
+  id                 String  @id @default(uuid())
+  userId             String  @unique
+  keywords           String  @default("Werkstudent, Internship, Praktikum")
+  locations          String  @default("Erlangen, Nuremberg, Munich")
+  dailyLimit         Int     @default(15)
+  llmProvider        String  @default("ollama")
+  llmApiKey          String?
+  llmUrl             String  @default("http://localhost:11434")
+  llmModel           String  @default("qwen2.5:1.5b")
+  userContext        String? @db.Text
+  targetGeoId        String  @default("101282230")
+  emailFinderEnabled Boolean @default(true)
+  isServerRun        Boolean @default(false)
+
+  user               User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Company {
+  id            String   @id @default(uuid())
+  companyId     String   @unique
+  name          String
+  slug          String?
+  employeeCount Int?
+  industry      String?
+  website       String?
+  processedAt   DateTime @default(now())
+
+  profiles      Profile[]
+}
+
+model Profile {
+  id               String   @id @default(uuid())
+  profileId        String   @unique
+  memberId         String?
+  firstName        String
+  lastName         String
+  headline         String?  @db.Text
+  about            String?  @db.Text
+  location         String?
+  linkedinUrl      String
+  email            String?
+  emailSource      String?
+  emailValidation  String?
+  companyId        String?
+  rawProfileJson   Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  company          Company?  @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  outreachLogs     OutreachLog[]
+}
+
+model WorkflowRun {
+  id           String   @id @default(uuid())
+  userId       String
+  workflowType String
+  status       String   @default("idle")
+  params       Json
+  progress     Json?
+  results      Json?
+  errors       Json?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime @default(now())
+
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model OutreachLog {
+  id          String   @id @default(uuid())
+  userId      String
+  profileId   String?
+  action      String
+  status      String
+  message     String?  @db.Text
+  details     Json?
+  createdAt   DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  profile     Profile? @relation(fields: [profileId], references: [id], onDelete: SetNull)
+}
+
+model ActivityLog {
+  id        String   @id @default(uuid())
+  userId    String
+  message   String   @db.Text
+  level     String   @default("info")
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model DailyStats {
+  id                 String   @id @default(uuid())
+  userId             String
+  date               String
+  connectionsSent    Int      @default(0)
+  jobsFound          Int      @default(0)
+  companiesProcessed Int      @default(0)
+  targetsFound       Int      @default(0)
+  emailsFound        Int      @default(0)
+
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+}
+
+model CompanyQueue {
+  id           String   @id @default(uuid())
+  userId       String
+  companyUrl   String
+  searchPrompt String?
+  maxResults   Int      @default(100)
+  status       String   @default("pending")  // pending | processing | completed | error
+  createdAt    DateTime @default(now())
+  
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model SearchJob {
+  id                 String               @id @default(uuid())
+  userId             String
+  status             String               @default("initializing") // initializing | collecting_urls | scraping | completed | paused_error
+  limitRequested     Int
+  qualifiedCount     Int                  @default(0)
+  currentBatchNumber Int                  @default(1)
+  searchParams       Json
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  user               User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  profileUrls        ProfileUrl[]
+  connections        ExtensionConnection[]
+}
+
+model ProfileUrl {
+  id           String          @id @default(uuid())
+  jobId        String
+  batchNumber  Int
+  url          String
+  status       String          @default("queued") // queued | dispatched | scraping | scraped | failed_retryable | failed_permanent | skipped
+  attempts     Int             @default(0)
+  lastError    String?         @db.Text
+  dispatchedAt DateTime?
+  scrapedAt    DateTime?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  job          SearchJob       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  profile      ScrapedProfile?
+
+  @@unique([jobId, url])
+}
+
+model ScrapedProfile {
+  id           String            @id @default(uuid())
+  profileUrlId String            @unique
+  rawData      Json
+  name         String
+  headline     String?           @db.Text
+  company      String?
+  location     String?
+  scrapedAt    DateTime          @default(now())
+
+  profileUrl   ProfileUrl        @relation(fields: [profileUrlId], references: [id], onDelete: Cascade)
+  decisions    ProfileDecision[]
+}
+
+model ProfileDecision {
+  id                  String         @id @default(uuid())
+  profileId           String
+  email               String?
+  emailSource         String?
+  isQualified         Boolean        @default(false)
+  qualificationReason String?        @db.Text
+  decidedAt           DateTime       @default(now())
+
+  profile             ScrapedProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+}
+
+model ExtensionConnection {
+  id              String    @id @default(uuid())
+  jobId           String
+  socketId        String
+  connectedAt     DateTime  @default(now())
+  lastHeartbeatAt DateTime  @default(now())
+  disconnectedAt  DateTime?
+
+  job             SearchJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+}

@@ -1,13 +1,11 @@
 {
   "name": "careercompass",
   "version": "1.0.0",
-  "description": "**AI-powered job discovery and professional outreach engine.**",
+  "description": "**AI-powered job discovery and professional outreach engine for LinkedIn.**",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
-    "format": "prettier --write ."
+    "prepare": "husky"
   },
   "repository": {
     "type": "git",
@@ -17,15 +15,27 @@
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "lint-staged": {
+    "*.{js,ts}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,html,css}": [
+      "prettier --write"
+    ]
+  },
   "bugs": {
     "url": "https://github.com/Vishal-Merugu/Career-Compass/issues"
   },
   "homepage": "https://github.com/Vishal-Merugu/Career-Compass#readme",
   "devDependencies": {
-    "eslint": "^10.4.0",
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.5.0",
     "eslint-config-prettier": "^10.1.8",
-    "eslint-plugin-prettier": "^5.5.5",
-    "globals": "^17.6.0",
-    "prettier": "^3.8.3"
+    "eslint-plugin-prettier": "^5.5.6",
+    "globals": "^17.7.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.8",
+    "prettier": "^3.8.4"
   }
 }

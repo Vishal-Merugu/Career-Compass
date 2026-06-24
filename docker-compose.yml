@@ -1,0 +1,50 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: cc-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ccuser
+      POSTGRES_PASSWORD: ccpassword
+      POSTGRES_DB: careercompass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: cc-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: cc-server
+    restart: always
+    ports:
+      - "3000:3000"
+    depends_on:
+      - db
+      - redis
+    environment:
+      DATABASE_URL: postgresql://ccuser:ccpassword@db:5432/careercompass?schema=public
+      REDIS_URL: redis://redis:6379
+      PORT: 3000
+      NODE_ENV: production
+      JWT_SECRET: ${JWT_SECRET:-generate_a_random_32_character_long_secret_key}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+    cap_add:
+      - SYS_ADMIN
+    shm_size: '1gb'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  postgres_data:
+  redis_data:
