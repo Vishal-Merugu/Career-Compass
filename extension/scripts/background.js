@@ -81,7 +81,7 @@ async function handleMessage(message, sendResponse) {
       }
 
       case 'saveConfig': {
-        await setConfig(message.config);
+        await setConfig(message.config, message.pushToServer !== false);
         sendResponse({ ok: true });
         break;
       }

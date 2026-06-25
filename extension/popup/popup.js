@@ -1020,15 +1020,51 @@ async function handleAuth(action) {
       throw new Error(data.error || data.message || `Failed to ${action}`);
     }
 
-    // Save apiKey to config via background
+    // Save apiKey to config via background without pushing to server,
+    // so we don't overwrite the user's remote config with the local default
     config.apiKey = data.apiKey;
-    await sendMessage({ action: 'saveConfig', config });
+    await sendMessage({ action: 'saveConfig', config, pushToServer: false });
 
     document.getElementById('loginOverlay').style.display = 'none';
 
     // Initialize the app now that we have an API key
     await sendMessage({ action: 'syncConfig' });
     await loadConfig();
+
+    // Check for any active server jobs and restore them
+    try {
+      const resJobs = await fetch(`${backendUrl}/api/jobs`, {
+        headers: { 'X-API-Key': data.apiKey },
+      });
+      const dataJobs = await resJobs.json();
+      if (resJobs.ok && dataJobs.ok && dataJobs.jobs) {
+        const activeJob = dataJobs.jobs.find((j) =>
+          [
+            'initializing',
+            'collecting_urls',
+            'scraping',
+            'paused_error',
+          ].includes(j.status),
+        );
+        if (activeJob) {
+          await chrome.storage.local.set({
+            activeServerJob: {
+              jobId: activeJob.id,
+              userId: 'me',
+              limitRequested: activeJob.limitRequested || 20,
+            },
+          });
+          await sendMessage({
+            action: 'job:start',
+            jobId: activeJob.id,
+            userId: 'me',
+          });
+        }
+      }
+    } catch (e) {
+      console.error('Failed to restore active job:', e);
+    }
+
     await refreshState();
     startPolling();
   } catch (err) {

@@ -39,9 +39,6 @@ async function getConfig() {
   const config = (await storageGet('config')) || {};
   const finalConfig = { ...DEFAULT_CONFIG, ...config };
 
-  // Always force backend URL from code-level default configuration
-  finalConfig.backendUrl = DEFAULT_CONFIG.backendUrl;
-
   // Migration: Clear old hardcoded IP
   if (finalConfig.llmUrl && finalConfig.llmUrl.includes('192.168.31.217')) {
     finalConfig.llmUrl = 'http://localhost:11434';
@@ -50,10 +47,10 @@ async function getConfig() {
   return finalConfig;
 }
 
-async function setConfig(config) {
+async function setConfig(config, pushToServer = true) {
   await storageSet('config', config);
 
-  if (config.apiKey && config.backendUrl) {
+  if (pushToServer && config.apiKey && config.backendUrl) {
     const { apiKey, backendUrl, isServerRun, ...remoteConfig } = config;
     try {
       await fetch(`${config.backendUrl}/api/config`, {
@@ -73,7 +70,6 @@ async function setConfig(config) {
 async function syncConfigFromServer() {
   const localConfig = (await storageGet('config')) || {};
   const finalConfig = { ...DEFAULT_CONFIG, ...localConfig };
-  finalConfig.backendUrl = DEFAULT_CONFIG.backendUrl;
 
   if (!finalConfig.apiKey || !finalConfig.backendUrl) return finalConfig;
 

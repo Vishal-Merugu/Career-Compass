@@ -167,10 +167,10 @@ function parsePeopleSearchResults(response) {
         const viewModel = includedMap[resultUrn];
 
         // Extract profile ID from entityUrn (e.g. urn:li:fsd_profile:ACoAA...) or publicIdentifier
+        const profileUrn = viewModel.entityUrn || viewModel.profileUrn || '';
         let profileId = viewModel.publicIdentifier || '';
 
         if (!profileId) {
-          const profileUrn = viewModel.entityUrn || viewModel.profileUrn || '';
           if (profileUrn.includes('fsd_profile:')) {
             profileId = profileUrn.split('fsd_profile:')[1].split(',')[0];
           } else if (profileUrn.includes('member:')) {
