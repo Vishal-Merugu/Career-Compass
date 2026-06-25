@@ -342,6 +342,7 @@ async function connectSocket(jobId, userId) {
     socket.on('connect', () => {
       console.log('[Background] Socket connected successfully. Registering...');
       socket.emit('REGISTER', { jobId, userId });
+      socket.emit('CHECK_PENDING_EMAILS');
 
       if (heartbeatInterval) clearInterval(heartbeatInterval);
       heartbeatInterval = setInterval(() => {
