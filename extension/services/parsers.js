@@ -166,13 +166,16 @@ function parsePeopleSearchResults(response) {
       if (resultUrn && includedMap[resultUrn]) {
         const viewModel = includedMap[resultUrn];
 
-        // Extract profile ID from entityUrn (e.g. urn:li:fsd_profile:ACoAA...)
-        let profileId = '';
-        const profileUrn = viewModel.entityUrn || viewModel.profileUrn || '';
-        if (profileUrn.includes('fsd_profile:')) {
-          profileId = profileUrn.split('fsd_profile:')[1].split(',')[0];
-        } else if (profileUrn.includes('member:')) {
-          profileId = profileUrn.split('member:')[1].split(',')[0];
+        // Extract profile ID from entityUrn (e.g. urn:li:fsd_profile:ACoAA...) or publicIdentifier
+        let profileId = viewModel.publicIdentifier || '';
+
+        if (!profileId) {
+          const profileUrn = viewModel.entityUrn || viewModel.profileUrn || '';
+          if (profileUrn.includes('fsd_profile:')) {
+            profileId = profileUrn.split('fsd_profile:')[1].split(',')[0];
+          } else if (profileUrn.includes('member:')) {
+            profileId = profileUrn.split('member:')[1].split(',')[0];
+          }
         }
 
         const name = getText(viewModel.title);
@@ -249,7 +252,8 @@ function parseFullProfile(response) {
       profile.firstName = getText(item.firstName || item.firstNameV2);
       profile.lastName = getText(item.lastName || item.lastNameV2);
       profile.headline = getText(item.headline || item.headlineV2);
-      profile.publicIdentifier = item.publicIdentifier || '';
+      profile.publicIdentifier =
+        item.publicIdentifier || profile.publicIdentifier || '';
       profile.entityUrn = item.entityUrn || '';
       profile.location = item.locationName || item.geoLocationName || '';
       // Extract persistent member ID (ACoAA...)
@@ -259,6 +263,15 @@ function parseFullProfile(response) {
           .split(',')[0];
       }
     }
+    // Robustly capture publicIdentifier if missing from main Profile object
+    if (
+      item.publicIdentifier &&
+      !profile.publicIdentifier &&
+      !type.includes('Company')
+    ) {
+      profile.publicIdentifier = item.publicIdentifier;
+    }
+
     if (type.includes('Summary') || item.summary || item.summaryV2) {
       profile.about = getText(item.summary || item.summaryV2 || profile.about);
     }

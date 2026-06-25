@@ -384,8 +384,8 @@ function findEmailViaPatterns(firstName, lastName, companyName, domain) {
  */
 async function findEmail(linkedinUrl, profileData) {
   // Normalize the LinkedIn URL
-  let fullUrl = linkedinUrl;
-  if (!linkedinUrl.startsWith('http')) {
+  let fullUrl = linkedinUrl || '';
+  if (fullUrl && !fullUrl.startsWith('http')) {
     fullUrl = `https://www.linkedin.com/in/${linkedinUrl}`;
   }
 
