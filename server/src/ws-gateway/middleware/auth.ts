@@ -25,24 +25,25 @@ export async function socketAuthMiddleware(
       where: { apiKey },
     });
 
-    if (!user || user.id !== userId) {
-      logger.warn(
-        `[SocketAuth] Rejecting connection: Invalid API key for User ${userId}.`,
-      );
+    if (!user) {
+      logger.warn(`[SocketAuth] Rejecting connection: Invalid API key.`);
       return next(new Error('Authentication failed: Invalid API Key'));
     }
+
+    // Use the true userId resolved from the database, ignoring what the client sent
+    const actualUserId = user.id;
 
     // Verify job belongs to user and exists
     const job = await prisma.searchJob.findFirst({
       where: {
         id: jobId,
-        userId: userId,
+        userId: actualUserId,
       },
     });
 
     if (!job) {
       logger.warn(
-        `[SocketAuth] Rejecting connection: Job ${jobId} for User ${userId} not found in database.`,
+        `[SocketAuth] Rejecting connection: Job ${jobId} for User ${actualUserId} not found in database.`,
       );
       return next(new Error('Authentication failed: Invalid Job or User ID'));
     }
@@ -50,10 +51,10 @@ export async function socketAuthMiddleware(
     // Save job and user references on socket data
     socket.data = socket.data || {};
     socket.data.jobId = jobId;
-    socket.data.userId = userId;
+    socket.data.userId = actualUserId;
 
     logger.info(
-      `[SocketAuth] Approved connection for Job ${jobId}, User ${userId}. socketId: ${socket.id}`,
+      `[SocketAuth] Approved connection for Job ${jobId}, User ${actualUserId}. socketId: ${socket.id}`,
     );
     next();
   } catch (err: any) {
