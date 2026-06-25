@@ -64,12 +64,28 @@ class TelegramBotService {
     chatId: string | number,
     text: string,
     options?: any,
-  ): Promise<void> {
+  ): Promise<TelegramBot.Message | null> {
     if (!this.bot) {
       logger.warn('Telegram Bot is offline. Cannot route message.');
-      return;
+      return null;
     }
-    await this.bot.sendMessage(chatId, text, options);
+    return await this.bot.sendMessage(chatId, text, options);
+  }
+
+  /**
+   * Edit an existing message
+   */
+  public async editMessageText(
+    text: string,
+    options: TelegramBot.EditMessageTextOptions,
+  ): Promise<TelegramBot.Message | boolean | null> {
+    if (!this.bot) return null;
+    try {
+      return await this.bot.editMessageText(text, options);
+    } catch (err) {
+      logger.error(err, 'Failed to edit telegram message');
+      return null;
+    }
   }
 
   /**

@@ -6,6 +6,7 @@ import { PrismaStorageAdapter } from '../services/storage.adapter.js';
 import { checkJobStopCondition } from '../orchestrator/stopCondition.js';
 import { ConnectionRegistry } from '../ws-gateway/connectionRegistry.js';
 import { getIo } from '../ws-gateway/index.js';
+import { telegramBotService } from '../telegram/bot.js';
 
 export class QualificationWorker {
   private static instance: QualificationWorker | null = null;
@@ -140,11 +141,26 @@ export class QualificationWorker {
 
     const job = await prisma.searchJob.findUnique({
       where: { id: jobId },
+      include: { user: true },
     });
 
     if (!job) {
       logger.error(`[QualificationWorker] SearchJob ${jobId} not found in DB`);
       return;
+    }
+
+    const chatId = job.user?.telegramId;
+    let telegramMsgId: number | undefined;
+
+    if (chatId) {
+      const msg = await telegramBotService.sendMessage(
+        chatId,
+        `🔍 *Evaluating Profile...*\n*Name:* ${profile.name}\n*Headline:* ${profile.headline || 'None'}`,
+        { parse_mode: 'Markdown' },
+      );
+      if (msg) {
+        telegramMsgId = msg.message_id;
+      }
     }
 
     // 2. Fetch User config & prepare adapter
@@ -228,9 +244,37 @@ export class QualificationWorker {
       logger.info(
         `[QualificationWorker] LLM Evaluation for ${profile.name}: Match=${isQualified}, Reason=${qualificationReason}`,
       );
+
+      if (chatId && telegramMsgId) {
+        const icon = isQualified ? '✅' : '❌';
+        const resultText = isQualified ? 'Qualified' : 'Rejected';
+        // Keep the reason clean, shorten if it's too long
+        const cleanReason =
+          qualificationReason.length > 200
+            ? qualificationReason.substring(0, 200) + '...'
+            : qualificationReason;
+        await telegramBotService.editMessageText(
+          `${icon} *${resultText}:* ${profile.name}\n*Reason:* ${cleanReason}`,
+          {
+            chat_id: chatId,
+            message_id: telegramMsgId,
+            parse_mode: 'Markdown',
+          },
+        );
+      }
     } catch (err: any) {
       logger.error(err, `[QualificationWorker] LLM profile evaluation failed`);
       qualificationReason = `Evaluation error: ${err.message}`;
+      if (chatId && telegramMsgId) {
+        await telegramBotService.editMessageText(
+          `⚠️ *Error Evaluating:* ${profile.name}\n*Error:* ${err.message}`,
+          {
+            chat_id: chatId,
+            message_id: telegramMsgId,
+            parse_mode: 'Markdown',
+          },
+        );
+      }
     }
 
     // 4. Handle email discovery and decision creation

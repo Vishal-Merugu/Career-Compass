@@ -4,6 +4,7 @@ import { prisma } from '../../lib/prisma.js';
 import { logger } from '../../lib/logger.js';
 import { QualificationWorker } from '../../workers/qualificationWorker.js';
 import { PrismaStorageAdapter } from '../../services/storage.adapter.js';
+import { telegramBotService } from '../../telegram/bot.js';
 
 export async function onEmailFound(socket: Socket, payload: EmailFoundPayload) {
   const { jobId, urlId, email, source } = payload;
@@ -55,7 +56,10 @@ export async function onEmailFound(socket: Socket, payload: EmailFoundPayload) {
 
       // Update daily stats for the newly found email
       if (email) {
-        const job = await prisma.searchJob.findUnique({ where: { id: jobId } });
+        const job = await prisma.searchJob.findUnique({
+          where: { id: jobId },
+          include: { user: true },
+        });
         if (job) {
           const storageAdapter = new PrismaStorageAdapter(job.userId);
           await storageAdapter.updateDailyStats({
@@ -65,6 +69,21 @@ export async function onEmailFound(socket: Socket, payload: EmailFoundPayload) {
           await storageAdapter.addActivityLog(
             `Found missing email for previously qualified profile: ${scrapedProfile.name} -> ${email}`,
           );
+
+          if (job.user?.telegramId) {
+            telegramBotService
+              .sendMessage(
+                job.user.telegramId,
+                `✉️ *Email Found:* ${scrapedProfile.name}`,
+                { parse_mode: 'Markdown' },
+              )
+              .catch((err) =>
+                logger.error(
+                  err,
+                  'Failed to send telegram email found notification',
+                ),
+              );
+          }
         }
       }
     } else {
@@ -86,6 +105,27 @@ export async function onEmailFound(socket: Socket, payload: EmailFoundPayload) {
 
       // 5. Finalize the decision (update SearchJob count and trigger orchestrator/check stop condition)
       await worker.finalizeQualifiedDecision(jobId, scrapedProfile.id, email);
+
+      if (email) {
+        const job = await prisma.searchJob.findUnique({
+          where: { id: jobId },
+          include: { user: true },
+        });
+        if (job?.user?.telegramId) {
+          telegramBotService
+            .sendMessage(
+              job.user.telegramId,
+              `✉️ *Email Found:* ${scrapedProfile.name}`,
+              { parse_mode: 'Markdown' },
+            )
+            .catch((err) =>
+              logger.error(
+                err,
+                'Failed to send telegram email found notification',
+              ),
+            );
+        }
+      }
     }
   } catch (err: any) {
     logger.error(

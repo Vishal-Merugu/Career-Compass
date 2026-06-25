@@ -91,9 +91,9 @@ const server = app.listen(env.PORT, async () => {
   await QualificationWorker.getInstance().sweepOrphanedProfiles();
 
   // Initialize Telegram Bot
-  // telegramBotService.initialize().catch((err) => {
-  //   logger.error(err, 'Failed to initialize Telegram Bot');
-  // });
+  telegramBotService.initialize().catch((err) => {
+    logger.error(err, 'Failed to initialize Telegram Bot');
+  });
 });
 
 // Graceful shutdown handler
