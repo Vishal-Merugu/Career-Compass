@@ -500,14 +500,20 @@ function updateGlobalControls(status, name) {
     status === 'idle' ? 'No active workflow' : `Active: ${name}`;
 
   if (status === 'running') {
+    btnPause.style.display = '';
+    btnStop.style.display = '';
     btnPause.disabled = false;
     btnPause.querySelector('.btn-text').textContent = 'Pause';
     btnStop.disabled = false;
   } else if (status === 'paused') {
+    btnPause.style.display = '';
+    btnStop.style.display = '';
     btnPause.disabled = false;
     btnPause.querySelector('.btn-text').textContent = 'Resume';
     btnStop.disabled = false;
   } else {
+    btnPause.style.display = 'none';
+    btnStop.style.display = 'none';
     btnPause.disabled = true;
     btnPause.querySelector('.btn-text').textContent = 'Pause';
     btnStop.disabled = true;

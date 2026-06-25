@@ -84,7 +84,10 @@ async function syncConfigFromServer() {
     if (res.ok) {
       const data = await res.json();
       if (data?.config) {
-        const mergedConfig = { ...finalConfig, ...data.config };
+        const cleanRemoteConfig = Object.fromEntries(
+          Object.entries(data.config).filter(([_, v]) => v != null),
+        );
+        const mergedConfig = { ...finalConfig, ...cleanRemoteConfig };
         mergedConfig.apiKey = finalConfig.apiKey;
         mergedConfig.backendUrl = finalConfig.backendUrl;
 
