@@ -27,6 +27,7 @@ export const ClientEvents = {
   HEARTBEAT: 'HEARTBEAT',
   EMAIL_FOUND: 'EMAIL_FOUND',
   EMAIL_FIND_FAILED: 'EMAIL_FIND_FAILED',
+  CHECK_PENDING_EMAILS: 'CHECK_PENDING_EMAILS',
 } as const;
 
 // ─── Outbound Payload Interfaces (Server -> Extension) ──────────────────────

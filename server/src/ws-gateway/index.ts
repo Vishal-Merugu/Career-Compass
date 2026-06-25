@@ -18,6 +18,7 @@ import { onSessionValid } from './handlers/onSessionValid.js';
 import { onSessionInvalid } from './handlers/onSessionInvalid.js';
 import { onEmailFound } from './handlers/onEmailFound.js';
 import { onEmailFindFailed } from './handlers/onEmailFindFailed.js';
+import { onCheckPendingEmails } from './handlers/onCheckPendingEmails.js';
 let ioInstance: Server | null = null;
 
 export function setIo(io: Server) {
@@ -118,6 +119,10 @@ export function initWsGateway(httpServer: HttpServer): Server {
       wrapSocketHandler(socket, (payload) =>
         onEmailFindFailed(socket, payload),
       ),
+    );
+    socket.on(
+      ClientEvents.CHECK_PENDING_EMAILS,
+      wrapSocketHandler(socket, () => onCheckPendingEmails(socket)),
     );
 
     // Handle Socket Disconnect

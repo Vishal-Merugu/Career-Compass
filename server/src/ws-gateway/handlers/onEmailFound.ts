@@ -3,6 +3,7 @@ import { EmailFoundPayload } from '../events.js';
 import { prisma } from '../../lib/prisma.js';
 import { logger } from '../../lib/logger.js';
 import { QualificationWorker } from '../../workers/qualificationWorker.js';
+import { PrismaStorageAdapter } from '../../services/storage.adapter.js';
 
 export async function onEmailFound(socket: Socket, payload: EmailFoundPayload) {
   const { jobId, urlId, email, source } = payload;
@@ -51,6 +52,21 @@ export async function onEmailFound(socket: Socket, payload: EmailFoundPayload) {
           emailSource: source || 'mailmeteor',
         },
       });
+
+      // Update daily stats for the newly found email
+      if (email) {
+        const job = await prisma.searchJob.findUnique({ where: { id: jobId } });
+        if (job) {
+          const storageAdapter = new PrismaStorageAdapter(job.userId);
+          await storageAdapter.updateDailyStats({
+            targetsFound: 0,
+            emailsFound: 1,
+          });
+          await storageAdapter.addActivityLog(
+            `Found missing email for previously qualified profile: ${scrapedProfile.name} -> ${email}`,
+          );
+        }
+      }
     } else {
       await prisma.profileDecision.create({
         data: {
@@ -61,16 +77,16 @@ export async function onEmailFound(socket: Socket, payload: EmailFoundPayload) {
           qualificationReason: 'Direct extension email lookup',
         },
       });
+
+      // 4. Update status to scraped
+      await prisma.profileUrl.update({
+        where: { id: urlId },
+        data: { status: 'scraped' },
+      });
+
+      // 5. Finalize the decision (update SearchJob count and trigger orchestrator/check stop condition)
+      await worker.finalizeQualifiedDecision(jobId, scrapedProfile.id, email);
     }
-
-    // 4. Update status to scraped
-    await prisma.profileUrl.update({
-      where: { id: urlId },
-      data: { status: 'scraped' },
-    });
-
-    // 5. Finalize the decision (update SearchJob count and trigger orchestrator/check stop condition)
-    await worker.finalizeQualifiedDecision(jobId, scrapedProfile.id, email);
   } catch (err: any) {
     logger.error(
       { err, jobId, urlId },

@@ -20,7 +20,16 @@ export async function onUrlBatchComplete(
     const unresolvedUrlsCount = await prisma.profileUrl.count({
       where: {
         jobId,
-        status: { in: ['queued', 'dispatched', 'scraping'] },
+        OR: [
+          { status: { in: ['queued', 'dispatched', 'scraping'] } },
+          { status: 'scraped', profile: null },
+          {
+            status: 'scraped',
+            profile: {
+              decisions: { none: {} },
+            },
+          },
+        ],
       },
     });
     if (unresolvedUrlsCount === 0) {

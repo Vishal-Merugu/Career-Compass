@@ -131,7 +131,7 @@ router.get('/jobs/:id/status', requireAuthOrApiKey, async (req, res, next) => {
       },
     });
 
-    // Fetch decisions summary
+    // Fetch decisions summary (only qualified ones for the UI)
     const decisions = await prisma.profileDecision.findMany({
       where: {
         profile: {
@@ -139,13 +139,14 @@ router.get('/jobs/:id/status', requireAuthOrApiKey, async (req, res, next) => {
             jobId,
           },
         },
+        isQualified: true,
       },
       include: {
         profile: true,
       },
     });
 
-    const qualifiedCount = decisions.filter((d) => d.isQualified).length;
+    const qualifiedCount = job.qualifiedCount || decisions.length;
 
     res.status(200).json({
       ok: true,

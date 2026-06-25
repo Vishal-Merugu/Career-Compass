@@ -52,11 +52,19 @@ export async function checkJobStopCondition(jobId: string): Promise<boolean> {
     return true;
   }
 
-  // 3. Check if all URL rows in the database for this job are resolved (no longer queued/dispatched/scraping)
   const unresolvedUrlsCount = await prisma.profileUrl.count({
     where: {
       jobId,
-      status: { in: ['queued', 'dispatched', 'scraping'] },
+      OR: [
+        { status: { in: ['queued', 'dispatched', 'scraping'] } },
+        { status: 'scraped', profile: null },
+        {
+          status: 'scraped',
+          profile: {
+            decisions: { none: {} },
+          },
+        },
+      ],
     },
   });
 

@@ -54,6 +54,7 @@ export async function onEmailFindFailed(
           emailSource: `failed: ${error.slice(0, 100)}`,
         },
       });
+      // No need to finalize, it was already finalized.
     } else {
       await prisma.profileDecision.create({
         data: {
@@ -64,16 +65,16 @@ export async function onEmailFindFailed(
           qualificationReason: 'Direct extension email lookup failed',
         },
       });
+
+      // 4. Update status to scraped
+      await prisma.profileUrl.update({
+        where: { id: urlId },
+        data: { status: 'scraped' },
+      });
+
+      // 5. Finalize decision as qualified but email not found
+      await worker.finalizeQualifiedDecision(jobId, scrapedProfile.id, null);
     }
-
-    // 4. Update status to scraped
-    await prisma.profileUrl.update({
-      where: { id: urlId },
-      data: { status: 'scraped' },
-    });
-
-    // 5. Finalize decision as qualified but email not found
-    await worker.finalizeQualifiedDecision(jobId, scrapedProfile.id, null);
   } catch (err: any) {
     logger.error(
       { err, jobId, urlId },
