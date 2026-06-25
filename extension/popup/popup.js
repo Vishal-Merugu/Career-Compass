@@ -378,7 +378,7 @@ async function startWorkflow(workflowId, params) {
 // ─── Polling & State Sync ────────────────────────────────────────
 
 function startPolling() {
-  pollInterval = setInterval(refreshState, 2000);
+  pollInterval = setInterval(refreshState, 5000);
 }
 
 async function refreshState() {

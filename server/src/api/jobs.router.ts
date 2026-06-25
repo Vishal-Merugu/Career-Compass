@@ -165,14 +165,17 @@ router.get('/jobs/:id/status', requireAuthOrApiKey, async (req, res, next) => {
         inFlightCount:
           collectedCount - scrapedCount - remainingCount - failedCount,
       },
-      decisions: decisions.map((d) => ({
-        name: d.profile.name,
-        headline: d.profile.headline,
-        title: d.profile.headline,
-        about: d.profile.about,
-        isQualified: d.isQualified,
-        email: d.email,
-      })),
+      decisions: decisions.map((d) => {
+        const raw = d.profile.rawData as any;
+        return {
+          name: d.profile.name,
+          headline: d.profile.headline,
+          title: d.profile.headline,
+          about: raw?.about || '',
+          isQualified: d.isQualified,
+          email: d.email,
+        };
+      }),
     });
   } catch (err) {
     next(err);

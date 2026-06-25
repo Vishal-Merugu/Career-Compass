@@ -512,7 +512,7 @@ async function handleFetchUrlBatch(jobId, batchNumber, targetCount, searchUrl) {
   }
 
   let count = 0;
-  let start = 0;
+  let start = (batchNumber - 1) * targetCount;
   let hasMore = true;
 
   while (count < targetCount && hasMore && !isPaused) {

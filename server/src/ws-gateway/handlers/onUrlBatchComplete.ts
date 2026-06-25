@@ -15,6 +15,29 @@ export async function onUrlBatchComplete(
     `[SocketHandler] URL_BATCH_COMPLETE received for Job: ${jobId}, Batch: ${batchNumber}, total collected: ${count}`,
   );
 
+  // If no new URLs were collected and no URLs are currently queued/in-progress, the job is completely exhausted.
+  if (count === 0) {
+    const unresolvedUrlsCount = await prisma.profileUrl.count({
+      where: {
+        jobId,
+        status: { in: ['queued', 'dispatched', 'scraping'] },
+      },
+    });
+    if (unresolvedUrlsCount === 0) {
+      logger.info(
+        `[SocketHandler] URL collection exhausted and no pending URLs. Completing Job: ${jobId}`,
+      );
+      await prisma.searchJob.update({
+        where: { id: jobId },
+        data: { status: 'completed' },
+      });
+      const { sendStopLimitReached } =
+        await import('../commands/sendStopLimitReached.js');
+      await sendStopLimitReached(jobId);
+      return;
+    }
+  }
+
   // Update job status from collecting_urls to scraping
   await prisma.searchJob.update({
     where: { id: jobId },
