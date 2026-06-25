@@ -1,15 +1,12 @@
-FROM node:20-slim
+FROM node:20
 
 WORKDIR /app
-
-# Tell Puppeteer to skip downloading the massive Chromium binary
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
 # Copy dependency configuration files
 COPY package*.json ./
 
 # Install npm dependencies
-RUN npm ci
+RUN npm ci --verbose
 
 # Copy the rest of the application files
 COPY . .

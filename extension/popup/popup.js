@@ -853,10 +853,58 @@ function exportResultsCsv() {
   if (!currentSelectedRun || currentSelectedRun.results.length === 0) return;
 
   const results = currentSelectedRun.results;
-  const headers = Object.keys(results[0]);
 
-  const rows = results.map((r) =>
-    headers.map((h) => `"${String(r[h]).replace(/"/g, '""')}"`).join(','),
+  // Transform results for better CSV columns
+  const transformedResults = results.map((r) => {
+    const row = {};
+    row['Name'] = r.name || r.Name || '';
+    row['Title'] = r.headline || r.title || r.Title || '';
+    row['Bio/About'] =
+      r.about || r.bio || r['bio/about'] || r['Bio/About'] || '';
+
+    if (r.hasOwnProperty('isQualified') || r.hasOwnProperty('Qualified')) {
+      row['Match Status'] =
+        r.isQualified || r.Qualified ? 'Qualified' : 'Not Qualified';
+    }
+    if (r.hasOwnProperty('status')) {
+      row['Status'] = r.status;
+    }
+    if (r.company) row['Company'] = r.company;
+
+    row['Email'] = r.email || r.Email || '';
+
+    // Add any other properties dynamically
+    for (const key of Object.keys(r)) {
+      if (
+        ![
+          'name',
+          'headline',
+          'title',
+          'about',
+          'bio',
+          'isQualified',
+          'status',
+          'company',
+          'email',
+          'Name',
+          'Title',
+          'Bio/About',
+          'Match Status',
+          'Status',
+          'Company',
+          'Email',
+        ].includes(key)
+      ) {
+        row[key] = r[key];
+      }
+    }
+    return row;
+  });
+
+  const headers = Object.keys(transformedResults[0]);
+
+  const rows = transformedResults.map((r) =>
+    headers.map((h) => `"${String(r[h] || '').replace(/"/g, '""')}"`).join(','),
   );
 
   const csv = [headers.join(','), ...rows].join('\n');
@@ -950,7 +998,11 @@ async function handleAuth(action) {
 
   btn.classList.add('is-loading');
   try {
-    const res = await fetch(`http://localhost:3000/api/auth/${action}`, {
+    const statusRes = await sendMessage({ action: 'getStatus' });
+    const config = statusRes?.config || {};
+    const backendUrl = config.backendUrl || 'http://localhost:3000';
+
+    const res = await fetch(`${backendUrl}/api/auth/${action}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),
@@ -962,8 +1014,6 @@ async function handleAuth(action) {
     }
 
     // Save apiKey to config via background
-    const statusRes = await sendMessage({ action: 'getStatus' });
-    const config = statusRes?.config || {};
     config.apiKey = data.apiKey;
     await sendMessage({ action: 'saveConfig', config });
 

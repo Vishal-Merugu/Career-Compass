@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import { env } from './config/env.js';
 import { logger } from './lib/logger.js';
 import { prisma } from './lib/prisma.js';
@@ -82,12 +82,6 @@ const server = app.listen(env.PORT, async () => {
   // Initialize Redis client
   await initRedis();
 
-  // Pre-warm Puppeteer browser for email finding (lazy — launches on first use)
-  // BrowserManager is a singleton; it will auto-launch when needed.
-  logger.info(
-    'BrowserManager ready (will launch Chromium on first email lookup).',
-  );
-
   // Start scheduled cron tasks
   SchedulerService.start();
 
@@ -121,10 +115,6 @@ const gracefulShutdown = async () => {
       } catch (redisErr) {
         logger.error(redisErr, 'Error disconnecting Redis client');
       }
-
-      // Close Puppeteer browser
-      await BrowserManager.getInstance().close();
-
       await prisma.$disconnect();
       logger.info('Prisma disconnected.');
 

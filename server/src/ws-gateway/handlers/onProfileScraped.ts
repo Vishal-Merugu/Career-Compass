@@ -34,6 +34,7 @@ export async function onProfileScraped(
       update: {
         name: rawData.name,
         headline: rawData.headline || null,
+        about: rawData.about || null,
         company: currentCompany,
         location: rawData.location || null,
         rawData: rawData as any,
@@ -43,6 +44,7 @@ export async function onProfileScraped(
         profileUrlId: urlId,
         name: rawData.name,
         headline: rawData.headline || null,
+        about: rawData.about || null,
         company: currentCompany,
         location: rawData.location || null,
         rawData: rawData as any,

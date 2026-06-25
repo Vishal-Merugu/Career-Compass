@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "prepare": "husky"
+    "prepare": "husky",
+    "build:prod": "cd server && npm install && npm run db:generate && npm run build",
+    "build:ext": "node build-ext.js"
   },
   "repository": {
     "type": "git",

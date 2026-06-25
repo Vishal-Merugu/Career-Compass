@@ -140,15 +140,8 @@ router.get('/jobs/:id/status', requireAuthOrApiKey, async (req, res, next) => {
           },
         },
       },
-      select: {
-        isQualified: true,
-        email: true,
-        profile: {
-          select: {
-            name: true,
-            headline: true,
-          },
-        },
+      include: {
+        profile: true,
       },
     });
 
@@ -175,6 +168,8 @@ router.get('/jobs/:id/status', requireAuthOrApiKey, async (req, res, next) => {
       decisions: decisions.map((d) => ({
         name: d.profile.name,
         headline: d.profile.headline,
+        title: d.profile.headline,
+        about: d.profile.about,
         isQualified: d.isQualified,
         email: d.email,
       })),

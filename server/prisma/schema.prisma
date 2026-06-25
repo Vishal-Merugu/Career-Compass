@@ -200,6 +200,7 @@ model ScrapedProfile {
   rawData      Json
   name         String
   headline     String?           @db.Text
+  about        String?           @db.Text
   company      String?
   location     String?
   scrapedAt    DateTime          @default(now())
