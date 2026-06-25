@@ -52,6 +52,50 @@ async function getConfig() {
 
 async function setConfig(config) {
   await storageSet('config', config);
+
+  if (config.apiKey && config.backendUrl) {
+    const { apiKey, backendUrl, isServerRun, ...remoteConfig } = config;
+    try {
+      await fetch(`${config.backendUrl}/api/config`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': config.apiKey,
+        },
+        body: JSON.stringify(remoteConfig),
+      });
+    } catch (e) {
+      console.error('[Storage] Failed to push config to server:', e);
+    }
+  }
+}
+
+async function syncConfigFromServer() {
+  const localConfig = (await storageGet('config')) || {};
+  const finalConfig = { ...DEFAULT_CONFIG, ...localConfig };
+  finalConfig.backendUrl = DEFAULT_CONFIG.backendUrl;
+
+  if (!finalConfig.apiKey || !finalConfig.backendUrl) return finalConfig;
+
+  try {
+    const res = await fetch(`${finalConfig.backendUrl}/api/config`, {
+      headers: { 'X-API-Key': finalConfig.apiKey },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.config) {
+        const mergedConfig = { ...finalConfig, ...data.config };
+        mergedConfig.apiKey = finalConfig.apiKey;
+        mergedConfig.backendUrl = finalConfig.backendUrl;
+
+        await storageSet('config', mergedConfig);
+        return mergedConfig;
+      }
+    }
+  } catch (err) {
+    console.error('[Storage] Failed to sync config from server:', err);
+  }
+  return finalConfig;
 }
 
 // ─── Backend API Sync Helper ─────────────────────────────────────
@@ -185,6 +229,7 @@ if (typeof globalThis !== 'undefined') {
     DEFAULT_CONFIG,
     getConfig,
     setConfig,
+    syncConfigFromServer,
     apiSync,
     getProcessedCompanies,
     addProcessedCompany,

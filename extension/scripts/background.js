@@ -86,6 +86,12 @@ async function handleMessage(message, sendResponse) {
         break;
       }
 
+      case 'syncConfig': {
+        const config = await syncConfigFromServer();
+        sendResponse({ ok: true, config });
+        break;
+      }
+
       case 'getHistory': {
         const log = await getOutreachLog();
         sendResponse({ ok: true, log });

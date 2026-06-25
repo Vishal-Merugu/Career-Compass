@@ -20,6 +20,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('loginOverlay').style.display = 'flex';
   } else {
     document.getElementById('loginOverlay').style.display = 'none';
+    await sendMessage({ action: 'syncConfig' });
     await loadConfig();
     await refreshState();
     startPolling();
@@ -1020,6 +1021,7 @@ async function handleAuth(action) {
     document.getElementById('loginOverlay').style.display = 'none';
 
     // Initialize the app now that we have an API key
+    await sendMessage({ action: 'syncConfig' });
     await loadConfig();
     await refreshState();
     startPolling();
