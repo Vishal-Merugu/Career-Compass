@@ -4,7 +4,6 @@ import { evaluateProfile } from '../shared/llmClient.js';
 import { IParsedProfile } from '../shared/parsers.js';
 import { PrismaStorageAdapter } from '../services/storage.adapter.js';
 import { checkJobStopCondition } from '../orchestrator/stopCondition.js';
-import { findEmail } from '../services/emailFinder.js';
 import { ConnectionRegistry } from '../ws-gateway/connectionRegistry.js';
 import { getIo } from '../ws-gateway/index.js';
 

@@ -21,7 +21,6 @@ import {
   startTimeoutSweeper,
   stopTimeoutSweeper,
 } from './orchestrator/timeoutSweeper.js';
-import { BrowserManager } from './lib/browserManager.js';
 
 const app = express();
 
