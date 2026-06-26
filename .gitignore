@@ -7,3 +7,4 @@ node_modules/
 .chrome-profile/
 *cookies.json
 dist/
+.env.*

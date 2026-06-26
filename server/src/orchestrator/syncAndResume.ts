@@ -4,6 +4,7 @@ import { sendFetchUrlBatch } from '../ws-gateway/commands/sendFetchUrlBatch.js';
 import { sendStopLimitReached } from '../ws-gateway/commands/sendStopLimitReached.js';
 import { sendSessionCheck } from '../ws-gateway/commands/sendSessionCheck.js';
 import { dispatchNext } from './dispatchNext.js';
+import { telegramBotService } from '../telegram/bot.js';
 
 export async function syncAndResumeJob(jobId: string): Promise<void> {
   logger.info(
@@ -18,6 +19,7 @@ export async function syncAndResumeJobImpl(jobId: string): Promise<void> {
   // 1. Fetch job state
   const job = await prisma.searchJob.findUnique({
     where: { id: jobId },
+    include: { user: true },
   });
 
   if (!job) {
@@ -39,6 +41,25 @@ export async function syncAndResumeJobImpl(jobId: string): Promise<void> {
       logger.info(
         `[Orchestrator] Job ${jobId} initialized. Starting URL collection.`,
       );
+
+      if (job.user?.telegramId) {
+        const company = searchParams.companyUrl
+          ? ` for ${searchParams.companyUrl.split('/').filter(Boolean).pop()?.toUpperCase()}`
+          : '';
+        telegramBotService
+          .sendMessage(
+            job.user!.telegramId!,
+            `🚀 *Workflow Started${company}*\nTarget: ${job.limitRequested} qualified profiles`,
+            { parse_mode: 'Markdown' },
+          )
+          .catch((err) =>
+            logger.error(
+              err,
+              'Failed to send telegram workflow start notification',
+            ),
+          );
+      }
+
       await sendFetchUrlBatch(jobId, job.currentBatchNumber, batchSize);
       break;
 

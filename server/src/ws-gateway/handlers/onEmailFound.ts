@@ -54,27 +54,17 @@ export async function onEmailFound(socket: Socket, payload: EmailFoundPayload) {
         },
       });
 
-      // Update daily stats for the newly found email
       if (email) {
         const job = await prisma.searchJob.findUnique({
           where: { id: jobId },
           include: { user: true },
         });
         if (job) {
-          const storageAdapter = new PrismaStorageAdapter(job.userId);
-          await storageAdapter.updateDailyStats({
-            targetsFound: 0,
-            emailsFound: 1,
-          });
-          await storageAdapter.addActivityLog(
-            `Found missing email for previously qualified profile: ${scrapedProfile.name} -> ${email}`,
-          );
-
           if (job.user?.telegramId) {
             telegramBotService
               .sendMessage(
                 job.user.telegramId,
-                `✉️ *Email Found:* ${scrapedProfile.name}`,
+                `✉️ *Email Found:* ${scrapedProfile.name} (via ${source || 'mailmeteor'})`,
                 { parse_mode: 'Markdown' },
               )
               .catch((err) =>
@@ -86,6 +76,9 @@ export async function onEmailFound(socket: Socket, payload: EmailFoundPayload) {
           }
         }
       }
+
+      // Finalize the decision (updates stats and triggers orchestrator)
+      await worker.finalizeQualifiedDecision(jobId, scrapedProfile.id, email);
     } else {
       await prisma.profileDecision.create({
         data: {
@@ -115,7 +108,7 @@ export async function onEmailFound(socket: Socket, payload: EmailFoundPayload) {
           telegramBotService
             .sendMessage(
               job.user.telegramId,
-              `✉️ *Email Found:* ${scrapedProfile.name}`,
+              `✉️ *Email Found:* ${scrapedProfile.name} (via ${source || 'mailmeteor'})`,
               { parse_mode: 'Markdown' },
             )
             .catch((err) =>

@@ -54,7 +54,8 @@ export async function onEmailFindFailed(
           emailSource: `failed: ${error.slice(0, 100)}`,
         },
       });
-      // No need to finalize, it was already finalized.
+      // Finalize decision (updates stats and triggers orchestrator)
+      await worker.finalizeQualifiedDecision(jobId, scrapedProfile.id, null);
     } else {
       await prisma.profileDecision.create({
         data: {

@@ -3,6 +3,7 @@ import { logger } from '../lib/logger.js';
 import { sendStopLimitReached } from '../ws-gateway/commands/sendStopLimitReached.js';
 import { sendFetchUrlBatch } from '../ws-gateway/commands/sendFetchUrlBatch.js';
 import { dispatchNext } from './dispatchNext.js';
+import { telegramBotService } from '../telegram/bot.js';
 
 export async function checkJobStopCondition(jobId: string): Promise<boolean> {
   logger.info(`[Orchestrator] Checking stop condition for Job ${jobId}`);
@@ -42,10 +43,29 @@ export async function checkJobStopCondition(jobId: string): Promise<boolean> {
     });
 
     // Update job status to completed
-    await prisma.searchJob.update({
+    const updatedJob = await prisma.searchJob.update({
       where: { id: jobId },
       data: { status: 'completed' },
+      include: { user: true },
     });
+
+    if (updatedJob.user?.telegramId) {
+      const company =
+        updatedJob.searchParams &&
+        typeof updatedJob.searchParams === 'object' &&
+        'companyUrl' in (updatedJob.searchParams as any)
+          ? ` for ${(updatedJob.searchParams as any).companyUrl.split('/').filter(Boolean).pop()?.toUpperCase()}`
+          : '';
+      telegramBotService
+        .sendMessage(
+          updatedJob.user!.telegramId!,
+          `✅ *Workflow Completed${company}*\nQualified: ${updatedJob.qualifiedCount}/${updatedJob.limitRequested}`,
+          { parse_mode: 'Markdown' },
+        )
+        .catch((err) =>
+          logger.error(err, 'Failed to send telegram completion notification'),
+        );
+    }
 
     // Notify extension to stop
     await sendStopLimitReached(jobId);
