@@ -33,7 +33,7 @@ export class VoyagerClient implements IVoyagerClient {
         clientVersion: '1.13.42510',
         mpVersion: '1.13.42510',
         osName: 'web',
-        timezoneOffset: 5.5,
+        timezoneOffset: -(new Date().getTimezoneOffset() / 60),
         deviceFormFactor: 'DESKTOP',
         mpName: 'voyager-web',
       }),

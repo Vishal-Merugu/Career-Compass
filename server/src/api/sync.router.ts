@@ -1,9 +1,64 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import { requireAuthOrApiKey } from '../auth/middleware.js';
 import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
+import { ValidationError } from '../errors/AppError.js';
 
 const router = Router();
+
+// ─── Pagination Helpers ───────────────────────────────────────────
+const MAX_PAGE_SIZE = 200;
+const DEFAULT_PAGE_SIZE = 20;
+
+function parsePagination(query: any): { skip: number; take: number } {
+  const skip = Math.max(0, parseInt(query.skip, 10) || 0);
+  const take = Math.min(
+    MAX_PAGE_SIZE,
+    Math.max(1, parseInt(query.take, 10) || DEFAULT_PAGE_SIZE),
+  );
+  return { skip, take };
+}
+
+// ─── Zod Schemas ──────────────────────────────────────────────────
+
+const incrementStatsSchema = z.object({
+  key: z.enum([
+    'connectionsSent',
+    'jobsFound',
+    'companiesProcessed',
+    'targetsFound',
+    'emailsFound',
+  ]),
+  amount: z.number().int().positive().default(1),
+});
+
+const activityLogSchema = z.object({
+  message: z.string().min(1, 'Message is required').max(2000),
+  level: z.enum(['info', 'warn', 'error']).default('info'),
+});
+
+const outreachLogSchema = z.object({
+  profileId: z.string().optional(),
+  action: z.string().min(1, 'Action is required'),
+  status: z.string().min(1, 'Status is required'),
+  message: z.string().max(5000).optional(),
+  details: z.record(z.any()).optional(),
+});
+
+const companyUpsertSchema = z.object({
+  companyId: z.string().min(1, 'companyId is required'),
+  name: z.string().default('Unknown'),
+});
+
+const workflowRunSchema = z.object({
+  workflowType: z.string().min(1, 'workflowType is required'),
+  status: z.string().default('completed'),
+  params: z.record(z.any()).default({}),
+  results: z.array(z.any()).default([]),
+  errors: z.array(z.any()).default([]),
+  startedAt: z.string().datetime().optional(),
+});
 
 // Helpers
 function getTodayKey() {
@@ -40,18 +95,7 @@ router.post(
     try {
       const userId = req.user!.id;
       const date = getTodayKey();
-      const { key, amount = 1 } = req.body;
-
-      const validKeys = [
-        'connectionsSent',
-        'jobsFound',
-        'companiesProcessed',
-        'targetsFound',
-        'emailsFound',
-      ];
-      if (!validKeys.includes(key)) {
-        return res.status(400).json({ ok: false, error: 'Invalid stat key' });
-      }
+      const { key, amount } = incrementStatsSchema.parse(req.body);
 
       const stats = await prisma.dailyStats.upsert({
         where: { userId_date: { userId, date } },
@@ -61,6 +105,11 @@ router.post(
 
       res.status(200).json({ ok: true, stats });
     } catch (err) {
+      if (err instanceof z.ZodError) {
+        return next(
+          new ValidationError('Invalid increment parameters', err.errors),
+        );
+      }
       next(err);
     }
   },
@@ -98,13 +147,19 @@ router.post(
 router.get('/activity-log', requireAuthOrApiKey, async (req, res, next) => {
   try {
     const userId = req.user!.id;
-    const logs = await prisma.activityLog.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' },
-      take: 20, // Return last 20 for dashboard
-    });
+    const { skip, take } = parsePagination(req.query);
 
-    res.status(200).json({ ok: true, logs });
+    const [logs, total] = await Promise.all([
+      prisma.activityLog.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take,
+      }),
+      prisma.activityLog.count({ where: { userId } }),
+    ]);
+
+    res.status(200).json({ ok: true, logs, pagination: { skip, take, total } });
   } catch (err) {
     next(err);
   }
@@ -113,7 +168,7 @@ router.get('/activity-log', requireAuthOrApiKey, async (req, res, next) => {
 router.post('/activity-log', requireAuthOrApiKey, async (req, res, next) => {
   try {
     const userId = req.user!.id;
-    const { message, level = 'info' } = req.body;
+    const { message, level } = activityLogSchema.parse(req.body);
 
     const log = await prisma.activityLog.create({
       data: { userId, message, level },
@@ -121,6 +176,11 @@ router.post('/activity-log', requireAuthOrApiKey, async (req, res, next) => {
 
     res.status(201).json({ ok: true, log });
   } catch (err) {
+    if (err instanceof z.ZodError) {
+      return next(
+        new ValidationError('Invalid activity log input', err.errors),
+      );
+    }
     next(err);
   }
 });
@@ -130,13 +190,19 @@ router.post('/activity-log', requireAuthOrApiKey, async (req, res, next) => {
 router.get('/outreach-log', requireAuthOrApiKey, async (req, res, next) => {
   try {
     const userId = req.user!.id;
-    const logs = await prisma.outreachLog.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' },
-      take: 500,
-    });
+    const { skip, take } = parsePagination(req.query);
 
-    res.status(200).json({ ok: true, logs });
+    const [logs, total] = await Promise.all([
+      prisma.outreachLog.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take,
+      }),
+      prisma.outreachLog.count({ where: { userId } }),
+    ]);
+
+    res.status(200).json({ ok: true, logs, pagination: { skip, take, total } });
   } catch (err) {
     next(err);
   }
@@ -145,21 +211,27 @@ router.get('/outreach-log', requireAuthOrApiKey, async (req, res, next) => {
 router.post('/outreach-log', requireAuthOrApiKey, async (req, res, next) => {
   try {
     const userId = req.user!.id;
-    const { profileId, action, status, message, details } = req.body;
+    const { profileId, action, status, message, details } =
+      outreachLogSchema.parse(req.body);
 
     const log = await prisma.outreachLog.create({
       data: {
         userId,
         profileId,
-        action: action || 'unknown',
-        status: status || 'unknown',
+        action,
+        status,
         message,
-        details,
+        details: details || {},
       },
     });
 
     res.status(201).json({ ok: true, log });
   } catch (err) {
+    if (err instanceof z.ZodError) {
+      return next(
+        new ValidationError('Invalid outreach log input', err.errors),
+      );
+    }
     next(err);
   }
 });
@@ -183,7 +255,7 @@ router.get('/companies', requireAuthOrApiKey, async (req, res, next) => {
 
 router.post('/companies', requireAuthOrApiKey, async (req, res, next) => {
   try {
-    const { companyId, name = 'Unknown' } = req.body;
+    const { companyId, name } = companyUpsertSchema.parse(req.body);
 
     const company = await prisma.company.upsert({
       where: { companyId },
@@ -193,6 +265,9 @@ router.post('/companies', requireAuthOrApiKey, async (req, res, next) => {
 
     res.status(201).json({ ok: true, company });
   } catch (err) {
+    if (err instanceof z.ZodError) {
+      return next(new ValidationError('Invalid company data', err.errors));
+    }
     next(err);
   }
 });
@@ -205,9 +280,13 @@ router.get(
   async (req, res, next) => {
     try {
       const userId = req.user!.id;
+      const { skip, take } = parsePagination(req.query);
+
       const logs = await prisma.outreachLog.findMany({
         where: { userId, action: 'connection_sent' },
         select: { profileId: true },
+        skip,
+        take,
       });
       const profileIds = [
         ...new Set(logs.map((l) => l.profileId).filter(Boolean)),
@@ -225,6 +304,7 @@ router.get('/workflow-history', requireAuthOrApiKey, async (req, res, next) => {
   try {
     const userId = req.user!.id;
     const { type } = req.query;
+    const { skip, take } = parsePagination(req.query);
 
     if (!type || typeof type !== 'string') {
       return res
@@ -232,10 +312,15 @@ router.get('/workflow-history', requireAuthOrApiKey, async (req, res, next) => {
         .json({ ok: false, error: 'type query parameter is required' });
     }
 
-    const runs = await prisma.workflowRun.findMany({
-      where: { userId, workflowType: type },
-      orderBy: { createdAt: 'desc' },
-    });
+    const [runs, total] = await Promise.all([
+      prisma.workflowRun.findMany({
+        where: { userId, workflowType: type },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take,
+      }),
+      prisma.workflowRun.count({ where: { userId, workflowType: type } }),
+    ]);
 
     // Format output to match old local storage history format for easy UI parsing
     const history = runs.map((run) => ({
@@ -249,7 +334,9 @@ router.get('/workflow-history', requireAuthOrApiKey, async (req, res, next) => {
       status: run.status,
     }));
 
-    res.status(200).json({ ok: true, history });
+    res
+      .status(200)
+      .json({ ok: true, history, pagination: { skip, take, total } });
   } catch (err) {
     next(err);
   }
@@ -259,16 +346,16 @@ router.post('/workflow-run', requireAuthOrApiKey, async (req, res, next) => {
   try {
     const userId = req.user!.id;
     const { workflowType, status, params, results, errors, startedAt } =
-      req.body;
+      workflowRunSchema.parse(req.body);
 
     const run = await prisma.workflowRun.create({
       data: {
         userId,
         workflowType,
-        status: status || 'completed',
-        params: params || {},
-        results: results || [],
-        errors: errors || [],
+        status,
+        params,
+        results,
+        errors,
         startedAt: startedAt ? new Date(startedAt) : new Date(),
         completedAt: new Date(),
       },
@@ -276,6 +363,9 @@ router.post('/workflow-run', requireAuthOrApiKey, async (req, res, next) => {
 
     res.status(201).json({ ok: true, run });
   } catch (err) {
+    if (err instanceof z.ZodError) {
+      return next(new ValidationError('Invalid workflow run data', err.errors));
+    }
     next(err);
   }
 });

@@ -2,6 +2,16 @@ import { Request, Response, NextFunction } from 'express';
 
 const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
 
+// Prune expired entries every 60 seconds to prevent unbounded memory growth
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of rateLimitMap) {
+    if (now > entry.resetTime) {
+      rateLimitMap.delete(ip);
+    }
+  }
+}, 60_000).unref(); // .unref() ensures this doesn't keep the process alive on shutdown
+
 /**
  * Standard, lightweight in-memory rate limiter middleware.
  */

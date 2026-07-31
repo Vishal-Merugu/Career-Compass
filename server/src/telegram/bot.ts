@@ -9,6 +9,7 @@ import { dispatchNext } from '../orchestrator/dispatchNext.js';
 
 class TelegramBotService {
   private bot: TelegramBot | null = null;
+  private userStates: Map<number, string> = new Map();
 
   /**
    * Initialize and trigger polling for the Telegram bot
@@ -179,6 +180,9 @@ class TelegramBotService {
 
       const helpText = `*CareerCompass Commands* 🧭
 
+*Interactive Menu*
+/menu - Open the interactive control panel
+
 *Monitoring*
 /status - Current status, LinkedIn session health, and daily stats
 /stats - Today's processed metrics
@@ -198,6 +202,186 @@ class TelegramBotService {
 /config - View current campaign settings`;
 
       await this.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
+    });
+
+    // Menu command /menu
+    this.bot.onText(/\/menu/, async (msg) => {
+      const chatId = msg.chat.id;
+      const user = await getUserByTelegram(chatId);
+      if (!user) {
+        await this.sendMessage(
+          chatId,
+          '🔒 Please link your account first using `/link <api_key>`',
+        );
+        return;
+      }
+
+      const opts = {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '🔍 Start People Finder', callback_data: 'START_FINDER' },
+              {
+                text: '🤝 Run Mass Connector',
+                callback_data: 'MASS_CONNECTOR',
+              },
+            ],
+            [
+              { text: '📋 View Logs', callback_data: 'VIEW_LOGS' },
+              { text: '📊 Check Status', callback_data: 'CHECK_STATUS' },
+            ],
+          ],
+        },
+      };
+
+      await this.sendMessage(
+        chatId,
+        'Select an action from the menu below:',
+        opts,
+      );
+    });
+
+    // Callback queries for inline keyboard
+    this.bot.on('callback_query', async (query) => {
+      if (!query.message) return;
+      const chatId = query.message.chat.id;
+      const data = query.data;
+      const user = await getUserByTelegram(chatId);
+
+      if (!user) {
+        await this.sendMessage(
+          chatId,
+          '🔒 Please link your account first using `/link <api_key>`',
+        );
+        return;
+      }
+
+      if (this.bot) await this.bot.answerCallbackQuery(query.id);
+
+      switch (data) {
+        case 'START_FINDER':
+          this.userStates.set(chatId, 'WAITING_FOR_FINDER_URL');
+          await this.sendMessage(
+            chatId,
+            'Please paste the LinkedIn Company URL or Job URL to start the People Finder.\n\nType /cancel to abort.',
+          );
+          break;
+        case 'MASS_CONNECTOR':
+          await this.sendMessage(
+            chatId,
+            '🤝 Mass Connector selected (Pending input configuration).',
+          );
+          break;
+        case 'VIEW_LOGS':
+          await this.sendMessage(chatId, 'Fetching logs...');
+          const logs = await prisma.activityLog.findMany({
+            where: { userId: user.id },
+            orderBy: { createdAt: 'desc' },
+            take: 10,
+          });
+          if (logs.length === 0) {
+            await this.sendMessage(chatId, 'No activity logs found.');
+          } else {
+            const logText = logs
+              .reverse()
+              .map(
+                (log) =>
+                  `[${new Date(log.createdAt).toLocaleTimeString()}] ${log.message}`,
+              )
+              .join('\n');
+            await this.sendMessage(
+              chatId,
+              `*Recent Activity Logs* 📋\n\n\`\`\`\n${logText}\n\`\`\``,
+              { parse_mode: 'Markdown' },
+            );
+          }
+          break;
+        case 'CHECK_STATUS':
+          await this.sendMessage(
+            chatId,
+            'To view status, please send the /status command.',
+          );
+          break;
+      }
+    });
+
+    // Cancel state command /cancel
+    this.bot.onText(/\/cancel/, async (msg) => {
+      const chatId = msg.chat.id;
+      if (this.userStates.has(chatId)) {
+        this.userStates.delete(chatId);
+        await this.sendMessage(chatId, '✅ Action cancelled.');
+      }
+    });
+
+    // Regular message listener for state management
+    this.bot.on('message', async (msg) => {
+      if (msg.text && msg.text.startsWith('/')) return; // Ignore commands
+
+      const chatId = msg.chat.id;
+      const user = await getUserByTelegram(chatId);
+      if (!user) return;
+
+      const state = this.userStates.get(chatId);
+
+      if (
+        state === 'WAITING_FOR_FINDER_URL' ||
+        (msg.text &&
+          msg.text.match(
+            /(https:\/\/(www\.)?linkedin\.com\/(company|in|jobs)\/[^\s]+)/,
+          ))
+      ) {
+        const urlMatch = msg.text?.match(
+          /(https:\/\/(www\.)?linkedin\.com\/(company|in|jobs)\/[^\s]+)/,
+        );
+        const linkedinUrl = urlMatch ? urlMatch[0] : msg.text?.trim();
+
+        if (!linkedinUrl || !linkedinUrl.includes('linkedin.com')) {
+          if (state === 'WAITING_FOR_FINDER_URL') {
+            await this.sendMessage(
+              chatId,
+              '❌ That does not look like a valid LinkedIn URL. Try again or type /cancel.',
+            );
+          }
+          return;
+        }
+
+        this.userStates.delete(chatId);
+        await this.sendMessage(
+          chatId,
+          `⏳ Received LinkedIn URL. Queuing job for your extension to process...`,
+        );
+
+        try {
+          const newJob = await prisma.searchJob.create({
+            data: {
+              userId: user.id,
+              status: 'initializing',
+              limitRequested: 100,
+              searchParams: { url: linkedinUrl },
+            },
+          });
+
+          const io = getIo();
+          // Emit to the user's specific room if they are connected
+          io.to(`user_${user.id}`).emit('START_NEW_JOB', {
+            jobId: newJob.id,
+            url: linkedinUrl,
+          });
+
+          await this.sendMessage(
+            chatId,
+            `✅ Command sent! Job ID: \`${newJob.id.slice(0, 8)}\`\nYour extension will pick this up.`,
+            { parse_mode: 'Markdown' },
+          );
+        } catch (error: any) {
+          logger.error(error, 'Failed to queue job from Telegram');
+          await this.sendMessage(
+            chatId,
+            `❌ Failed to start job: ${error.message}`,
+          );
+        }
+      }
     });
 
     // Status query command /status
