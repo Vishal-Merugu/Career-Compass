@@ -308,6 +308,38 @@ console.log(
 let socket = null;
 let heartbeatInterval = null;
 let isPaused = false;
+// Set whenever the socket is torn down (user hit Stop, limit reached, or a
+// fresh connect is about to replace this one). Any in-flight loop must check
+// this on every iteration — merely nulling out `socket` does NOT stop a
+// running `handleFetchUrlBatch` loop, since its emits just silently become
+// no-ops while the loop itself keeps calling LinkedIn's API.
+let isStopped = false;
+
+/**
+ * Stop or pause whatever automation is currently running — the
+ * socket-driven job pipeline (People Finder) and/or a registered
+ * BaseWorkflow (Mass Connector). Called by rateLimiter's validateSession()
+ * and by the resetAllData handler.
+ */
+async function setPipelineStatus(status) {
+  if (status === 'idle') {
+    disconnectSocket();
+    if (
+      typeof WorkflowRegistry !== 'undefined' &&
+      WorkflowRegistry.getActiveId()
+    ) {
+      await WorkflowRegistry.cancel();
+    }
+  } else if (status === 'paused') {
+    isPaused = true;
+    if (
+      typeof WorkflowRegistry !== 'undefined' &&
+      WorkflowRegistry.getActiveId()
+    ) {
+      await WorkflowRegistry.pause();
+    }
+  }
+}
 
 async function connectSocket(jobId, userId) {
   try {
@@ -330,6 +362,7 @@ async function connectSocket(jobId, userId) {
       `[Background] Connecting socket to ${backendUrl} for Job ${jobId}...`,
     );
     isPaused = false;
+    isStopped = false;
 
     socket = io(backendUrl, {
       query: { jobId, userId, apiKey },
@@ -438,6 +471,9 @@ async function connectSocket(jobId, userId) {
 }
 
 function disconnectSocket() {
+  // Signal any in-flight loop (e.g. handleFetchUrlBatch) to stop calling
+  // LinkedIn's API on its next iteration check, not just on its next emit.
+  isStopped = true;
   if (heartbeatInterval) {
     clearInterval(heartbeatInterval);
     heartbeatInterval = null;
@@ -516,7 +552,7 @@ async function handleFetchUrlBatch(jobId, batchNumber, targetCount, searchUrl) {
   let start = (batchNumber - 1) * targetCount;
   let hasMore = true;
 
-  while (count < targetCount && hasMore && !isPaused) {
+  while (count < targetCount && hasMore && !isPaused && !isStopped) {
     console.log(
       `[Background] Fetching search page (start: ${start}) for company ${companyId}`,
     );
@@ -540,7 +576,7 @@ async function handleFetchUrlBatch(jobId, batchNumber, targetCount, searchUrl) {
     }
 
     for (const person of people) {
-      if (count >= targetCount || isPaused) break;
+      if (count >= targetCount || isPaused || isStopped) break;
 
       const profileUrl = `https://www.linkedin.com/in/${person.profileId}/`;
       if (socket) {

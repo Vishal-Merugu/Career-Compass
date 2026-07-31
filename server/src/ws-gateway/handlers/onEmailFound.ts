@@ -7,7 +7,11 @@ import { PrismaStorageAdapter } from '../../services/storage.adapter.js';
 import { telegramBotService } from '../../telegram/bot.js';
 
 export async function onEmailFound(socket: Socket, payload: EmailFoundPayload) {
-  const { jobId, urlId, email, source } = payload;
+  // Trust the server-verified jobId from the authenticated socket, never the
+  // client-supplied payload — a socket can only act on the job it was
+  // authenticated for.
+  const jobId = socket.data.jobId as string;
+  const { urlId, email, source } = payload;
 
   logger.info(
     `[SocketHandler] EMAIL_FOUND received for Job: ${jobId}, URL ID: ${urlId} -> ${email}`,
@@ -25,14 +29,15 @@ export async function onEmailFound(socket: Socket, payload: EmailFoundPayload) {
   }
 
   try {
-    // 2. Fetch the scraped profile associated with the urlId
-    const scrapedProfile = await prisma.scrapedProfile.findUnique({
-      where: { profileUrlId: urlId },
+    // 2. Fetch the scraped profile associated with the urlId, scoped to this
+    // socket's own job so one tenant cannot mutate another tenant's data.
+    const scrapedProfile = await prisma.scrapedProfile.findFirst({
+      where: { profileUrlId: urlId, profileUrl: { jobId } },
     });
 
     if (!scrapedProfile) {
       logger.error(
-        `[SocketHandler] Scraped profile not found for URL ID ${urlId}. Cannot save email.`,
+        `[SocketHandler] Scraped profile not found for URL ID ${urlId} on Job ${jobId}. Cannot save email.`,
       );
       return;
     }

@@ -159,7 +159,11 @@ export async function sendChatCompletion(
         method: 'POST',
         headers,
         body,
-        // signal: AbortSignal.timeout(120000), // 120 seconds for slow local LLMs
+        // Bounds every outbound LLM call. Without this, a user-supplied
+        // llmUrl pointed at a non-responding host hangs forever and — since
+        // QualificationWorker processes one job at a time server-wide —
+        // stalls qualification for every tenant, not just the caller.
+        signal: AbortSignal.timeout(120000), // 120 seconds for slow local LLMs
       });
 
       if (!res.ok) {

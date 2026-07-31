@@ -6,6 +6,7 @@ import bcrypt from 'bcryptjs';
 import { env } from './config/env.js';
 import { logger } from './lib/logger.js';
 import { prisma } from './lib/prisma.js';
+import { corsOriginCheck } from './lib/corsPolicy.js';
 import { requestLogger } from './middleware/requestLogger.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { authRouter } from './auth/routes.js';
@@ -24,30 +25,8 @@ import {
 
 const app = express();
 
-const allowedOrigins = process.env.CORS_ORIGIN
-  ? process.env.CORS_ORIGIN.split(',')
-  : ['*'];
-
-const corsOptions = {
-  origin: (
-    origin: string | undefined,
-    callback: (err: Error | null, allow?: boolean) => void,
-  ) => {
-    if (
-      !origin ||
-      allowedOrigins.includes('*') ||
-      allowedOrigins.includes(origin) ||
-      origin.startsWith('chrome-extension://')
-    ) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-};
-
 app.use(helmet());
-app.use(cors(corsOptions));
+app.use(cors({ origin: corsOriginCheck }));
 app.use(compression());
 app.use(express.json());
 app.use(requestLogger);

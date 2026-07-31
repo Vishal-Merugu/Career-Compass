@@ -168,17 +168,37 @@ async function generateConnectionMessage(
   userContext,
   config,
 ) {
+  // Must match server/src/shared/llmClient.ts's LINKEDIN_MAX_CHARS — LinkedIn
+  // rejects connection notes over 200 characters, and the two clients
+  // previously disagreed (extension allowed up to 295), risking silent
+  // rejection depending on which path generated the message.
+  const LINKEDIN_MAX_CHARS = 200;
+  const MAX_ATTEMPTS = 3;
+
+  function sanitizeMessage(raw) {
+    return raw
+      .replace(/\\n/g, ' ')
+      .replace(/\r?\n/g, ' ')
+      .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
+        String.fromCharCode(parseInt(hex, 16)),
+      )
+      .replace(/^["']+|["']+$/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+
   const systemPrompt = `You are a professional networking assistant. Generate a SHORT, personalized LinkedIn connection request message.
 
 RULES:
-- TARGET LENGTH: 200-240 characters. 
-- ABSOLUTE MAXIMUM: 295 characters (LinkedIn will reject anything longer).
+- HARD LIMIT: The message MUST be under ${LINKEDIN_MAX_CHARS} characters (including spaces). This is a strict technical limit — messages over ${LINKEDIN_MAX_CHARS} characters will be REJECTED by LinkedIn's API.
+- TARGET LENGTH: 120-180 characters (including spaces).
+- Write the ENTIRE message as a SINGLE paragraph. Do NOT use line breaks, newlines, or "Best regards" sign-offs.
 - Be genuine and specific — reference the person's role, company, or background.
 - Mention you're looking for working student / internship opportunities.
 - Be warm but professional.
 - Do NOT use emojis.
 - Do NOT use generic phrases like "I'd love to connect".
-- Output ONLY the message text, nothing else.`;
+- Output ONLY the message text, nothing else. No quotes, no newlines.`;
 
   const userPrompt = `Write a connection message for this person:
 Name: ${profileData.firstName} ${profileData.lastName}
@@ -190,17 +210,48 @@ ${profileData.experiences?.length ? `Current Role: ${profileData.experiences[0]?
 ${userContext ? `About me (the sender): ${userContext}` : ''}`;
 
   try {
-    let message = await sendChatCompletion(
-      config,
-      systemPrompt,
-      userPrompt,
-      250,
-      0.7,
-    );
-    message = message.replace(/^["']|["']$/g, '');
+    let message = '';
 
-    if (message.length > 295) {
-      message = message.slice(0, 292) + '...';
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const temperature = attempt === 1 ? 0.7 : attempt === 2 ? 0.5 : 0.3;
+
+      let promptToUse = systemPrompt;
+      if (attempt > 1) {
+        promptToUse += `\n\nWARNING: Your previous attempt was ${message.length} characters which EXCEEDS the ${LINKEDIN_MAX_CHARS} character limit. You MUST write a SHORTER message this time. Aim for 150 characters. NO line breaks.`;
+      }
+
+      const raw = await sendChatCompletion(
+        config,
+        promptToUse,
+        userPrompt,
+        300,
+        temperature,
+      );
+      message = sanitizeMessage(raw);
+
+      if (message.length <= LINKEDIN_MAX_CHARS) {
+        return { ok: true, message };
+      }
+
+      console.warn(
+        `[LLM] Message too long (${message.length} chars), attempt ${attempt}/${MAX_ATTEMPTS}`,
+      );
+    }
+
+    if (message.length > LINKEDIN_MAX_CHARS) {
+      const truncated = message.slice(0, LINKEDIN_MAX_CHARS);
+      const lastSentenceEnd = Math.max(
+        truncated.lastIndexOf('.'),
+        truncated.lastIndexOf('!'),
+        truncated.lastIndexOf('?'),
+      );
+      message =
+        lastSentenceEnd > 100
+          ? truncated.slice(0, lastSentenceEnd + 1)
+          : truncated.slice(0, LINKEDIN_MAX_CHARS - 3) + '...';
+      console.warn(
+        `[LLM] Hard-truncated message to ${message.length} chars after ${MAX_ATTEMPTS} failed attempts`,
+      );
     }
 
     return { ok: true, message };

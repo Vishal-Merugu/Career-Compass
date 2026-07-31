@@ -8,7 +8,11 @@ export async function onEmailFindFailed(
   socket: Socket,
   payload: EmailFindFailedPayload,
 ) {
-  const { jobId, urlId, error } = payload;
+  // Trust the server-verified jobId from the authenticated socket, never the
+  // client-supplied payload — a socket can only act on the job it was
+  // authenticated for.
+  const jobId = socket.data.jobId as string;
+  const { urlId, error } = payload;
 
   logger.warn(
     `[SocketHandler] EMAIL_FIND_FAILED received for Job: ${jobId}, URL ID: ${urlId} -> Reason: ${error}`,
@@ -26,14 +30,15 @@ export async function onEmailFindFailed(
   }
 
   try {
-    // 2. Fetch the scraped profile associated with the urlId
-    const scrapedProfile = await prisma.scrapedProfile.findUnique({
-      where: { profileUrlId: urlId },
+    // 2. Fetch the scraped profile associated with the urlId, scoped to this
+    // socket's own job so one tenant cannot mutate another tenant's data.
+    const scrapedProfile = await prisma.scrapedProfile.findFirst({
+      where: { profileUrlId: urlId, profileUrl: { jobId } },
     });
 
     if (!scrapedProfile) {
       logger.error(
-        `[SocketHandler] Scraped profile not found for URL ID ${urlId}. Cannot update decision.`,
+        `[SocketHandler] Scraped profile not found for URL ID ${urlId} on Job ${jobId}. Cannot update decision.`,
       );
       return;
     }

@@ -1,6 +1,7 @@
 import { createClient } from 'redis';
 import { env } from '../config/env.js';
 import { logger } from './logger.js';
+import { encrypt, decrypt } from './crypto.js';
 
 export const redisClient = createClient({
   url: env.REDIS_URL,
@@ -49,6 +50,10 @@ export function getRedisStatus(): boolean {
 
 /**
  * Retrieve cached LinkedIn session cookies for a given user.
+ *
+ * The li_at cookie grants full LinkedIn account access, so it's stored
+ * encrypted at rest (AES-256-GCM, see lib/crypto.ts) — Redis itself never
+ * sees the plaintext value.
  */
 export async function getCachedSession(
   userId: string,
@@ -57,7 +62,7 @@ export async function getCachedSession(
   try {
     const data = await redisClient.get(`linkedin:session:${userId}`);
     if (!data) return null;
-    return JSON.parse(data);
+    return JSON.parse(decrypt(data));
   } catch (err) {
     logger.error(
       { err, userId },
@@ -69,6 +74,7 @@ export async function getCachedSession(
 
 /**
  * Cache LinkedIn session cookies for a user with a TTL (e.g., 24 hours).
+ * Encrypted at rest — see getCachedSession() above.
  */
 export async function setCachedSession(
   userId: string,
@@ -76,15 +82,14 @@ export async function setCachedSession(
 ): Promise<void> {
   if (!isRedisConnected) return;
   try {
-    // Cache for 24 hours (86400 seconds)
-    await redisClient.setEx(
-      `linkedin:session:${userId}`,
-      86400,
+    const encrypted = encrypt(
       JSON.stringify({
         csrfToken: session.csrfToken,
         liAtCookie: session.liAtCookie,
       }),
     );
+    // Cache for 24 hours (86400 seconds)
+    await redisClient.setEx(`linkedin:session:${userId}`, 86400, encrypted);
   } catch (err) {
     logger.error({ err, userId }, 'Failed to cache LinkedIn session in Redis');
   }

@@ -2,6 +2,7 @@ import { Server, Socket } from 'socket.io';
 import type { Server as HttpServer } from 'http';
 import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
+import { corsOriginCheck } from '../lib/corsPolicy.js';
 import { ClientEvents } from './events.js';
 import { ConnectionRegistry } from './connectionRegistry.js';
 import { socketAuthMiddleware } from './middleware/auth.js';
@@ -38,24 +39,9 @@ export function getIo(): Server {
 export function initWsGateway(httpServer: HttpServer): Server {
   logger.info('[WsGateway] Initializing Socket.io server...');
 
-  const allowedOrigins = process.env.CORS_ORIGIN
-    ? process.env.CORS_ORIGIN.split(',')
-    : ['*'];
-
   const io = new Server(httpServer, {
     cors: {
-      origin: (origin, callback) => {
-        if (
-          !origin ||
-          allowedOrigins.includes('*') ||
-          allowedOrigins.includes(origin) ||
-          origin.startsWith('chrome-extension://')
-        ) {
-          callback(null, true);
-        } else {
-          callback(new Error('Not allowed by CORS'));
-        }
-      },
+      origin: corsOriginCheck,
       methods: ['GET', 'POST'],
     },
     pingInterval: 10000,

@@ -19,11 +19,12 @@ function apiDelay() {
 }
 
 /**
- * Delay between connection-send requests.
- * TESTING VALUE: 5–10 s. PRODUCTION VALUE: 120_000–300_000 (2–5 min).
+ * Delay between connection-send requests (2–5 min, human-like pacing).
+ * This is the single most important throttle in the extension — sending
+ * connection requests any faster is what gets LinkedIn accounts restricted.
  */
 function connectionDelay() {
-  return delay(5 * 1000, 10 * 1000);
+  return delay(120 * 1000, 300 * 1000);
 }
 
 /**
