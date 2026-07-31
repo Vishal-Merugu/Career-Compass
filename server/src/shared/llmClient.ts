@@ -159,11 +159,15 @@ export async function sendChatCompletion(
         method: 'POST',
         headers,
         body,
-        // Bounds every outbound LLM call. Without this, a user-supplied
-        // llmUrl pointed at a non-responding host hangs forever and — since
+        // Disabled: local LLMs on modest hardware can legitimately take
+        // several minutes per call, so a short timeout kills real requests.
+        // Known tradeoff this reopens: a user-supplied llmUrl pointed at a
+        // non-responding host now hangs forever, and — since
         // QualificationWorker processes one job at a time server-wide —
-        // stalls qualification for every tenant, not just the caller.
-        signal: AbortSignal.timeout(120000), // 120 seconds for slow local LLMs
+        // stalls qualification for every tenant, not just the caller. If
+        // that becomes a problem, prefer a generous bound (e.g. 10-15 min)
+        // over no bound at all: signal: AbortSignal.timeout(600000).
+        // signal: AbortSignal.timeout(120000),
       });
 
       if (!res.ok) {
