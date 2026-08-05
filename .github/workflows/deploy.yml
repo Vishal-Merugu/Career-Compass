@@ -1,0 +1,87 @@
+name: Deploy to VM
+
+# The VM is reachable only over the university VPN, so GitHub's hosted runners
+# can never connect to it. A self-hosted runner on the VM solves this by
+# dialling out to GitHub instead — no inbound route needed.
+#
+# Trigger is deliberately limited to pushes on main and manual dispatch.
+# This repo is PUBLIC, and `pull_request` from a fork would let anyone run
+# arbitrary code on the VM. Do not add a pull_request trigger while it is.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: vm-deploy
+  cancel-in-progress: false
+
+env:
+  # Pin the compose project name. It otherwise defaults to the directory name,
+  # and the runner's workspace ("Career-Compass") differs from the old manual
+  # clone ("CareerCompass") — which would silently create a SECOND set of
+  # volumes and hand you an empty database.
+  COMPOSE_PROJECT_NAME: careercompass
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out the pushed commit
+        uses: actions/checkout@v4
+
+      - name: Restore gitignored config
+        run: |
+          set -euo pipefail
+          # Lives in the runner user's home on the VM — gitignored files that
+          # must survive across deploys.
+          CFG="$HOME/cc-config"
+          if [ ! -f "$CFG/.env" ]; then
+            echo "::error::Missing $CFG/.env on the VM."
+            echo "Create it once: mkdir -p $CFG && cp your .env and linkedin-cookies.json there"
+            exit 1
+          fi
+          cp "$CFG/.env" .env
+          if [ -f "$CFG/linkedin-cookies.json" ]; then
+            cp "$CFG/linkedin-cookies.json" server/linkedin-cookies.json
+            echo "Restored .env and linkedin-cookies.json"
+          else
+            echo "::warning::No linkedin-cookies.json in $CFG — the probe will not run"
+          fi
+
+      - name: Build server image
+        # No --no-cache: Docker already invalidates layers when files change,
+        # and rebuilding from scratch every deploy was pure wasted minutes.
+        run: docker compose build server
+
+      - name: Start containers
+        run: docker compose up -d
+
+      - name: Sync database schema
+        run: docker compose exec -T server npx prisma db push --accept-data-loss
+
+      - name: Verify the server is actually up
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 12); do
+            if docker compose ps --status running --services | grep -qx server; then
+              echo "server is running"
+              exit 0
+            fi
+            echo "waiting for server... ($i/12)"
+            sleep 5
+          done
+          echo "::error::server container did not come up"
+          docker compose logs --tail 60 server
+          exit 1
+
+      - name: Report
+        if: always()
+        run: |
+          echo "### Deploy ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          docker compose ps >> $GITHUB_STEP_SUMMARY 2>&1 || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
