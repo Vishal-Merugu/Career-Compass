@@ -97,6 +97,7 @@ npm run db:studio
 npm run probe:linkedin -- --quick      # ~4 min,  6 read-only Voyager calls
 npm run probe:linkedin -- --sustained  # ~35 min, 10 calls  (default)
 npm run probe:linkedin -- --long       # ~4 h,   14 calls
+npm run probe:linkedin -- --egress-only # egress IP/ASN only, no cookies, no calls
 npm run cookies:import   # build linkedin-cookies.json from a copied cURL
 
 # client (run from client/)

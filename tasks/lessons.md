@@ -67,6 +67,33 @@ and forces a needless re-extraction.
 Carrying it to another host makes an otherwise-fine session look wrong.
 Cloudflare mints a fresh one on its own.
 
+### A probe result without an egress IP proves nothing
+
+Record the egress IP/ASN for every run, and never swallow the lookup error.
+
+**Why:** the first `--long` run (2026-08-05, 14/14 clean across a 3.5 h cold-gap
+phase) shipped a report with `"egress": {}`. `reportEgress()` had a bare
+`catch {}` that printed "(lookup failed — continuing)" and threw the reason
+away. The cause turned out to be that `ipinfo.io` (hosted on GCP) is
+unreachable from the `cc-server` container, while LinkedIn and other providers
+are fine — a 10-second diagnosis that stayed invisible for the whole run. The
+run "passed", but nothing could be attributed to a network, which was the only
+question it existed to answer.
+
+**Apply:** `reportEgress()` now walks `EGRESS_PROVIDERS` — ipinfo.io, ipapi.is,
+ifconfig.co, geojs.io — on different networks on purpose, each with a 6 s
+budget, and prints every failure reason when all four fail. Check a network
+with `npm run probe:linkedin -- --egress-only` _before_ starting a long run.
+
+**Two runs from different places are not comparable.** The laptop leaves via a
+consumer ISP (AS8881); the VM leaves via the university NAT gateway (AS680 DFN),
+which is _not_ a datacenter ASN. So the clean `--long` result says nothing about
+whether a cloud-hosted worker would survive — that is a different IP reputation
+and still untested. Run `--egress-only` in both places and compare the ASN.
+
+Deliberately no IPs here: this file is versioned and the repo is public, which
+is the same reason `probe-report.json` is gitignored.
+
 ---
 
 ## Pacing and limits

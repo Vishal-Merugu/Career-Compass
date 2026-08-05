@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   CookieJar,
   classifyFatal,
+  pick,
+  normaliseEgress,
   type CookieExport,
 } from './scratch-voyager-probe.js';
 
@@ -237,5 +239,83 @@ describe('classifyFatal', () => {
 
   it('recognises the 999 bot wall', () => {
     expect(classifyFatal(999, '', '', [])).toBe('HTTP 999 — LinkedIn bot wall');
+  });
+});
+
+describe('egress field extraction', () => {
+  it('reads nested paths without assuming a shape', () => {
+    const body = { asn: { org: 'AS680 DFN' }, location: { city: 'Erlangen' } };
+    expect(pick(body, 'asn.org')).toBe('AS680 DFN');
+    expect(pick(body, 'location.city')).toBe('Erlangen');
+  });
+
+  it('returns undefined for missing paths instead of throwing', () => {
+    expect(pick({ ip: '1.2.3.4' }, 'asn.org')).toBeUndefined();
+    expect(pick(null, 'ip')).toBeUndefined();
+    expect(pick('not an object', 'ip')).toBeUndefined();
+    expect(pick({ asn: 'a string' }, 'asn.org')).toBeUndefined();
+  });
+
+  it('stringifies numbers and booleans — providers disagree on both', () => {
+    expect(pick({ asn: 680 }, 'asn')).toBe('680');
+    expect(pick({ is_datacenter: false }, 'is_datacenter')).toBe('false');
+  });
+
+  it('treats blank strings as absent', () => {
+    expect(pick({ city: '   ' }, 'city')).toBeUndefined();
+  });
+});
+
+describe('egress normalisation', () => {
+  it('keeps a result with a plausible IP and tags its source', () => {
+    expect(
+      normaliseEgress('ipinfo.io', {
+        ip: '192.44.85.26',
+        city: 'Erlangen',
+        country: 'DE',
+        org: 'AS680 DFN',
+      }),
+    ).toEqual({
+      ip: '192.44.85.26',
+      source: 'ipinfo.io',
+      city: 'Erlangen',
+      country: 'DE',
+      org: 'AS680 DFN',
+    });
+  });
+
+  it('accepts IPv6', () => {
+    expect(normaliseEgress('geojs.io', { ip: '2a06:98c1:3109::1' })?.ip).toBe(
+      '2a06:98c1:3109::1',
+    );
+  });
+
+  // An error page or captive portal answers 200 with JSON that has no IP.
+  // Recording `ip: "?"` from that is worse than recording nothing: the report
+  // would claim the run was attributed when it wasn't.
+  it('rejects a response with no usable IP', () => {
+    expect(normaliseEgress('ipapi.co', {})).toBeNull();
+    expect(normaliseEgress('ipapi.co', { ip: 'RateLimited' })).toBeNull();
+    expect(normaliseEgress('ipapi.co', { ip: '' })).toBeNull();
+  });
+
+  it('omits fields the provider did not supply rather than filling in "?"', () => {
+    const info = normaliseEgress('ifconfig.co', {
+      ip: '1.2.3.4',
+      org: 'AS1 X',
+    });
+    expect(info).toEqual({
+      ip: '1.2.3.4',
+      source: 'ifconfig.co',
+      org: 'AS1 X',
+    });
+    expect(info).not.toHaveProperty('city');
+  });
+
+  it('carries the datacenter flag through — it is the risk-relevant field', () => {
+    expect(
+      normaliseEgress('ipapi.is', { ip: '1.2.3.4', datacenter: 'true' })
+        ?.datacenter,
+    ).toBe('true');
   });
 });
