@@ -49,7 +49,22 @@ const corsOptions = {
   },
 };
 
-app.use(helmet());
+// `upgrade-insecure-requests` is in helmet's default CSP, and it tells the
+// browser to rewrite every http:// subresource URL to https://. The VM serves
+// the dashboard as plain HTTP on a private IP with nothing listening on 443, so
+// leaving it on would upgrade the page's own /assets/*.js and render a blank
+// page. Dropped unless HTTPS is actually terminated in front of us — the same
+// condition that gates the `secure` cookie flag in auth/cookies.ts.
+const isHttps = process.env.HTTPS === 'true';
+
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: isHttps ? {} : { upgradeInsecureRequests: null },
+    },
+  }),
+);
 app.use(cors(corsOptions));
 app.use(compression());
 app.use(express.json());
@@ -70,7 +85,7 @@ app.get('/health', (req, res) => {
 });
 
 // ─── Web dashboard ───────────────────────────────────────────────
-// Built by `server/web` (Vite) into `server/public`, served same-origin so the
+// Built by `client/` (Vite) into `server/public`, served same-origin so the
 // client calls /api/... as a relative path — no CORS, no mixed content.
 // See docs/adr/0004-same-origin-web-dashboard.md.
 //
@@ -87,7 +102,7 @@ if (existsSync(webRoot)) {
   logger.info(`🖥️  Serving web dashboard from ${webRoot}`);
 } else {
   logger.warn(
-    `No web build at ${webRoot} — API only. Run \`npm run build:web\` to generate it.`,
+    `No web build at ${webRoot} — API only. Run \`npm run build:client\` to generate it.`,
   );
 }
 

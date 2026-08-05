@@ -55,15 +55,17 @@ server**, reachable only from the university network.
 
 - **Stack:** Vite + React + TypeScript, Mantine for UI, React Router for routing,
   TanStack Query for server state.
-- **Location:** source at `server/web/`, build output at `server/public/`
+- **Location:** source at `client/`, build output at `server/public/`
   (gitignored), served by `express.static` with an SPA fallback registered
   _after_ the API routers.
 - **Auth:** the browser session uses a **httpOnly cookie**. `requireAuth` gains a
   cookie branch in addition to `Authorization: Bearer`. The extension is
   untouched and keeps using `x-api-key`.
 - **Docker:** a multi-stage build compiles the web app and copies only `public/`
-  into the runtime image. Build context stays `./server`, so `docker-compose.yml`
-  and the deploy workflow do not change.
+  into the runtime image. The build context moves from `./server` to the repo
+  root (`context: .` + `dockerfile: server/Dockerfile`) so both `client/` and
+  `server/` are reachable from one build. `deploy.yml` is unaffected — it runs
+  `docker compose`, which reads the context from the compose file.
 - **Scope split:** the extension keeps only what needs a live browser session —
   the `cookies` permission, `voyagerClient`, `parsers`, the workflow runners,
   `rateLimiter`/`resilience` and `background.js`. Its popup shrinks to a status
@@ -92,6 +94,16 @@ server**, reachable only from the university network.
 
 ## Alternatives considered
 
+- **Source at `server/web/` instead of a root `client/`.** This is what the ADR
+  originally specified, on the grounds that the Docker build context was
+  `./server` and a root-level app would force changes to `docker-compose.yml`
+  and the Dockerfile. Reversed during implementation: that was a convenience
+  argument, not a design one, and it bought it by making `server/` mean "the
+  deployable" in one breath and "the backend" in the next. The actual cost of
+  the move was a build context change, path prefixes in the Dockerfile, and a
+  root `.dockerignore` — which the root context needed anyway, or `node_modules/`
+  and `extension/` would be uploaded on every build. Top-level `client/`,
+  `server/`, `extension/` now say what each thing is.
 - **Public hosting via Cloudflare Tunnel.** Rejected _for now_, not on principle.
   It works — dials out, so no inbound route is needed, exactly the trick the
   self-hosted runner already uses — but it needs a domain, and it puts a system

@@ -4,13 +4,15 @@ Read `tasks/lessons.md` at session start. Do not repeat mistakes documented ther
 
 ## What this is
 
-LinkedIn job-discovery + outreach automation. Two halves:
+LinkedIn job-discovery + outreach automation. Three parts:
 
 - **`server/`** — TypeScript/Express/Prisma/Postgres/Redis backend. The **brain**.
 - **`extension/`** — Manifest V3 Chrome extension, plain JS, no build step. The **hands**.
+- **`client/`** — Vite/React/TypeScript/Mantine web dashboard. The **face**.
 
-They talk over Socket.io. The server decides what to do; the extension does it
-inside the user's logged-in browser tab.
+Server and extension talk over Socket.io. The server decides what to do; the
+extension does it inside the user's logged-in browser tab. The dashboard is a
+plain REST client of the server.
 
 **Git root is `CareerCompass/`, not the parent `linkedin-automationV2/`.**
 
@@ -45,6 +47,44 @@ payload), a `commands/` or `handlers/` file, and the extension counterpart in
 `server/src/shared/*` is duplicated by hand in `extension/services/*`. Change one,
 check the other.
 
+## The dashboard
+
+```
+client/src/
+  api/client.ts      fetch wrapper — credentials:'include', throws ApiError
+  api/types.ts       hand-written response shapes; keep in sync with schema.prisma
+  auth/              AuthProvider (GET /api/auth/me is the only session source)
+  pages/             one file per screen
+  components/        DashboardLayout (Mantine AppShell)
+```
+
+Vite builds `client/` → **`server/public/`** (gitignored), which
+`express.static` serves **same-origin**. So the client calls `/api/...` as a
+relative path: no CORS, no mixed content, no API base URL to configure.
+`npm run dev:client` proxies `/api` → `localhost:3000` to keep dev same-origin too.
+
+**Two credentials, deliberately separate:**
+
+| Surface   | Credential                   | Set by                       |
+| --------- | ---------------------------- | ---------------------------- |
+| dashboard | httpOnly cookie `cc_session` | `server/src/auth/cookies.ts` |
+| extension | `x-api-key` header           | unchanged, never touch it    |
+
+`extractSessionToken()` in `server/src/auth/middleware.ts` accepts
+`Authorization: Bearer` **or** the cookie, header wins. Login returns a `token`
+in the body; the dashboard ignores it — the cookie is the session.
+
+Two traps, both already paid for:
+
+- The SPA fallback in `server/src/index.ts` **must** keep excluding `/api` and
+  `/health`. Without that, a typo'd API URL returns `index.html` with a 200 and
+  surfaces as a JSON parse error nowhere near the cause.
+- `upgrade-insecure-requests` is stripped from helmet's CSP unless `HTTPS=true`.
+  The VM serves plain HTTP with nothing on 443, so leaving it on makes the
+  browser upgrade the page's own `/assets/*.js` and render a blank page.
+
+See `docs/adr/0004-same-origin-web-dashboard.md`.
+
 ## Commands
 
 ```bash
@@ -59,12 +99,22 @@ npm run probe:linkedin -- --sustained  # ~35 min, 10 calls  (default)
 npm run probe:linkedin -- --long       # ~4 h,   14 calls
 npm run cookies:import   # build linkedin-cookies.json from a copied cURL
 
+# client (run from client/)
+npm run dev              # vite dev server, proxies /api → localhost:3000
+npm run build            # tsc --noEmit && vite → server/public/
+
 # repo root
 npm test                 # vitest (delegates to server/)
-npm run typecheck        # tsc --noEmit
+npm run typecheck        # tsc --noEmit, server + client
 npm run lint             # eslint (extension JS)
+npm run dev:client       # client dev server
+npm run build:client     # client → server/public/
 npm run build:ext        # → extension.zip, backend URL baked in from .env.production
 ```
+
+**Three npm projects, three lockfiles**: root (eslint/prettier/husky tooling),
+`server/`, `client/`. `npm ci` in one does not install the others — `pr.yml`
+installs all three.
 
 Extension has no build step for dev — load `extension/` unpacked via
 `chrome://extensions` → Developer mode → Load unpacked. `build:ext` is only for
@@ -89,6 +139,11 @@ Rules:
   plus an empty database.
 - Gitignored runtime files live in `~/cc-config/` on the VM (`.env`,
   `linkedin-cookies.json`) and are copied into the workspace on each deploy.
+- The image's **build context is the repo root**, not `./server` — it bundles the
+  backend and the dashboard built from `client/`. Set in `docker-compose.yml`
+  (`context: .`, `dockerfile: server/Dockerfile`). The root `.dockerignore` is
+  what keeps `node_modules/` and `extension/` out of that context; without it
+  every build uploads them and any extension edit busts the image cache.
 - `~/CareerCompass` and the root `deploy.sh` on the VM are vestigial.
 - SSH to the VM needs the VPN (`ubuntu@172.17.64.118`, key
   `~/Documents/Temp/fresh-key.pem`). Deploying does not.

@@ -1,0 +1,41 @@
+# The server image builds from the REPO ROOT (docker-compose.yml sets
+# `context: .`) because it bundles both the backend and the dashboard built
+# from client/. Everything the build does not need is excluded here — not just
+# to keep the context small, but so editing the extension or the docs does not
+# invalidate the image's build cache.
+
+# Dependencies and build output — reinstalled/rebuilt inside the image
+**/node_modules/
+**/dist/
+dist-extension/
+extension.zip
+
+# Produced by stage 1 of server/Dockerfile. A stale local copy must never be
+# shipped instead of a freshly built one.
+server/public/
+
+# Not part of the deployable
+extension/
+docs/
+tasks/
+assets/
+deploy/
+.github/
+.husky/
+.git/
+.gitignore
+.vscode/
+.idea/
+README.md
+
+# Secrets and runtime artefacts. Env is supplied by docker-compose, not baked in;
+# the cookie jar is a live LinkedIn session and the probe report holds the
+# egress IP.
+.env
+.env.*
+*cookies.json
+**/probe-report.json
+.chrome-profile/
+
+*.log
+.DS_Store

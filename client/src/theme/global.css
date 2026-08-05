@@ -1,0 +1,80 @@
+/* Base layer. Anything here applies everywhere; component-specific styling
+   belongs in that component's *.module.css. */
+
+body {
+  background-color: var(--app-bg);
+  color: var(--app-ink);
+  /* Inter's contextual alternates and disambiguation forms — a free upgrade in
+     legibility at small sizes, which is most of a dashboard. */
+  font-feature-settings:
+    'cv02' 1,
+    'cv03' 1,
+    'cv04' 1,
+    'cv11' 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Optical correction: large text set at default tracking looks loose. */
+h1,
+h2,
+h3 {
+  letter-spacing: -0.018em;
+}
+
+/* Columns of numbers must align vertically. Standalone display numbers must
+   NOT — tabular figures give every digit the width of a zero, which reads
+   loose at large sizes. Hence the opt-in class rather than a global rule. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background-color: var(--mantine-color-brand-2);
+  color: var(--mantine-color-black);
+}
+
+[data-mantine-color-scheme='dark'] ::selection {
+  background-color: var(--mantine-color-brand-8);
+  color: var(--mantine-color-white);
+}
+
+/* Slim, recessive scrollbars — the default chrome is visually loud next to
+   hairline borders. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--app-border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--app-border-strong);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+
+/* Keyboard focus only — a visible ring on every mouse click looks broken. */
+:focus-visible {
+  outline: 2px solid var(--mantine-color-brand-5);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

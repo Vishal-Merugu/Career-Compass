@@ -1,0 +1,109 @@
+.panel {
+  background-color: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--mantine-radius-lg);
+  overflow: hidden;
+}
+
+/* The scroll container for both axes. It has to be THIS element and not the
+   page: `position: sticky` resolves against the nearest scrolling ancestor, and
+   `.panel`'s `overflow: hidden` already makes it one — so a page-level sticky
+   header would silently never stick. Capping the height here gives the sticky
+   `thead` something real to stick to. */
+.tableWrap {
+  overflow: auto;
+  max-height: min(calc(100vh - 380px), 680px);
+}
+
+/* Fixed layout, explicit column widths. With `auto`, the headline column takes
+   whatever it wants and squeezes company and location into ellipses while there
+   is still empty space to the right. */
+.table {
+  min-width: 940px;
+  table-layout: fixed;
+}
+
+.table thead th {
+  background-color: var(--app-surface-sunken);
+  border-bottom: 1px solid var(--app-border) !important;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--app-ink-muted);
+  padding-top: 11px;
+  padding-bottom: 11px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.table tbody td {
+  border-bottom: 1px solid var(--app-border) !important;
+  vertical-align: middle;
+}
+
+/* No border under the final row — the panel's own edge closes it. */
+.table tbody tr:last-of-type td {
+  border-bottom: none !important;
+}
+
+.table tbody tr {
+  transition: background-color 110ms ease;
+}
+
+.table tbody tr:hover {
+  background-color: var(--app-surface-sunken);
+}
+
+/* Links inside the table stay ink-coloured at rest and only pick up the accent
+   on hover. Colouring 24 names and 24 emails indigo makes the email column the
+   loudest thing on the page and buries the person, who is the actual subject. */
+.nameLink,
+.emailLink {
+  color: var(--app-ink);
+  text-decoration: none;
+  transition: color 110ms ease;
+}
+
+.nameLink:hover .nameText,
+.emailLink:hover {
+  color: var(--mantine-color-brand-6);
+}
+
+.nameText {
+  transition: color 110ms ease;
+}
+
+.emailLink {
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 12.5px;
+  color: var(--app-ink-muted);
+}
+
+/* The external-link glyph is noise on 200 rows at rest; it appears on the row
+   the pointer is actually on. */
+.linkIcon {
+  opacity: 0;
+  transition: opacity 110ms ease;
+  flex-shrink: 0;
+}
+
+.table tbody tr:hover .linkIcon {
+  opacity: 0.45;
+}
+
+.toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--app-border);
+  background-color: var(--app-surface);
+}
+
+.dash {
+  color: var(--app-ink-muted);
+  opacity: 0.5;
+}
