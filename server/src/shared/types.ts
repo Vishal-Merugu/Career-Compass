@@ -53,12 +53,7 @@ export interface IDailyStats {
 
 export interface IWorkflowRunState {
   status:
-    | 'idle'
-    | 'running'
-    | 'paused'
-    | 'completed'
-    | 'stoppedHalfway'
-    | 'error';
+    'idle' | 'running' | 'paused' | 'completed' | 'stoppedHalfway' | 'error';
   progress: {
     current: number;
     total: number;
