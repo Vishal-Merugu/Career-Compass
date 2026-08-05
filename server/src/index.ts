@@ -2,7 +2,10 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
+import cookieParser from 'cookie-parser';
 import bcrypt from 'bcryptjs';
+import { resolve, join } from 'node:path';
+import { existsSync } from 'node:fs';
 import { env } from './config/env.js';
 import { logger } from './lib/logger.js';
 import { prisma } from './lib/prisma.js';
@@ -50,6 +53,8 @@ app.use(helmet());
 app.use(cors(corsOptions));
 app.use(compression());
 app.use(express.json());
+// Reads the httpOnly session cookie the dashboard authenticates with.
+app.use(cookieParser());
 app.use(requestLogger);
 
 // Mount API routers
@@ -63,6 +68,28 @@ app.use('/api', jobsRouter);
 app.get('/health', (req, res) => {
   res.status(200).json({ ok: true, timestamp: new Date() });
 });
+
+// ─── Web dashboard ───────────────────────────────────────────────
+// Built by `server/web` (Vite) into `server/public`, served same-origin so the
+// client calls /api/... as a relative path — no CORS, no mixed content.
+// See docs/adr/0004-same-origin-web-dashboard.md.
+//
+// Registered AFTER the API routers so /api/* always wins, and the SPA fallback
+// deliberately excludes /api and /health so a wrong URL there still 404s as JSON
+// instead of silently returning the dashboard's index.html.
+const webRoot = resolve(process.cwd(), 'public');
+
+if (existsSync(webRoot)) {
+  app.use(express.static(webRoot));
+  app.get(/^(?!\/(api|health)(\/|$)).*/, (_req, res) => {
+    res.sendFile(join(webRoot, 'index.html'));
+  });
+  logger.info(`🖥️  Serving web dashboard from ${webRoot}`);
+} else {
+  logger.warn(
+    `No web build at ${webRoot} — API only. Run \`npm run build:web\` to generate it.`,
+  );
+}
 
 // Mount error handler middleware
 app.use(errorHandler);

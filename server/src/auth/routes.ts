@@ -5,6 +5,7 @@ import { prisma } from '../lib/prisma.js';
 import { signToken } from './jwt.js';
 import { ValidationError, AuthError } from '../errors/AppError.js';
 import { requireAuth } from './middleware.js';
+import { setSessionCookie, clearSessionCookie } from './cookies.js';
 import { rateLimiter } from '../middleware/rateLimiter.js';
 
 const router = Router();
@@ -42,7 +43,10 @@ router.post(
       });
 
       const token = signToken({ userId: user.id, email: user.email });
+      setSessionCookie(res, token);
 
+      // `token` stays in the body for API clients; the dashboard ignores it and
+      // relies on the httpOnly cookie set above.
       res.status(201).json({
         ok: true,
         token,
@@ -77,6 +81,7 @@ router.post(
       }
 
       const token = signToken({ userId: user.id, email: user.email });
+      setSessionCookie(res, token);
 
       res.status(200).json({
         ok: true,
@@ -98,6 +103,15 @@ router.get('/me', requireAuth, (req, res) => {
     ok: true,
     user: req.user,
   });
+});
+
+/**
+ * Drop the browser session. The extension's API key is unaffected — it is a
+ * separate credential and is not issued or revoked here.
+ */
+router.post('/logout', (_req, res) => {
+  clearSessionCookie(res);
+  res.status(200).json({ ok: true });
 });
 
 export const authRouter = router;
