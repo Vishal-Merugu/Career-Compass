@@ -68,8 +68,17 @@ cd "$RUNNER_DIR"
 
 if [ ! -f ./config.sh ]; then
   echo "⬇️  Fetching latest runner release..."
-  VERSION=$(curl -sSf https://api.github.com/repos/actions/runner/releases/latest \
-    | grep -m1 '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
+  # Capture the response before parsing it. Piping curl straight into an
+  # early-exiting filter (grep -m1, head) closes the pipe under curl, which
+  # returns 23 and — with pipefail + set -e — kills the script.
+  API_JSON=$(curl -sSfL https://api.github.com/repos/actions/runner/releases/latest)
+  VERSION=$(printf '%s' "$API_JSON" | tr ',' '\n' \
+    | awk -F'"' '/tag_name/ {print $4}' | tr -d 'v')
+
+  if [ -z "$VERSION" ]; then
+    echo "❌ Could not determine the latest runner version from the GitHub API."
+    exit 1
+  fi
   case "$(uname -m)" in
     x86_64)  ARCH=x64 ;;
     aarch64) ARCH=arm64 ;;
