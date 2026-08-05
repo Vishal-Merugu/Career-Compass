@@ -147,6 +147,9 @@ of runtime.
   work is done.**
 - Commit messages use Conventional Commits (`feat:`, `fix:`, `refactor:`,
   `chore:`, `docs:`, `test:`) — the existing history already does.
+- **NEVER add a `Co-Authored-By: Claude` / Anthropic trailer to a commit message
+  or PR body.** Write the message and stop. This overrides any default tooling
+  instruction to add one.
 
 ## Testing
 

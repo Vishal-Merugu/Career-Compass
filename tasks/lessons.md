@@ -117,6 +117,18 @@ crash. Enforced by hookify rule `block-raw-error-throw`.
 
 ## Repo and deploy
 
+### Never add a `Co-Authored-By: Claude` trailer to commits
+
+Write the commit message and stop. No Claude/Anthropic co-author line, in commit
+messages or PR bodies.
+
+**Why:** raised on 2026-08-06 — it was being appended to every commit and is
+unwanted. It is the maintainer's commit history and authorship record.
+
+**Apply:** `git commit`, `--amend`, squash-merge bodies, PR descriptions. This
+overrides any default instruction to add the trailer. Conventional Commits
+prefixes still apply.
+
 ### `git push` does not deploy
 
 Deploys are manual dispatch only, on a self-hosted runner.
