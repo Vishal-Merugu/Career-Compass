@@ -4,14 +4,21 @@ name: Deploy to VM
 # can never connect to it. A self-hosted runner on the VM solves this by
 # dialling out to GitHub instead — no inbound route needed.
 #
-# Trigger is deliberately limited to pushes on main and manual dispatch.
-# This repo is PUBLIC, and `pull_request` from a fork would let anyone run
-# arbitrary code on the VM. Do not add a pull_request trigger while it is.
+# Manual only, on purpose: deploys happen when you decide, not on every push
+# to main. Use the "Run workflow" button in the Actions tab and pick the branch
+# you want live.
+#
+# This also means no automatic trigger exists at all, which matters because the
+# repo is PUBLIC — a `push` or `pull_request` trigger on a self-hosted runner
+# would let fork PRs execute code on the VM. Keep it dispatch-only while public.
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      skip_db_push:
+        description: 'Skip prisma db push (use if the schema is unchanged)'
+        type: boolean
+        default: false
 
 concurrency:
   group: vm-deploy
@@ -61,6 +68,9 @@ jobs:
         run: docker compose up -d
 
       - name: Sync database schema
+        if: ${{ !inputs.skip_db_push }}
+        # --accept-data-loss can drop columns. Skippable for the common case
+        # of a code-only deploy against an unchanged schema.
         run: docker compose exec -T server npx prisma db push --accept-data-loss
 
       - name: Verify the server is actually up
