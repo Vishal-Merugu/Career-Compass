@@ -4,7 +4,14 @@ import globals from 'globals';
 
 export default [
   {
-    ignores: ['node_modules/**'],
+    // `dist/` is build output and `dist-extension/` is a build scratch dir —
+    // both are gitignored, and linting them fails on module-syntax parse errors.
+    ignores: [
+      '**/node_modules/**',
+      '**/dist/**',
+      'dist-extension/**',
+      'extension/services/socket.io.min.js',
+    ],
   },
   {
     files: ['**/*.js'],

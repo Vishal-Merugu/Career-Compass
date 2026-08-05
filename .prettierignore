@@ -1,0 +1,17 @@
+node_modules/
+**/dist/
+dist-extension/
+extension.zip
+
+# Vendored, minified — not ours to format
+extension/services/socket.io.min.js
+
+# Generated
+package-lock.json
+server/package-lock.json
+server/prisma/migrations/
+
+# Secrets / runtime artefacts (gitignored, but keep prettier off them anyway)
+*cookies.json
+probe-report.json
+.env*

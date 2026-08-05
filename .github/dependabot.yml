@@ -1,0 +1,77 @@
+version: 2
+
+# Weekly and grouped. Ungrouped dependabot on a two-lockfile repo produces more
+# PRs than a single maintainer can review, which ends with all of them ignored.
+updates:
+  # Root: tooling only (eslint, prettier, husky, lint-staged).
+  - package-ecosystem: 'npm'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: 'chore'
+    groups:
+      lint-and-format:
+        patterns:
+          - 'eslint'
+          - 'eslint-*'
+          - '@eslint/*'
+          - 'prettier'
+          - 'globals'
+      git-hooks:
+        patterns:
+          - 'husky'
+          - 'lint-staged'
+
+  # The application.
+  - package-ecosystem: 'npm'
+    directory: '/server'
+    schedule:
+      interval: 'weekly'
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'chore'
+    groups:
+      prisma:
+        patterns:
+          - 'prisma'
+          - '@prisma/*'
+      express:
+        patterns:
+          - 'express'
+          - 'cors'
+          - 'helmet'
+          - 'compression'
+          - '@types/express'
+          - '@types/cors'
+          - '@types/compression'
+      socketio:
+        patterns:
+          - 'socket.io'
+          - 'socket.io-client'
+      typescript:
+        patterns:
+          - 'typescript'
+          - 'tsx'
+          - '@types/node'
+      testing:
+        patterns:
+          - 'vitest'
+          - '@vitest/*'
+      types:
+        patterns:
+          - '@types/*'
+      other:
+        patterns:
+          - '*'
+        update-types:
+          - 'minor'
+          - 'patch'
+
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+    commit-message:
+      prefix: 'chore'

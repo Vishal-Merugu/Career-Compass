@@ -48,18 +48,27 @@ The codebase is organized into modular services and workflows:
 
 ## Development
 
-We use `Prettier` and `ESLint` to ensure high code quality.
-
 ```bash
-# Format the codebase
-npm run format
-
-# Run the linter
-npm run lint
-
-# Automatically fix linting errors
-npm run lint:fix
+npm run typecheck     # tsc --noEmit across server/ (including tests)
+npm run test          # vitest
+npm run lint          # eslint
+npm run lint:fix      # eslint --fix
+npm run format        # prettier --write
+npm run format:check  # prettier --check (what CI runs)
 ```
+
+`.github/workflows/pr.yml` runs all of the above on every pull request. Merging
+does **not** deploy — deploys are a manual dispatch of "Deploy to VM" from the
+Actions tab.
+
+## Documentation
+
+| Where                                  | What                                                         |
+| -------------------------------------- | ------------------------------------------------------------ |
+| [`CLAUDE.md`](CLAUDE.md)               | Architecture, commands, LinkedIn/Voyager rules, prohibitions |
+| [`docs/adr/`](docs/adr/)               | Why the big decisions were made                              |
+| [`docs/SOPs/`](docs/SOPs/)             | Definition of done                                           |
+| [`tasks/lessons.md`](tasks/lessons.md) | Corrections and traps, accumulated over time                 |
 
 ## License
 

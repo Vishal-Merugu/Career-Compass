@@ -1,0 +1,19 @@
+# Every PR gets a review request. Single-maintainer repo, so this is mostly a
+# reminder that a review happened at all.
+* @Vishal-Merugu
+
+# Areas where a mistake is expensive and silent. Called out separately so the
+# reason survives, even though the owner is the same.
+
+# Session handling — a mistake here gets the LinkedIn account restricted.
+/server/src/scratch-voyager-probe.ts @Vishal-Merugu
+/server/src/shared/voyagerClient.ts  @Vishal-Merugu
+/server/src/shared/rateLimiter.ts    @Vishal-Merugu
+
+# Deploy config — the runner is self-hosted on the VM and the repo is public.
+/.github/workflows/ @Vishal-Merugu
+/docker-compose.yml @Vishal-Merugu
+/server/Dockerfile  @Vishal-Merugu
+
+# Data model — migrations run against the live database on deploy.
+/server/prisma/ @Vishal-Merugu

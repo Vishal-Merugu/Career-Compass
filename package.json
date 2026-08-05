@@ -4,7 +4,12 @@
   "description": "**AI-powered job discovery and professional outreach engine for LinkedIn.**",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "npm --prefix server run test",
+    "typecheck": "npm --prefix server run typecheck",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "prepare": "husky",
     "build:prod": "cd server && npm install && npm run db:generate && npm run build",
     "build:ext": "node build-ext.js"

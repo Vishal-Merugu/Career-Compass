@@ -14,5 +14,8 @@
     "outDir": "./dist",
     "rootDir": "./src"
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*"],
+  // Tests must not end up in dist/ — this is the config `npm run build` uses.
+  // They are still typechecked, via tsconfig.test.json.
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
 }

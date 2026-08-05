@@ -11,3 +11,11 @@ dist/
 # Probe output (contains egress IP)
 probe-report.json
 **/probe-report.json
+
+# Build artefacts
+extension.zip
+dist-extension/
+
+# Session handoff written by /continue-session — per-session, not shared.
+# tasks/lessons.md IS versioned; only the handoff is ignored.
+tasks/handoff.md

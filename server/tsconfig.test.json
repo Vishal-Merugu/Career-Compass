@@ -1,0 +1,11 @@
+{
+  // Typecheck-only config covering everything the build config skips: the
+  // *.test.ts files and the vitest config/setup at the package root.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src/**/*", "vitest.config.ts", "vitest.setup.ts"],
+  "exclude": ["node_modules", "dist"]
+}

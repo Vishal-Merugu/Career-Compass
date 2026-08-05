@@ -13,6 +13,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const COOKIE_FILE = resolve(process.cwd(), 'linkedin-cookies.json');
 const REPORT_FILE = resolve(process.cwd(), 'probe-report.json');
@@ -21,7 +22,7 @@ const VOYAGER_BASE = 'https://www.linkedin.com/voyager/api';
 // Cookies LinkedIn's risk engine expects to see on a real session.
 const CRITICAL_COOKIES = ['li_at', 'JSESSIONID', 'bcookie', 'lidc'];
 
-interface CookieExport {
+export interface CookieExport {
   cookies: Record<string, string>;
   userAgent: string;
   timezoneOffset?: number;
@@ -50,7 +51,7 @@ const AUTH_COOKIES = ['li_at', 'liap', 'li_a'];
 // read Set-Cookie back. LinkedIn rotates JSESSIONID and lidc constantly, so
 // the csrf-token header went stale and every call 403'd. This jar fixes that.
 
-class CookieJar {
+export class CookieJar {
   private jar: Map<string, string>;
   public userAgent: string;
   public timezoneOffset: number;
@@ -248,7 +249,7 @@ async function buildDispatcher(): Promise<any | undefined> {
   }
 }
 
-function classifyFatal(
+export function classifyFatal(
   status: number,
   location: string,
   body: string,
@@ -594,7 +595,15 @@ it already has the "cookies" permission.
 `);
 }
 
-main().catch((err) => {
-  console.error('\n💥 Probe crashed:', err);
-  process.exit(1);
-});
+// Only run when invoked directly (`npm run probe:linkedin`). CookieJar and
+// classifyFatal are imported by tests, and importing this file must not fire off
+// a four-hour probe against LinkedIn.
+const invokedDirectly =
+  !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  main().catch((err) => {
+    console.error('\n💥 Probe crashed:', err);
+    process.exit(1);
+  });
+}
