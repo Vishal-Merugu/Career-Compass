@@ -16,6 +16,7 @@ import { authRouter } from './auth/routes.js';
 import { configRouter } from './api/config.router.js';
 import { profilesRouter } from './api/profiles.router.js';
 import { campaignsRouter } from './api/campaigns.router.js';
+import { outreachSettingsRouter } from './api/outreachSettings.router.js';
 import { jobsRouter } from './api/jobs.router.js';
 import { syncRouter } from './api/sync.router.js';
 import { SchedulerService } from './services/scheduler.service.js';
@@ -98,6 +99,7 @@ app.use('/api', profilesRouter);
 // Paths inside are already prefixed /campaigns — mounting at /api/campaigns
 // would compose to /api/campaigns/campaigns.
 app.use('/api', campaignsRouter);
+app.use('/api', outreachSettingsRouter);
 app.use('/api/sync', syncRouter);
 app.use('/api', jobsRouter);
 

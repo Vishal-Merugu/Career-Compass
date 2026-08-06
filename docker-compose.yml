@@ -41,6 +41,19 @@ services:
       NODE_ENV: production
       JWT_SECRET: ${JWT_SECRET:-generate_a_random_32_character_long_secret_key}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      # Every variable the server reads must be named here. Compose substitutes
+      # ${...} from the .env in the project directory, but a variable that is
+      # not listed simply never reaches the container — setting it in
+      # ~/cc-config/.env alone does nothing.
+      #
+      # Unset means registration is CLOSED once an account exists, which is the
+      # intended default. See server/src/auth/routes.ts.
+      REGISTRATION_TOKEN: ${REGISTRATION_TOKEN}
+    volumes:
+      # Résumé attachments. Without this they live in the container's writable
+      # layer and every deploy silently discards them, so a campaign started
+      # after a deploy would send with no CV attached.
+      - server_uploads:/app/uploads
     cap_add:
       - SYS_ADMIN
     shm_size: '1gb'
@@ -50,3 +63,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  server_uploads:
