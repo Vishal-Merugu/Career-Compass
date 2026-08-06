@@ -24,7 +24,17 @@ redisClient.on('end', () => {
 
 /**
  * Initialize Redis connection on server startup.
- * Fails gracefully to allow app execution without Redis.
+ *
+ * Redis is REQUIRED. This used to swallow the error and continue in "Postgres
+ * fallback mode", which was survivable while Redis only held cached LinkedIn
+ * sessions. Outreach campaigns are dispatched through a BullMQ queue that has
+ * no equivalent fallback: with Redis down, a campaign accepts a click, reports
+ * success and then never sends anything.
+ *
+ * Rather than have half the server degrade and half fail silently, booting
+ * without Redis is now a hard error. The alternative — a second, in-process
+ * send path used only during an outage — means maintaining two send loops of
+ * which the untested one runs exactly when things are already broken.
  */
 export async function initRedis(): Promise<void> {
   try {
@@ -32,11 +42,11 @@ export async function initRedis(): Promise<void> {
     isRedisConnected = true;
     logger.info('Successfully established connection to Redis');
   } catch (err) {
-    logger.warn(
-      { err },
-      'Failed to connect to Redis. Running in Postgres fallback mode.',
+    logger.fatal(
+      { err, url: env.REDIS_URL },
+      'Could not connect to Redis. The server cannot start without it.',
     );
-    isRedisConnected = false;
+    throw err;
   }
 }
 
