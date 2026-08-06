@@ -12,69 +12,67 @@ import {
   TextInput,
 } from '@mantine/core';
 import { useForm } from '@mantine/form';
-import { IconAlertCircle, IconArrowRight, IconLock } from '@tabler/icons-react';
-import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { IconAlertCircle, IconArrowRight, IconKey } from '@tabler/icons-react';
+import { Link, Navigate, useNavigate } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 import { AuthShell } from '../components/AuthShell';
 
-interface LocationState {
-  from?: string;
-}
-
-export function LoginPage() {
-  const { user, isLoading, login } = useAuth();
+export function RegisterPage() {
+  const { user, isLoading, register } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation();
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const form = useForm({
-    initialValues: { email: '', password: '' },
+    initialValues: { email: '', password: '', registrationToken: '' },
     validate: {
       email: (v) => (/^\S+@\S+\.\S+$/.test(v) ? null : 'Enter a valid email'),
-      // Matches the server's zod schema in `server/src/auth/routes.ts`.
+      // Mirrors the server's zod schema in `server/src/auth/routes.ts`.
       password: (v) =>
         v.length >= 8 ? null : 'Password must be at least 8 characters',
     },
   });
 
-  // Already signed in — nothing to do here.
   if (!isLoading && user) {
     return <Navigate to="/results" replace />;
   }
 
-  const handleSubmit = form.onSubmit(async ({ email, password }) => {
-    setError(null);
-    setSubmitting(true);
-    try {
-      await login(email, password);
-      const from = (location.state as LocationState | null)?.from;
-      navigate(from ?? '/results', { replace: true });
-    } catch (err) {
-      setError(
-        err instanceof ApiError ? err.message : 'Something went wrong. Retry.',
-      );
-    } finally {
-      setSubmitting(false);
-    }
-  });
+  const handleSubmit = form.onSubmit(
+    async ({ email, password, registrationToken }) => {
+      setError(null);
+      setSubmitting(true);
+      try {
+        await register(email, password, registrationToken);
+        // Registering signs you in; the server set the session cookie.
+        navigate('/results', { replace: true });
+      } catch (err) {
+        setError(
+          err instanceof ApiError
+            ? err.message
+            : 'Something went wrong. Retry.',
+        );
+      } finally {
+        setSubmitting(false);
+      }
+    },
+  );
 
   return (
     <AuthShell
-      title="Sign in"
-      subtitle="Use the credentials you registered with the server."
+      title="Create an account"
+      subtitle="Sets up your workspace on this server."
       footnote={
         <>
           <Divider my="xl" />
           <Group gap={9} wrap="nowrap" align="flex-start">
             <Box c="dimmed" mt={2}>
-              <IconLock size={15} />
+              <IconKey size={15} />
             </Box>
             <Text c="dimmed" fz={12.5} lh={1.5}>
-              Your session is held in a secure, httpOnly cookie. The Chrome
-              extension authenticates separately with its own API key — signing
-              out here does not disconnect it.
+              The first account on a new server is created without an invite
+              code. After that, one is required — ask whoever runs this instance
+              for the value of <code>REGISTRATION_TOKEN</code>.
             </Text>
           </Group>
         </>
@@ -102,13 +100,22 @@ export function LoginPage() {
             {...form.getInputProps('email')}
           />
 
-          {/* No placeholder: a row of bullets in an empty password field is
-              indistinguishable from a filled one. */}
           <PasswordInput
             label="Password"
-            autoComplete="current-password"
+            description="At least 8 characters"
+            autoComplete="new-password"
             size="md"
             {...form.getInputProps('password')}
+          />
+
+          {/* Always shown rather than revealed after a failed attempt: a field
+              that appears only once you have been rejected reads as a trick. */}
+          <TextInput
+            label="Invite code"
+            placeholder="Leave blank on a new server"
+            autoComplete="off"
+            size="md"
+            {...form.getInputProps('registrationToken')}
           />
 
           <Button
@@ -119,13 +126,13 @@ export function LoginPage() {
             mt={4}
             rightSection={!submitting && <IconArrowRight size={17} />}
           >
-            Sign in
+            Create account
           </Button>
 
           <Text c="dimmed" fz={13} ta="center">
-            No account yet?{' '}
-            <Anchor component={Link} to="/register" fz={13}>
-              Create one
+            Already have an account?{' '}
+            <Anchor component={Link} to="/login" fz={13}>
+              Sign in
             </Anchor>
           </Text>
         </Stack>

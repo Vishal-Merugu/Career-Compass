@@ -16,6 +16,16 @@ interface AuthState {
   user: User | null;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  /**
+   * `registrationToken` is only required once the server already has an
+   * account; the first registration on an empty database is always allowed.
+   * See `assertMayRegister` in `server/src/auth/routes.ts`.
+   */
+  register: (
+    email: string,
+    password: string,
+    registrationToken?: string,
+  ) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -60,6 +70,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [loginMutation],
   );
 
+  const registerMutation = useMutation({
+    mutationFn: (vars: {
+      email: string;
+      password: string;
+      registrationToken?: string;
+    }) => api.post<LoginResponse>('/api/auth/register', vars),
+    onSuccess: (res) => {
+      // Register signs you straight in — the server sets the same session
+      // cookie it sets on login, so there is no second round trip.
+      queryClient.setQueryData(ME_QUERY_KEY, {
+        ok: true,
+        user: res.user,
+      } satisfies MeResponse);
+    },
+  });
+
+  const register = useCallback(
+    async (email: string, password: string, registrationToken?: string) => {
+      await registerMutation.mutateAsync({
+        email,
+        password,
+        // Send the field only when filled, so an empty box is not mistaken
+        // for an attempt at the wrong token.
+        registrationToken: registrationToken?.trim() || undefined,
+      });
+    },
+    [registerMutation],
+  );
+
   const logout = useCallback(async () => {
     try {
       await api.post('/api/auth/logout');
@@ -82,8 +121,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [queryClient]);
 
   const value = useMemo<AuthState>(
-    () => ({ user: data?.user ?? null, isLoading, login, logout }),
-    [data, isLoading, login, logout],
+    () => ({ user: data?.user ?? null, isLoading, login, register, logout }),
+    [data, isLoading, login, register, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
