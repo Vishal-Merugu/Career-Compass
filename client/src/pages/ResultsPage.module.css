@@ -107,3 +107,13 @@
   color: var(--app-ink-muted);
   opacity: 0.5;
 }
+
+.tableFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--app-border);
+  background-color: var(--app-surface-sunken);
+}

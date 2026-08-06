@@ -28,26 +28,38 @@ import {
 
 const app = express();
 
-const allowedOrigins = process.env.CORS_ORIGIN
-  ? process.env.CORS_ORIGIN.split(',')
-  : ['*'];
+// The dashboard is served same-origin, so it needs no CORS allowance at all.
+// The only legitimate cross-origin caller is the Chrome extension, and every
+// one of its requests carries a `chrome-extension://` origin — it declares no
+// content scripts, so nothing ever calls this API from a linkedin.com page.
+//
+// The default used to be `['*']`, which reflected whatever Origin was sent.
+// That was survivable only because credentials are off (below); it was one
+// line away from letting any website read a signed-in user's data.
+const allowedOrigins =
+  process.env.CORS_ORIGIN?.split(',')
+    .map((o) => o.trim())
+    .filter(Boolean) ?? [];
 
 const corsOptions = {
   origin: (
     origin: string | undefined,
     callback: (err: Error | null, allow?: boolean) => void,
   ) => {
-    if (
+    // No Origin header: same-origin requests, curl, the Telegram bot.
+    const allowed =
       !origin ||
-      allowedOrigins.includes('*') ||
-      allowedOrigins.includes(origin) ||
-      origin.startsWith('chrome-extension://')
-    ) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
+      origin.startsWith('chrome-extension://') ||
+      allowedOrigins.includes(origin);
+    // `false` omits the CORS headers and lets the browser block it. Passing an
+    // Error here instead would surface as an opaque 500 through errorHandler.
+    callback(null, allowed);
   },
+  // Never enable this. The dashboard session is a cookie, and allowing
+  // credentialed cross-origin reads would turn any gap in the origin list above
+  // into account takeover. The extension authenticates with a header, not a
+  // cookie, so it does not need credentialed CORS.
+  credentials: false,
 };
 
 // `upgrade-insecure-requests` is in helmet's default CSP, and it tells the

@@ -50,7 +50,22 @@ export interface MeResponse {
   user: User;
 }
 
+/**
+ * `GET /api/profiles?skip&take`.
+ *
+ * `stats` is computed server-side over the entire result set, not the page in
+ * `profiles`. The headline tiles read from it so they stay correct however many
+ * pages have been loaded.
+ */
 export interface ProfilesResponse {
   ok: true;
   profiles: Profile[];
+  skip: number;
+  take: number;
+  total: number;
+  stats: {
+    total: number;
+    withEmail: number;
+    companies: number;
+  };
 }

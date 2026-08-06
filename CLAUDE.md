@@ -74,6 +74,24 @@ relative path: no CORS, no mixed content, no API base URL to configure.
 `Authorization: Bearer` **or** the cookie, header wins. Login returns a `token`
 in the body; the dashboard ignores it — the cookie is the session.
 
+**Registration is closed once the instance has an owner.** The first account on
+an empty database is always allowed (bootstrap); after that, `POST
+/api/auth/register` requires `REGISTRATION_TOKEN` to be set server-side and
+matched via an `x-registration-token` header or a `registrationToken` body
+field. An existing deployment that never sets it therefore has registration
+closed — that is deliberate, not a misconfiguration.
+
+**`GET /api/auth/me` must never return `apiKey`.** It returns `id`, `email` and
+`telegramId` only. The cookie is httpOnly so page script cannot steal the
+session; echoing `req.user` wholesale would hand back the extension's
+long-lived API key instead, which works from anywhere and never expires.
+
+**`GET /api/profiles` is paginated (`skip`/`take`, max 200) and field-selected.**
+Its `stats` block is computed over the whole result set, not the returned page,
+because the dashboard's headline tiles read from it. Never swap the `select`
+back to `include` — that ships `rawProfileJson` and `about` for every row (1.14 MB
+vs 98 KB on a 250-row set) and auto-publishes any column added later.
+
 Two traps, both already paid for:
 
 - The SPA fallback in `server/src/index.ts` **must** keep excluding `/api` and

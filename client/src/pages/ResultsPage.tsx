@@ -26,11 +26,14 @@ import {
   IconSearch,
   IconUsers,
 } from '@tabler/icons-react';
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery } from '@tanstack/react-query';
 import { api } from '../api/client';
 import type { Profile, ProfilesResponse } from '../api/types';
 import { StatTile } from '../components/StatTile';
 import classes from './ResultsPage.module.css';
+
+/** Matches the server's `take` cap in `server/src/api/profiles.router.ts`. */
+const PAGE_SIZE = 100;
 
 const COLUMNS = [
   { label: 'Name', width: '19%' },
@@ -128,19 +131,42 @@ function EmptyState({
 export function ResultsPage() {
   const [filter, setFilter] = useState('');
 
-  const { data, isPending, error, refetch, isFetching } = useQuery({
+  const {
+    data,
+    isPending,
+    error,
+    refetch,
+    isFetching,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
     queryKey: ['profiles'],
-    queryFn: () => api.get<ProfilesResponse>('/api/profiles'),
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
+      api.get<ProfilesResponse>(
+        `/api/profiles?skip=${pageParam}&take=${PAGE_SIZE}`,
+      ),
+    getNextPageParam: (last) => {
+      const loaded = last.skip + last.profiles.length;
+      return loaded < last.total ? loaded : undefined;
+    },
   });
 
-  const all = useMemo(() => data?.profiles ?? [], [data]);
+  const all = useMemo(
+    () => data?.pages.flatMap((page) => page.profiles) ?? [],
+    [data],
+  );
 
-  const stats = useMemo(() => {
-    const withEmail = all.filter((p) => p.email).length;
-    const companies = new Set(all.map((p) => p.company?.id).filter(Boolean))
-      .size;
-    return { total: all.length, withEmail, companies };
-  }, [all]);
+  // From the server, over the whole result set — NOT derived from `all`, which
+  // only holds the pages fetched so far and would understate every tile. The
+  // zeroes are placeholders for the first render; the tiles show a skeleton
+  // while `isPending`, so they are never displayed.
+  const stats = data?.pages[0]?.stats ?? {
+    total: 0,
+    withEmail: 0,
+    companies: 0,
+  };
 
   const visible = useMemo(() => {
     const needle = filter.trim().toLowerCase();
@@ -188,7 +214,9 @@ export function ResultsPage() {
         <Button
           variant="default"
           leftSection={<IconRefresh size={15} />}
-          loading={isFetching && !isPending}
+          // `isFetching` is also true while a next page loads; that has its own
+          // spinner in the footer and should not spin this button too.
+          loading={isFetching && !isPending && !isFetchingNextPage}
           onClick={() => void refetch()}
         >
           Refresh
@@ -233,11 +261,24 @@ export function ResultsPage() {
             size="sm"
           />
           {!isPending && (
-            <Text fz={13} c="dimmed" ml="auto">
-              {filter.trim()
-                ? `${visible.length} of ${stats.total}`
-                : `${stats.total} ${stats.total === 1 ? 'profile' : 'profiles'}`}
-            </Text>
+            <Group gap={8} ml="auto" wrap="nowrap">
+              {/* The filter runs over loaded rows only. Say so rather than
+                  letting "2 of 6" imply the whole set was searched. */}
+              {filter.trim() && hasNextPage && (
+                <Tooltip label="Only profiles already loaded are searched. Load more to search the rest.">
+                  <Badge size="sm" color="gray" style={{ cursor: 'help' }}>
+                    partial
+                  </Badge>
+                </Tooltip>
+              )}
+              <Text fz={13} c="dimmed">
+                {filter.trim()
+                  ? `${visible.length} of ${all.length} loaded`
+                  : hasNextPage
+                    ? `${all.length} of ${stats.total}`
+                    : `${stats.total} ${stats.total === 1 ? 'profile' : 'profiles'}`}
+              </Text>
+            </Group>
           )}
         </div>
 
@@ -250,7 +291,9 @@ export function ResultsPage() {
           </EmptyState>
         ) : visible.length === 0 ? (
           <EmptyState title="No matches">
-            Nothing matches “{filter.trim()}”. Try a shorter search.
+            Nothing matches “{filter.trim()}” in the{' '}
+            {hasNextPage ? `${all.length} profiles loaded so far` : 'results'}.
+            {hasNextPage && ' Load more below to widen the search.'}
           </EmptyState>
         ) : (
           <div className={classes.tableWrap}>
@@ -369,6 +412,22 @@ export function ResultsPage() {
                 ))}
               </Table.Tbody>
             </Table>
+          </div>
+        )}
+
+        {!isPending && hasNextPage && (
+          <div className={classes.tableFooter}>
+            <Button
+              variant="subtle"
+              size="sm"
+              loading={isFetchingNextPage}
+              onClick={() => void fetchNextPage()}
+            >
+              Load {Math.min(PAGE_SIZE, stats.total - all.length)} more
+            </Button>
+            <Text fz={12.5} c="dimmed">
+              {all.length} of {stats.total} loaded
+            </Text>
           </div>
         )}
       </div>
