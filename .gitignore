@@ -21,3 +21,8 @@ server/public/
 # Session handoff written by /continue-session — per-session, not shared.
 # tasks/lessons.md IS versioned; only the handoff is ignored.
 tasks/handoff.md
+
+# Résumé attachments uploaded through the dashboard. User data, and the
+# deployed copy lives in a Docker volume rather than the repo.
+server/uploads/
+uploads/

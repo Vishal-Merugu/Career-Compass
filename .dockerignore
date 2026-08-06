@@ -14,6 +14,10 @@ extension.zip
 # shipped instead of a freshly built one.
 server/public/
 
+# Uploaded resumes. Runtime data held in a Docker volume; a local copy must
+# not be baked into the image.
+**/uploads/
+
 # Not part of the deployable
 extension/
 docs/

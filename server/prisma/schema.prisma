@@ -8,35 +8,36 @@ generator client {
 }
 
 model User {
-  id            String    @id @default(uuid())
-  email         String    @unique
-  passwordHash  String
-  telegramId    String?   @unique
-  apiKey        String    @unique @default(uuid())
-  createdAt     DateTime  @default(now())
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  telegramId   String?  @unique
+  apiKey       String   @unique @default(uuid())
+  createdAt    DateTime @default(now())
 
-  session       LinkedInSession?
-  config        UserConfig?
-  workflowRuns  WorkflowRun[]
-  outreachLogs  OutreachLog[]
-  activityLogs  ActivityLog[]
-  dailyStats    DailyStats[]
-  companyQueue  CompanyQueue[]
-  searchJobs    SearchJob[]
+  session      LinkedInSession?
+  config       UserConfig?
+  workflowRuns WorkflowRun[]
+  outreachLogs OutreachLog[]
+  activityLogs ActivityLog[]
+  dailyStats   DailyStats[]
+  companyQueue CompanyQueue[]
+  searchJobs   SearchJob[]
+  campaigns    Campaign[]
 }
 
 model LinkedInSession {
-  id          String   @id @default(uuid())
-  userId      String   @unique
+  id          String    @id @default(uuid())
+  userId      String    @unique
   csrfToken   String
   liAtCookie  String
-  isValid     Boolean  @default(true)
-  lastChecked DateTime @default(now())
+  isValid     Boolean   @default(true)
+  lastChecked DateTime  @default(now())
   expiresAt   DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model UserConfig {
@@ -54,7 +55,30 @@ model UserConfig {
   emailFinderEnabled Boolean @default(true)
   isServerRun        Boolean @default(false)
 
-  user               User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // ─── Outreach ──────────────────────────────────────────────────
+  // SMTP credentials for campaign sending. The standalone mailer took these
+  // in the body of every /send request, which put an app password through
+  // the browser and into request logs on each call. Stored once instead.
+  //
+  // smtpPassword is a Google app password, not the account password. It is
+  // stored encrypted — see server/src/lib/secretBox.ts.
+  smtpUser     String?
+  smtpPassword String?
+  smtpFromName String?
+
+  // Appended to every generated email. The mailer hardcoded one person's
+  // name, phone and LinkedIn URL into the send loop and stripped any
+  // signature the model wrote using a regex over that same name.
+  emailSignature String? @db.Text
+
+  // The CV attached to every campaign's emails. Held per user rather than
+  // per campaign: the mailer stored it on Campaign and its uploads/ dir ended
+  // up with fifteen byte-identical copies of the same PDF, one per campaign,
+  // none of which anything ever deleted.
+  resumeFileName String?
+  resumeFilePath String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Company {
@@ -67,59 +91,60 @@ model Company {
   website       String?
   processedAt   DateTime @default(now())
 
-  profiles      Profile[]
+  profiles Profile[]
 }
 
 model Profile {
-  id               String   @id @default(uuid())
-  profileId        String   @unique
-  memberId         String?
-  firstName        String
-  lastName         String
-  headline         String?  @db.Text
-  about            String?  @db.Text
-  location         String?
-  linkedinUrl      String
-  email            String?
-  emailSource      String?
-  emailValidation  String?
-  companyId        String?
-  rawProfileJson   Json?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id              String   @id @default(uuid())
+  profileId       String   @unique
+  memberId        String?
+  firstName       String
+  lastName        String
+  headline        String?  @db.Text
+  about           String?  @db.Text
+  location        String?
+  linkedinUrl     String
+  email           String?
+  emailSource     String?
+  emailValidation String?
+  companyId       String?
+  rawProfileJson  Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
-  company          Company?  @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  company          Company?          @relation(fields: [companyId], references: [id], onDelete: SetNull)
   outreachLogs     OutreachLog[]
+  campaignContacts CampaignContact[]
 }
 
 model WorkflowRun {
-  id           String   @id @default(uuid())
+  id           String    @id @default(uuid())
   userId       String
   workflowType String
-  status       String   @default("idle")
+  status       String    @default("idle")
   params       Json
   progress     Json?
   results      Json?
   errors       Json?
   startedAt    DateTime?
   completedAt  DateTime?
-  createdAt    DateTime @default(now())
+  createdAt    DateTime  @default(now())
 
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model OutreachLog {
-  id          String   @id @default(uuid())
-  userId      String
-  profileId   String?
-  action      String
-  status      String
-  message     String?  @db.Text
-  details     Json?
-  createdAt   DateTime @default(now())
+  id        String   @id @default(uuid())
+  userId    String
+  profileId String?
+  action    String
+  status    String
+  message   String?  @db.Text
+  details   Json?
+  createdAt DateTime @default(now())
 
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  profile     Profile? @relation(fields: [profileId], references: [id], onDelete: SetNull)
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  profile Profile? @relation(fields: [profileId], references: [id], onDelete: SetNull)
 }
 
 model ActivityLog {
@@ -129,20 +154,20 @@ model ActivityLog {
   level     String   @default("info")
   createdAt DateTime @default(now())
 
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model DailyStats {
-  id                 String   @id @default(uuid())
+  id                 String @id @default(uuid())
   userId             String
   date               String
-  connectionsSent    Int      @default(0)
-  jobsFound          Int      @default(0)
-  companiesProcessed Int      @default(0)
-  targetsFound       Int      @default(0)
-  emailsFound        Int      @default(0)
+  connectionsSent    Int    @default(0)
+  jobsFound          Int    @default(0)
+  companiesProcessed Int    @default(0)
+  targetsFound       Int    @default(0)
+  emailsFound        Int    @default(0)
 
-  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, date])
 }
@@ -153,72 +178,72 @@ model CompanyQueue {
   companyUrl   String
   searchPrompt String?
   maxResults   Int      @default(100)
-  status       String   @default("pending")  // pending | processing | completed | error
+  status       String   @default("pending") // pending | processing | completed | error
   createdAt    DateTime @default(now())
-  
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model SearchJob {
-  id                 String               @id @default(uuid())
+  id                 String   @id @default(uuid())
   userId             String
-  status             String               @default("initializing") // initializing | collecting_urls | scraping | completed | paused_error
+  status             String   @default("initializing") // initializing | collecting_urls | scraping | completed | paused_error
   limitRequested     Int
-  qualifiedCount     Int                  @default(0)
-  currentBatchNumber Int                  @default(1)
+  qualifiedCount     Int      @default(0)
+  currentBatchNumber Int      @default(1)
   searchParams       Json
-  createdAt          DateTime             @default(now())
-  updatedAt          DateTime             @updatedAt
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
-  user               User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  profileUrls        ProfileUrl[]
-  connections        ExtensionConnection[]
+  user        User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  profileUrls ProfileUrl[]
+  connections ExtensionConnection[]
 }
 
 model ProfileUrl {
-  id           String          @id @default(uuid())
+  id           String    @id @default(uuid())
   jobId        String
   batchNumber  Int
   url          String
-  status       String          @default("queued") // queued | dispatched | scraping | scraped | failed_retryable | failed_permanent | skipped
-  attempts     Int             @default(0)
-  lastError    String?         @db.Text
+  status       String    @default("queued") // queued | dispatched | scraping | scraped | failed_retryable | failed_permanent | skipped
+  attempts     Int       @default(0)
+  lastError    String?   @db.Text
   dispatchedAt DateTime?
   scrapedAt    DateTime?
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
-  job          SearchJob       @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  profile      ScrapedProfile?
+  job     SearchJob       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  profile ScrapedProfile?
 
   @@unique([jobId, url])
 }
 
 model ScrapedProfile {
-  id           String            @id @default(uuid())
-  profileUrlId String            @unique
+  id           String   @id @default(uuid())
+  profileUrlId String   @unique
   rawData      Json
   name         String
-  headline     String?           @db.Text
-  about        String?           @db.Text
+  headline     String?  @db.Text
+  about        String?  @db.Text
   company      String?
   location     String?
-  scrapedAt    DateTime          @default(now())
+  scrapedAt    DateTime @default(now())
 
-  profileUrl   ProfileUrl        @relation(fields: [profileUrlId], references: [id], onDelete: Cascade)
-  decisions    ProfileDecision[]
+  profileUrl ProfileUrl        @relation(fields: [profileUrlId], references: [id], onDelete: Cascade)
+  decisions  ProfileDecision[]
 }
 
 model ProfileDecision {
-  id                  String         @id @default(uuid())
+  id                  String   @id @default(uuid())
   profileId           String
   email               String?
   emailSource         String?
-  isQualified         Boolean        @default(false)
-  qualificationReason String?        @db.Text
-  decidedAt           DateTime       @default(now())
+  isQualified         Boolean  @default(false)
+  qualificationReason String?  @db.Text
+  decidedAt           DateTime @default(now())
 
-  profile             ScrapedProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  profile ScrapedProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
 }
 
 model ExtensionConnection {
@@ -229,5 +254,80 @@ model ExtensionConnection {
   lastHeartbeatAt DateTime  @default(now())
   disconnectedAt  DateTime?
 
-  job             SearchJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  job SearchJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+}
+
+// ─── Outreach campaigns ──────────────────────────────────────────
+//
+// The mail side of the product: take profiles the pipeline already found,
+// draft a personalised email per contact, and send them on a delay. Ported
+// from the standalone Bulk Mail Sender, which read contacts from a CSV that
+// had been exported from here by hand. Contacts now come from Profile
+// directly, so the export/import round trip is gone.
+
+model Campaign {
+  id           String  @id @default(uuid())
+  userId       String
+  name         String
+  status       String  @default("PENDING") // PENDING | SENDING | COMPLETE | STOPPED | FAILED
+  emailSubject String
+  fromName     String?
+  commonPrompt String? @db.Text
+
+  // Milliseconds between sends, picked uniformly from the range. Gmail will
+  // rate-limit and eventually flag an account that sends without any pacing.
+  minDelayMs Int @default(5000)
+  maxDelayMs Int @default(10000)
+
+  // Denormalised counters so the list screen does not aggregate per row.
+  totalContacts Int @default(0)
+  sentCount     Int @default(0)
+  failedCount   Int @default(0)
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  user     User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contacts CampaignContact[]
+
+  @@index([userId, createdAt])
+}
+
+model CampaignContact {
+  id         String @id @default(uuid())
+  campaignId String
+
+  // Set when the contact came from the scraping pipeline, null for a CSV
+  // import. SetNull rather than Cascade: deleting a profile must not erase
+  // the record that we mailed them.
+  profileId String?
+
+  name        String
+  email       String
+  companyName String?
+  description String? @db.Text
+
+  // A draft the user edited by hand. Present means "send this verbatim" —
+  // the LLM is skipped entirely for this contact.
+  customSubject String?
+  customBody    String? @db.Text
+
+  // What was actually sent, kept so a campaign is auditable after the fact.
+  sentSubject String?
+  sentBody    String? @db.Text
+
+  status       String    @default("PENDING") // PENDING | GENERATING | SENDING | SUCCESS | FAILED | SKIPPED
+  errorMessage String?   @db.Text
+  sentAt       DateTime?
+  createdAt    DateTime  @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  profile  Profile? @relation(fields: [profileId], references: [id], onDelete: SetNull)
+
+  // One send per profile per campaign. Without this, re-importing a
+  // selection silently queues a second email to the same person.
+  @@unique([campaignId, profileId])
+  @@index([campaignId, status])
 }

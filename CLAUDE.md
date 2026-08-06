@@ -58,6 +58,8 @@ client/src/
   components/        DashboardLayout (Mantine AppShell)
 ```
 
+Screens: Results, Campaigns, Campaign detail, Settings.
+
 Vite builds `client/` → **`server/public/`** (gitignored), which
 `express.static` serves **same-origin**. So the client calls `/api/...` as a
 relative path: no CORS, no mixed content, no API base URL to configure.
@@ -100,6 +102,49 @@ Two traps, both already paid for:
 - `upgrade-insecure-requests` is stripped from helmet's CSP unless `HTTPS=true`.
   The VM serves plain HTTP with nothing on 443, so leaving it on makes the
   browser upgrade the page's own `/assets/*.js` and render a blank page.
+
+## Outreach campaigns
+
+Ported from the standalone Bulk Mail Sender, which read contacts from a CSV
+exported from here by hand. Contacts now come from `Profile` directly:
+select rows on Results → "Add to campaign".
+
+```
+server/src/services/campaign.service.ts   create/seed/start/stop + the processor
+server/src/services/draft.service.ts      subject extraction, signature, prompt
+server/src/services/mailer.service.ts     pooled transports, credential check
+server/src/queue/                         BullMQ queue + worker (ioredis)
+server/src/api/campaigns.router.ts        REST + SSE progress
+server/src/api/outreachSettings.router.ts SMTP creds, signature, résumé
+```
+
+**Redis is REQUIRED to boot.** It used to degrade to "Postgres fallback mode";
+a queue has no such fallback, so a campaign would accept the click, report
+success and send nothing. `initRedis` now throws and `index.ts` exits.
+
+**One BullMQ job per contact, carrying a cumulative delay.** Pacing lives in
+Redis, so it survives a restart — the ported loop used `setImmediate` plus
+`await setTimeout` and lost its place entirely. `concurrency: 1`, because a
+concurrent worker would send N at once regardless of the configured gap.
+
+**The worker runs in the API process** (`startCampaignWorker` in `index.ts`).
+Non-blocking, since every step is awaited I/O. If it is ever split out,
+`campaignEvents` must become Redis pub/sub or SSE goes silent.
+
+**Campaign routes use `requireAuth`, not `requireAuthOrApiKey`.** The
+extension's key is long-lived and works from anywhere; reporting scrape
+results must not confer the ability to send mail from the user's Gmail.
+
+**`GET /api/config` is field-selected.** It is reachable with the extension's
+API key and the row now holds `smtpPassword`. Never return the whole row.
+
+`UserConfig.smtpPassword` is AES-256-GCM via `lib/secretBox.ts`, keyed by HKDF
+from `JWT_SECRET` — so rotating `JWT_SECRET` makes stored passwords
+undecryptable and they must be re-entered.
+
+**Every variable the server reads must be listed in `docker-compose.yml`'s
+`environment:` block.** Setting it in `~/cc-config/.env` alone does nothing —
+Compose only substitutes variables that are named there.
 
 See `docs/adr/0004-same-origin-web-dashboard.md`.
 
@@ -170,6 +215,7 @@ Things that will waste your time otherwise:
   same token, Telegram allows one poller, and the log fills with 409 Conflict
   errors. Comment it out of `server/.env` while working locally — it is optional
   in `env.ts`.
+- **Redis must be running** or the server exits at boot (see Outreach).
 - **The Results screen needs data.** `GET /api/profiles` only returns profiles
   linked to your user through `OutreachLog`, so a fresh account sees the empty
   state until a workflow has run.

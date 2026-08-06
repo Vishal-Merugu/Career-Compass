@@ -2,6 +2,9 @@
   background-color: var(--app-surface);
   border: 1px solid var(--app-border);
   border-radius: var(--mantine-radius-lg);
+  /* Scheme-aware: a black shadow is invisible on a near-black background, so
+     dark mode swaps in an inset top highlight. See theme.ts. */
+  box-shadow: var(--app-shadow-sm);
   overflow: hidden;
 }
 
@@ -30,7 +33,7 @@
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: var(--app-ink-muted);
+  color: color-mix(in srgb, var(--app-ink-muted) 82%, transparent);
   padding-top: 11px;
   padding-bottom: 11px;
   position: sticky;
@@ -53,7 +56,32 @@
 }
 
 .table tbody tr:hover {
-  background-color: var(--app-surface-sunken);
+  background-color: var(--app-hover);
+}
+
+/* Selection is the one table state that must survive losing the pointer, so it
+   is a tint of the accent rather than another neutral — a selected row and a
+   hovered row have to be distinguishable at a glance when both are on screen. */
+.table tbody tr[data-selected] {
+  background-color: color-mix(
+    in srgb,
+    var(--mantine-color-brand-6) 9%,
+    transparent
+  );
+}
+
+.table tbody tr[data-selected]:hover {
+  background-color: color-mix(
+    in srgb,
+    var(--mantine-color-brand-6) 14%,
+    transparent
+  );
+}
+
+/* A left edge on the selected row. Reads as a marker down the side of the
+   selection rather than as a per-row border. */
+.table tbody tr[data-selected] td:first-of-type {
+  box-shadow: inset 2px 0 0 var(--mantine-color-brand-6);
 }
 
 /* Links inside the table stay ink-coloured at rest and only pick up the accent
@@ -98,7 +126,9 @@
   gap: 10px;
   align-items: center;
   flex-wrap: wrap;
-  padding: 12px 14px;
+  /* Taller than it was: the toolbar now holds a filled button when rows are
+     selected, and 12px left it touching the panel edge. */
+  padding: 14px;
   border-bottom: 1px solid var(--app-border);
   background-color: var(--app-surface);
 }

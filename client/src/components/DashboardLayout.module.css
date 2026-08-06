@@ -18,35 +18,52 @@
   border-radius: var(--mantine-radius-md);
   font-size: 14px;
   font-weight: 500;
-  padding: 8px 10px;
+  /* The hover fill spans this whole box, so the padding IS the shape of the
+     hover state — 8px/10px made it hug the label. */
+  padding: 10px 12px;
+  /* Transparent by default so the active item's border does not change the
+     box size. The previous fix was to shave a pixel off the active padding,
+     which kept the size but shifted the label. */
+  border: 1px solid transparent;
   color: var(--app-ink-muted);
   transition:
     background-color 120ms ease,
-    color 120ms ease;
+    color 120ms ease,
+    border-color 120ms ease;
 }
 
 .navLink:hover {
-  background-color: var(--app-border);
+  background-color: var(--app-hover);
   color: var(--app-ink);
 }
 
+/* The active item has to outrank the hovered one, and it did not: on a sunken
+   navbar, a raised white surface reads *quieter* than a grey hover fill, so
+   whichever item the pointer happened to be near looked like the current page.
+   The border steps up, the label gets weight, and the icon takes the accent —
+   which is what the accent is reserved for. */
 .navLink[data-active],
 .navLink[data-active]:hover {
   background-color: var(--app-surface);
   color: var(--app-ink);
+  font-weight: 600;
   box-shadow: var(--mantine-shadow-xs);
-  border: 1px solid var(--app-border);
-  /* Compensate for the border so the active item does not shift 1px. */
-  padding: 7px 9px;
+  border-color: var(--app-border-strong);
+}
+
+.navLink[data-active] svg {
+  color: var(--app-accent);
 }
 
 .sectionLabel {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.07em;
   text-transform: uppercase;
-  color: var(--app-ink-muted);
-  padding: 0 10px;
+  /* A step quieter than body text. The label is a divider, not content, and at
+     full muted strength it competed with the items underneath it. */
+  color: color-mix(in srgb, var(--app-ink-muted) 78%, transparent);
+  padding: 0 12px;
 }
 
 .userButton {

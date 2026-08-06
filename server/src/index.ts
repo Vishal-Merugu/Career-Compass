@@ -15,6 +15,8 @@ import { NotFoundError } from './errors/AppError.js';
 import { authRouter } from './auth/routes.js';
 import { configRouter } from './api/config.router.js';
 import { profilesRouter } from './api/profiles.router.js';
+import { campaignsRouter } from './api/campaigns.router.js';
+import { outreachSettingsRouter } from './api/outreachSettings.router.js';
 import { jobsRouter } from './api/jobs.router.js';
 import { syncRouter } from './api/sync.router.js';
 import { SchedulerService } from './services/scheduler.service.js';
@@ -94,6 +96,10 @@ app.use('/api/config', configRouter);
 // path — the extension does not call them — so the mount is the bug, not the
 // routes.
 app.use('/api', profilesRouter);
+// Paths inside are already prefixed /campaigns — mounting at /api/campaigns
+// would compose to /api/campaigns/campaigns.
+app.use('/api', campaignsRouter);
+app.use('/api', outreachSettingsRouter);
 app.use('/api/sync', syncRouter);
 app.use('/api', jobsRouter);
 
@@ -146,8 +152,15 @@ const server = app.listen(env.PORT, async () => {
   // Start Orchestrator timeout sweeper
   startTimeoutSweeper();
 
-  // Initialize Redis client
-  await initRedis();
+  // Redis is required — see initRedis. This callback is async, so a throw here
+  // would surface as an unhandled rejection and leave a listening socket on a
+  // server that cannot dispatch campaigns. Exit deliberately instead.
+  try {
+    await initRedis();
+  } catch {
+    server.close();
+    process.exit(1);
+  }
 
   // Start scheduled cron tasks
   SchedulerService.start();
@@ -156,6 +169,16 @@ const server = app.listen(env.PORT, async () => {
   const { QualificationWorker } =
     await import('./workers/qualificationWorker.js');
   await QualificationWorker.getInstance().sweepOrphanedProfiles();
+
+  // Campaign send worker. Started after initRedis so a queue connection is
+  // only opened once Redis is known to be reachable.
+  const { startCampaignWorker } = await import('./queue/campaignQueue.js');
+  const { processCampaignContact, resumeInterruptedCampaigns } =
+    await import('./services/campaign.service.js');
+  startCampaignWorker(processCampaignContact);
+  await resumeInterruptedCampaigns().catch((err) => {
+    logger.error(err, 'Failed to resume interrupted campaigns');
+  });
 
   // Initialize Telegram Bot
   telegramBotService.initialize().catch((err) => {
@@ -175,6 +198,20 @@ const gracefulShutdown = async () => {
     try {
       telegramBotService.stop();
       logger.info('Telegram bot polling stopped.');
+
+      // Close the worker before Redis. It holds a blocking read; tearing the
+      // connection out from under it logs a spurious error on every shutdown,
+      // and an in-flight send would be abandoned mid-SMTP rather than
+      // finishing and recording its result.
+      try {
+        const { closeCampaignQueue } = await import('./queue/campaignQueue.js');
+        const { closeQueueConnection } = await import('./queue/connection.js');
+        await closeCampaignQueue();
+        await closeQueueConnection();
+        logger.info('Campaign queue closed.');
+      } catch (queueErr) {
+        logger.error(queueErr, 'Error closing campaign queue');
+      }
 
       try {
         await redisClient.disconnect();

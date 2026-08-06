@@ -69,3 +69,106 @@ export interface ProfilesResponse {
     companies: number;
   };
 }
+
+// ─── Outreach ────────────────────────────────────────────────────
+
+export type CampaignStatus =
+  'PENDING' | 'SENDING' | 'COMPLETE' | 'STOPPED' | 'FAILED';
+
+export type ContactStatus =
+  'PENDING' | 'GENERATING' | 'SENDING' | 'SUCCESS' | 'FAILED' | 'SKIPPED';
+
+export interface Campaign {
+  id: string;
+  name: string;
+  status: CampaignStatus;
+  emailSubject: string;
+  fromName: string | null;
+  commonPrompt: string | null;
+  minDelayMs: number;
+  maxDelayMs: number;
+  totalContacts: number;
+  sentCount: number;
+  failedCount: number;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+/**
+ * Note there is no `sentBody`. The detail endpoint omits it — a full copy of
+ * every email sent is a large payload no list screen renders.
+ */
+export interface CampaignContact {
+  id: string;
+  profileId: string | null;
+  name: string;
+  email: string;
+  companyName: string | null;
+  description: string | null;
+  customSubject: string | null;
+  customBody: string | null;
+  status: ContactStatus;
+  errorMessage: string | null;
+  sentAt: string | null;
+}
+
+export interface CampaignsResponse {
+  ok: true;
+  campaigns: Campaign[];
+  skip: number;
+  take: number;
+  total: number;
+}
+
+export interface CampaignDetailResponse {
+  ok: true;
+  campaign: Campaign;
+  contacts: CampaignContact[];
+}
+
+export interface AddContactsResponse {
+  ok: true;
+  added: number;
+  skippedNoEmail: number;
+  skippedDuplicate: number;
+}
+
+/**
+ * Progress frames from `GET /api/campaigns/:id/events`.
+ * Mirrors `ICampaignProgress` in `server/src/services/campaign.service.ts`.
+ */
+export interface CampaignProgress {
+  campaignId: string;
+  type: 'CONTACT' | 'STATS' | 'STATUS';
+  contactId?: string;
+  contactStatus?: ContactStatus;
+  campaignStatus?: CampaignStatus;
+  sentCount?: number;
+  failedCount?: number;
+  totalContacts?: number;
+  message?: string;
+}
+
+/**
+ * `smtpPassword` is absent by design — the server never returns it, in any
+ * form. `smtpConfigured` is what the UI branches on.
+ */
+export interface OutreachSettings {
+  smtpUser: string | null;
+  smtpFromName: string | null;
+  emailSignature: string | null;
+  resumeFileName: string | null;
+  smtpConfigured: boolean;
+}
+
+export interface OutreachSettingsResponse {
+  ok: true;
+  settings: OutreachSettings;
+}
+
+export interface VerifyResponse {
+  ok: true;
+  verified: boolean;
+  error?: string;
+}

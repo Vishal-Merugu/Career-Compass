@@ -275,3 +275,57 @@ unbounded payload).
 **Apply:** before calling dashboard work done, start Postgres, run the server,
 and drive the actual flow in a browser. See the "Running locally" section of
 `CLAUDE.md`.
+
+### A hover fill's shape IS its padding
+
+Reported as "the hover effect doesn't have enough padding" and, separately, the
+nav items looking "cramped into each other".
+
+**Why:** `.navLink` had `padding: 8px 10px`. The hover background paints the
+padding box, so those numbers were not spacing _around_ a control — they were
+the control's visible shape. 8px vertical produced a fill that hugged the label.
+Two items 4px apart then read as one block.
+
+**Apply:** when a state paints a background, size the padding for the fill you
+want to see, not for the text. Nav items are now `10px 12px` inside a navbar
+with 16px horizontal padding.
+
+### Do not offset a border by shaving padding
+
+`.navLink[data-active]` added a 1px border and dropped padding to `7px 9px` to
+keep the box the same size. The box stayed put; the _label_ moved 1px.
+
+**Apply:** give the resting state `border: 1px solid transparent` and change only
+`border-color`. Nothing shifts because nothing about the box model changes.
+
+### The active state must outrank the hover state
+
+On a sunken navbar, the active item was a raised white surface and hover was a
+grey fill — so on a light background the _hovered_ item looked more prominent
+than the current page, and whichever item the pointer sat near read as selected.
+
+**Apply:** check active-vs-hover against each other, in both colour schemes, not
+just against the resting state. `client/src/components/DashboardLayout.module.css`.
+
+### Mantine's `dimmed` is a caption colour, not a body colour
+
+Reported as the app looking "too pale". `c="dimmed"` resolves to `gray-6` /
+`dark-2`, which Mantine tunes for small captions — but most secondary text here
+is 13px body copy, where it measured 5.78:1 (dark) and 5.28:1 (light).
+
+**Why it compounded:** dark-mode surfaces sat within a few points of the
+background (`#141417` on `#0b0b0d`) and hairlines were 0.09 alpha, so panels
+dissolved into the page. In a design with almost no shadows, the borders carry
+all the structure and cannot be that faint.
+
+**Apply:** `--mantine-color-dimmed` is overridden in `theme.ts`'s
+`cssVariablesResolver` (now 7.30:1 / 6.54:1). Measure contrast rather than
+eyeballing it — the resolver's values are the single place to change it.
+
+### Styling an attribute you never wrote CSS for
+
+`ResultsPage` set `data-selected` on selected rows and nothing rendered it, so
+selecting a profile had no visible effect at all. It typechecked and shipped.
+
+**Apply:** a `data-*` attribute added for styling is only half the change. Grep
+the stylesheet for it before calling the feature done.
