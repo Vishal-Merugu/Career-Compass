@@ -28,14 +28,28 @@ deploy/
 .idea/
 README.md
 
-# Secrets and runtime artefacts. Env is supplied by docker-compose, not baked in;
-# the cookie jar is a live LinkedIn session and the probe report holds the
+# Secrets and runtime artefacts. Env is supplied by docker-compose, not baked
+# in; the cookie jar is a live LinkedIn session and the probe report holds the
 # egress IP.
+#
+# EVERY pattern here needs the `**/` prefix. Docker matches these against the
+# path relative to the context root and a bare `*` does NOT cross a `/`, so
+# `.env` and `*cookies.json` match ONLY at the root. The context is the repo
+# root, and the secrets live one level down in server/ — deploy.yml copies the
+# live LinkedIn jar to server/linkedin-cookies.json immediately before the
+# build. Without `**/` those files are baked into the image, and a later
+# `RUN rm` would not help: the layer that added them keeps them.
 .env
+**/.env
 .env.*
+**/.env.*
 *cookies.json
+**/*cookies.json
+probe-report.json
 **/probe-report.json
 .chrome-profile/
 
 *.log
+**/*.log
 .DS_Store
+**/.DS_Store

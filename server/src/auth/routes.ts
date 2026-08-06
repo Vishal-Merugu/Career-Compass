@@ -98,10 +98,21 @@ router.post(
   },
 );
 
+/**
+ * Who am I. Deliberately does NOT echo `req.user` wholesale: that object
+ * carries `apiKey`, the extension's long-lived credential.
+ *
+ * The dashboard's session is an httpOnly cookie precisely so that script on the
+ * page cannot steal it (ADR 0004). Returning the API key here would hand that
+ * back — an XSS could not read the cookie, but it could call this endpoint and
+ * walk away with a credential that works from anywhere, over `x-api-key`, and
+ * never expires. The key is issued at register/login, where it is asked for.
+ */
 router.get('/me', requireAuth, (req, res) => {
+  const { id, email, telegramId } = req.user!;
   res.status(200).json({
     ok: true,
-    user: req.user,
+    user: { id, email, telegramId },
   });
 });
 
