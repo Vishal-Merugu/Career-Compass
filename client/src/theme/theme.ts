@@ -124,21 +124,34 @@ export const cssVariablesResolver: CSSVariablesResolver = () => ({
   light: {
     '--app-bg': '#fbfbfa',
     '--app-surface': '#ffffff',
-    '--app-surface-sunken': '#f5f5f4',
-    '--app-border': 'rgba(16, 17, 20, 0.09)',
-    '--app-border-strong': 'rgba(16, 17, 20, 0.14)',
+    '--app-surface-sunken': '#f4f4f3',
+    // Hairlines carry all the structure here, since almost nothing has a
+    // shadow. Too faint and panels dissolve into the page.
+    '--app-border': 'rgba(16, 17, 20, 0.11)',
+    '--app-border-strong': 'rgba(16, 17, 20, 0.17)',
     '--app-ink': '#18181b',
-    '--app-ink-muted': '#6b6b73',
+    '--app-ink-muted': '#5c5d66',
+    // Hover fills are their own token rather than reusing the border colour.
+    // A border tint is calibrated for a 1px line, not for a filled area.
+    '--app-hover': 'rgba(16, 17, 20, 0.05)',
     '--app-overlay': 'rgba(251, 251, 250, 0.72)',
+    // Mantine resolves `c="dimmed"` to gray-6 / dark-2, which is tuned for
+    // captions. Most secondary text in this app is 13px body copy, and at that
+    // size the default reads washed out rather than quiet.
+    '--mantine-color-dimmed': '#5c5d66',
   },
   dark: {
     '--app-bg': '#0b0b0d',
-    '--app-surface': '#141417',
-    '--app-surface-sunken': '#0f0f11',
-    '--app-border': 'rgba(255, 255, 255, 0.09)',
-    '--app-border-strong': 'rgba(255, 255, 255, 0.15)',
-    '--app-ink': '#ededef',
-    '--app-ink-muted': '#8e8f97',
+    // Lifted off the background so panels and the navbar separate without
+    // needing a heavier border.
+    '--app-surface': '#17171b',
+    '--app-surface-sunken': '#101013',
+    '--app-border': 'rgba(255, 255, 255, 0.12)',
+    '--app-border-strong': 'rgba(255, 255, 255, 0.19)',
+    '--app-ink': '#f0f0f2',
+    '--app-ink-muted': '#a4a5ae',
+    '--app-hover': 'rgba(255, 255, 255, 0.06)',
     '--app-overlay': 'rgba(11, 11, 13, 0.72)',
+    '--mantine-color-dimmed': '#a4a5ae',
   },
 });

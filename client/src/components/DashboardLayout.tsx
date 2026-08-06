@@ -140,10 +140,10 @@ export function DashboardLayout() {
       </AppShell.Header>
 
       <AppShell.Navbar className={classes.navbar} p="sm" withBorder={false}>
-        <Stack gap="lg" style={{ height: '100%' }}>
+        <Stack gap={26} style={{ height: '100%' }}>
           {NAV_SECTIONS.map((section) => (
-            <Stack key={section.label} gap={4}>
-              <Text className={classes.sectionLabel} mb={4}>
+            <Stack key={section.label} gap={3}>
+              <Text className={classes.sectionLabel} mb={8}>
                 {section.label}
               </Text>
               {section.items.map(({ to, label, icon: Icon }) => (
