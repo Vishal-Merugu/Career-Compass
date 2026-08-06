@@ -11,6 +11,7 @@ import { logger } from './lib/logger.js';
 import { prisma } from './lib/prisma.js';
 import { requestLogger } from './middleware/requestLogger.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { NotFoundError } from './errors/AppError.js';
 import { authRouter } from './auth/routes.js';
 import { configRouter } from './api/config.router.js';
 import { profilesRouter } from './api/profiles.router.js';
@@ -75,13 +76,25 @@ app.use(requestLogger);
 // Mount API routers
 app.use('/api/auth', authRouter);
 app.use('/api/config', configRouter);
-app.use('/api/profiles', profilesRouter);
+// Mounted at /api, not /api/profiles: this router's own routes are already
+// `/profiles` and `/companies`, so the deeper mount served them at
+// /api/profiles/profiles and /api/profiles/companies. Nothing consumed either
+// path — the extension does not call them — so the mount is the bug, not the
+// routes.
+app.use('/api', profilesRouter);
 app.use('/api/sync', syncRouter);
 app.use('/api', jobsRouter);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ ok: true, timestamp: new Date() });
+});
+
+// Unmatched /api/* must fail as JSON. Without this, Express's built-in 404
+// replies with an HTML error page, and a client that mistypes a route gets a
+// parse error instead of a status code it can act on.
+app.use('/api', (_req, _res, next) => {
+  next(new NotFoundError('API route not found'));
 });
 
 // ─── Web dashboard ───────────────────────────────────────────────

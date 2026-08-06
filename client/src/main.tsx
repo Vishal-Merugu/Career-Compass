@@ -2,10 +2,14 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import {
+  QueryCache,
+  QueryClient,
+  QueryClientProvider,
+} from '@tanstack/react-query';
 import { BrowserRouter } from 'react-router-dom';
 import { App } from './App';
-import { AuthProvider } from './auth/AuthProvider';
+import { AuthProvider, ME_QUERY_KEY } from './auth/AuthProvider';
 import { ApiError } from './api/client';
 import { theme, cssVariablesResolver } from './theme/theme';
 
@@ -19,6 +23,21 @@ import '@mantine/notifications/styles.css';
 import './theme/global.css';
 
 const queryClient = new QueryClient({
+  // A 401 from ANY query means the session is gone — a cookie expiring while
+  // the tab sits open looks exactly like this. Record it centrally so the route
+  // guard redirects to /login, instead of each screen rendering its own "not
+  // authenticated" error while the header still shows the signed-in user.
+  queryCache: new QueryCache({
+    onError: (error, query) => {
+      if (
+        error instanceof ApiError &&
+        error.isUnauthorized &&
+        query.queryKey[0] !== ME_QUERY_KEY[0]
+      ) {
+        queryClient.setQueryData(ME_QUERY_KEY, null);
+      }
+    },
+  }),
   defaultOptions: {
     queries: {
       // A 401 means the session is gone; retrying cannot fix it and only

@@ -26,7 +26,9 @@ export const ME_QUERY_KEY = ['auth', 'me'] as const;
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
 
-  const { data, isLoading } = useQuery({
+  // `null` is a real value here, not "not loaded yet": it is how logout and any
+  // 401 record "definitely signed out" without waiting for a round trip.
+  const { data, isLoading } = useQuery<MeResponse | null>({
     queryKey: ME_QUERY_KEY,
     queryFn: () => api.get<MeResponse>('/api/auth/me'),
     // A 401 is a legitimate answer here, so it must not be retried or it costs
@@ -62,9 +64,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       await api.post('/api/auth/logout');
     } finally {
-      // Clear local state even if the call failed — the user asked to be
-      // signed out, and a stale cached user is worse than an extra 401.
-      queryClient.clear();
+      // Write the signed-out state explicitly, even if the call failed — the
+      // user asked to be signed out, and a stale cached user is worse than an
+      // extra 401.
+      //
+      // This used to be `queryClient.clear()`, which evicts the cache but
+      // neither resets an actively-subscribed observer's `data` nor triggers a
+      // refetch. `user` stayed truthy, so /login bounced straight back to
+      // /results and the user was left on a 401'd page still showing their own
+      // email in the header. Setting the value is unambiguous; evicting is not.
+      queryClient.setQueryData(ME_QUERY_KEY, null);
+      // Drop everything else so the next account cannot see the last one's data.
+      queryClient.removeQueries({
+        predicate: (q) => q.queryKey[0] !== ME_QUERY_KEY[0],
+      });
     }
   }, [queryClient]);
 
