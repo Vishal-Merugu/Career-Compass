@@ -34,17 +34,22 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-          # Two lockfiles, two node_modules trees — the root holds the tooling
-          # (eslint/prettier/husky), server/ holds the actual application.
+          # Three lockfiles, three node_modules trees — the root holds the
+          # tooling (eslint/prettier/husky), server/ the backend, client/ the
+          # dashboard.
           cache-dependency-path: |
             package-lock.json
             server/package-lock.json
+            client/package-lock.json
 
       - name: Install root tooling
         run: npm ci
 
       - name: Install server deps
         run: npm ci --prefix server
+
+      - name: Install client deps
+        run: npm ci --prefix client
 
       - name: Generate Prisma client
         # tsc reads the generated @prisma/client types; without this, typecheck
@@ -65,6 +70,9 @@ jobs:
 
       - name: Build server
         run: npm --prefix server run build
+
+      - name: Build dashboard
+        run: npm run build:client
 
       - name: Build extension zip
         run: npm run build:ext

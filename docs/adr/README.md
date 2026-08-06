@@ -8,6 +8,7 @@ otherwise be re-litigated or silently reversed.
 | [0001](0001-extension-executes-server-orchestrates.md) | The extension executes, the server orchestrates  | Accepted |
 | [0002](0002-full-cookie-jar.md)                        | A live cookie jar, not two static cookies        | Accepted |
 | [0003](0003-manual-dispatch-deploys.md)                | Manual-dispatch deploys via a self-hosted runner | Accepted |
+| [0004](0004-same-origin-web-dashboard.md)              | A web dashboard, served same-origin from the VM  | Accepted |
 
 ## When to write one
 

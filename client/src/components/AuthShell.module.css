@@ -1,0 +1,115 @@
+.root {
+  display: grid;
+  min-height: 100vh;
+  /* Single column until there is enough width for the brand panel to be worth
+     the space it takes. */
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 62em) {
+  .root {
+    grid-template-columns: 1.1fr 1fr;
+  }
+}
+
+.brand {
+  display: none;
+  position: relative;
+  overflow: hidden;
+  padding: 48px;
+  flex-direction: column;
+  justify-content: space-between;
+  background-color: #0e0f14;
+  color: #f4f4f5;
+}
+
+@media (min-width: 62em) {
+  .brand {
+    display: flex;
+  }
+}
+
+/* Two offset radial washes rather than a linear gradient — a linear ramp reads
+   as a template, an off-centre wash reads as lighting. */
+.brand::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(
+      120% 90% at 12% 8%,
+      rgba(88, 102, 200, 0.32) 0%,
+      transparent 55%
+    ),
+    radial-gradient(
+      100% 80% at 88% 100%,
+      rgba(60, 74, 174, 0.26) 0%,
+      transparent 60%
+    );
+  pointer-events: none;
+}
+
+/* Hairline grid, barely there. Gives the flat panel some structure without
+   becoming a pattern you notice. */
+.brand::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.028) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.028) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(90% 70% at 30% 30%, #000 0%, transparent 100%);
+  pointer-events: none;
+}
+
+.brandContent {
+  position: relative;
+  z-index: 1;
+}
+
+.form {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 24px;
+  background-color: var(--app-bg);
+}
+
+/* In dark mode the brand panel and the form side land within a few percent of
+   each other, so the split reads as an accident. A hairline makes it a seam. */
+@media (min-width: 62em) {
+  .form {
+    border-left: 1px solid var(--app-border);
+  }
+}
+
+.formInner {
+  width: 100%;
+  max-width: 380px;
+}
+
+.pointList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.point {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 10px 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: rgba(244, 244, 245, 0.66);
+}
+
+.pointDot {
+  margin-top: 7px;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background-color: rgba(150, 162, 232, 0.9);
+}

@@ -1,0 +1,16 @@
+.pulse {
+  color: var(--mantine-color-brand-6);
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.96);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}

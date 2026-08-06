@@ -5,13 +5,15 @@
   "main": "index.js",
   "scripts": {
     "test": "npm --prefix server run test",
-    "typecheck": "npm --prefix server run typecheck",
+    "typecheck": "npm --prefix server run typecheck && npm --prefix client run typecheck",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "prepare": "husky",
-    "build:prod": "cd server && npm install && npm run db:generate && npm run build",
+    "dev:client": "npm --prefix client run dev",
+    "build:client": "npm --prefix client run build",
+    "build:prod": "npm --prefix client ci && npm run build:client && cd server && npm install && npm run db:generate && npm run build",
     "build:ext": "node build-ext.js"
   },
   "repository": {

@@ -4,13 +4,15 @@ Read `tasks/lessons.md` at session start. Do not repeat mistakes documented ther
 
 ## What this is
 
-LinkedIn job-discovery + outreach automation. Two halves:
+LinkedIn job-discovery + outreach automation. Three parts:
 
 - **`server/`** — TypeScript/Express/Prisma/Postgres/Redis backend. The **brain**.
 - **`extension/`** — Manifest V3 Chrome extension, plain JS, no build step. The **hands**.
+- **`client/`** — Vite/React/TypeScript/Mantine web dashboard. The **face**.
 
-They talk over Socket.io. The server decides what to do; the extension does it
-inside the user's logged-in browser tab.
+Server and extension talk over Socket.io. The server decides what to do; the
+extension does it inside the user's logged-in browser tab. The dashboard is a
+plain REST client of the server.
 
 **Git root is `CareerCompass/`, not the parent `linkedin-automationV2/`.**
 
@@ -45,6 +47,62 @@ payload), a `commands/` or `handlers/` file, and the extension counterpart in
 `server/src/shared/*` is duplicated by hand in `extension/services/*`. Change one,
 check the other.
 
+## The dashboard
+
+```
+client/src/
+  api/client.ts      fetch wrapper — credentials:'include', throws ApiError
+  api/types.ts       hand-written response shapes; keep in sync with schema.prisma
+  auth/              AuthProvider (GET /api/auth/me is the only session source)
+  pages/             one file per screen
+  components/        DashboardLayout (Mantine AppShell)
+```
+
+Vite builds `client/` → **`server/public/`** (gitignored), which
+`express.static` serves **same-origin**. So the client calls `/api/...` as a
+relative path: no CORS, no mixed content, no API base URL to configure.
+`npm run dev:client` proxies `/api` → `localhost:3000` to keep dev same-origin too.
+
+**Two credentials, deliberately separate:**
+
+| Surface   | Credential                   | Set by                       |
+| --------- | ---------------------------- | ---------------------------- |
+| dashboard | httpOnly cookie `cc_session` | `server/src/auth/cookies.ts` |
+| extension | `x-api-key` header           | unchanged, never touch it    |
+
+`extractSessionToken()` in `server/src/auth/middleware.ts` accepts
+`Authorization: Bearer` **or** the cookie, header wins. Login returns a `token`
+in the body; the dashboard ignores it — the cookie is the session.
+
+**Registration is closed once the instance has an owner.** The first account on
+an empty database is always allowed (bootstrap); after that, `POST
+/api/auth/register` requires `REGISTRATION_TOKEN` to be set server-side and
+matched via an `x-registration-token` header or a `registrationToken` body
+field. An existing deployment that never sets it therefore has registration
+closed — that is deliberate, not a misconfiguration.
+
+**`GET /api/auth/me` must never return `apiKey`.** It returns `id`, `email` and
+`telegramId` only. The cookie is httpOnly so page script cannot steal the
+session; echoing `req.user` wholesale would hand back the extension's
+long-lived API key instead, which works from anywhere and never expires.
+
+**`GET /api/profiles` is paginated (`skip`/`take`, max 200) and field-selected.**
+Its `stats` block is computed over the whole result set, not the returned page,
+because the dashboard's headline tiles read from it. Never swap the `select`
+back to `include` — that ships `rawProfileJson` and `about` for every row (1.14 MB
+vs 98 KB on a 250-row set) and auto-publishes any column added later.
+
+Two traps, both already paid for:
+
+- The SPA fallback in `server/src/index.ts` **must** keep excluding `/api` and
+  `/health`. Without that, a typo'd API URL returns `index.html` with a 200 and
+  surfaces as a JSON parse error nowhere near the cause.
+- `upgrade-insecure-requests` is stripped from helmet's CSP unless `HTTPS=true`.
+  The VM serves plain HTTP with nothing on 443, so leaving it on makes the
+  browser upgrade the page's own `/assets/*.js` and render a blank page.
+
+See `docs/adr/0004-same-origin-web-dashboard.md`.
+
 ## Commands
 
 ```bash
@@ -57,18 +115,64 @@ npm run db:studio
 npm run probe:linkedin -- --quick      # ~4 min,  6 read-only Voyager calls
 npm run probe:linkedin -- --sustained  # ~35 min, 10 calls  (default)
 npm run probe:linkedin -- --long       # ~4 h,   14 calls
+npm run probe:linkedin -- --egress-only # egress IP/ASN only, no cookies, no calls
 npm run cookies:import   # build linkedin-cookies.json from a copied cURL
+
+# client (run from client/)
+npm run dev              # vite dev server, proxies /api → localhost:3000
+npm run build            # tsc --noEmit && vite → server/public/
 
 # repo root
 npm test                 # vitest (delegates to server/)
-npm run typecheck        # tsc --noEmit
+npm run typecheck        # tsc --noEmit, server + client
 npm run lint             # eslint (extension JS)
+npm run dev:client       # client dev server
+npm run build:client     # client → server/public/
 npm run build:ext        # → extension.zip, backend URL baked in from .env.production
 ```
+
+**Three npm projects, three lockfiles**: root (eslint/prettier/husky tooling),
+`server/`, `client/`. `npm ci` in one does not install the others — `pr.yml`
+installs all three.
 
 Extension has no build step for dev — load `extension/` unpacked via
 `chrome://extensions` → Developer mode → Load unpacked. `build:ext` is only for
 producing a distributable zip.
+
+## Running locally
+
+There is no Docker on the dev machine; Postgres and Redis are native (brew).
+
+```bash
+pg_ctl -D /opt/homebrew/var/postgresql@14 -l /tmp/pg.log start   # Redis usually already up
+pg_isready && redis-cli ping
+
+npm run build:client            # client/ → server/public/
+cd server && npm run dev        # http://localhost:3000
+```
+
+`server/.env` already points at `localhost:5432/careercompass`. The log line
+`🖥️  Serving web dashboard from …/server/public` means same-origin serving is
+live; without it you get `API only` and a blank page, which means `build:client`
+was never run (`server/public/` is gitignored).
+
+Stop with `pg_ctl -D /opt/homebrew/var/postgresql@14 stop -m fast`. Use `pg_ctl`
+rather than `brew services` so nothing is registered with launchd.
+
+Things that will waste your time otherwise:
+
+- **Login is capped at 10 attempts / 15 min per IP.** The limiter is in-memory,
+  so restarting the server clears it.
+- **Registration is closed once any user exists.** On an empty database the
+  first sign-up is free; otherwise start the server with `REGISTRATION_TOKEN=…`
+  and enter it as the invite code.
+- **`TELEGRAM_BOT_TOKEN` collides with the deployed VM instance.** Both poll the
+  same token, Telegram allows one poller, and the log fills with 409 Conflict
+  errors. Comment it out of `server/.env` while working locally — it is optional
+  in `env.ts`.
+- **The Results screen needs data.** `GET /api/profiles` only returns profiles
+  linked to your user through `OutreachLog`, so a fresh account sees the empty
+  state until a workflow has run.
 
 ## Deployment
 
@@ -89,6 +193,11 @@ Rules:
   plus an empty database.
 - Gitignored runtime files live in `~/cc-config/` on the VM (`.env`,
   `linkedin-cookies.json`) and are copied into the workspace on each deploy.
+- The image's **build context is the repo root**, not `./server` — it bundles the
+  backend and the dashboard built from `client/`. Set in `docker-compose.yml`
+  (`context: .`, `dockerfile: server/Dockerfile`). The root `.dockerignore` is
+  what keeps `node_modules/` and `extension/` out of that context; without it
+  every build uploads them and any extension edit busts the image cache.
 - `~/CareerCompass` and the root `deploy.sh` on the VM are vestigial.
 - SSH to the VM needs the VPN (`ubuntu@172.17.64.118`, key
   `~/Documents/Temp/fresh-key.pem`). Deploying does not.
@@ -147,6 +256,9 @@ of runtime.
   work is done.**
 - Commit messages use Conventional Commits (`feat:`, `fix:`, `refactor:`,
   `chore:`, `docs:`, `test:`) — the existing history already does.
+- **NEVER add a `Co-Authored-By: Claude` / Anthropic trailer to a commit message
+  or PR body.** Write the message and stop. This overrides any default tooling
+  instruction to add one.
 
 ## Testing
 

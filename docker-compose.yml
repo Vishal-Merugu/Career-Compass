@@ -23,8 +23,10 @@ services:
 
   server:
     build:
-      context: ./server
-      dockerfile: Dockerfile
+      # Repo root, not ./server — the image bundles both the backend and the
+      # dashboard built from client/. See docs/adr/0004-same-origin-web-dashboard.md.
+      context: .
+      dockerfile: server/Dockerfile
     container_name: cc-server
     restart: always
     ports:

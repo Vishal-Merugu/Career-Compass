@@ -22,6 +22,16 @@ const VOYAGER_BASE = 'https://www.linkedin.com/voyager/api';
 // Cookies LinkedIn's risk engine expects to see on a real session.
 const CRITICAL_COOKIES = ['li_at', 'JSESSIONID', 'bcookie', 'lidc'];
 
+// Per-provider budget for the egress lookup. Short on purpose: it runs before
+// the probe and four dead providers must not add minutes to the start.
+const EGRESS_TIMEOUT_MS = 6_000;
+
+/**
+ * An undici `Dispatcher`, kept structural so `undici` stays an optional
+ * dependency — the probe runs without it whenever PROXY_URL is unset.
+ */
+type Dispatcher = object | undefined;
+
 export interface CookieExport {
   cookies: Record<string, string>;
   userAgent: string;
@@ -198,6 +208,110 @@ function fmtDuration(ms: number): string {
   return `${m}m ${s % 60}s`;
 }
 
+// ─── Egress attribution ──────────────────────────────────────────
+// A run whose egress is unknown proves nothing: "the session survived" is only
+// meaningful attached to the network it survived *from*.
+
+/** All-string so it drops straight into the JSON report. */
+export type EgressInfo = Record<string, string>;
+
+interface EgressProvider {
+  name: string;
+  url: string;
+  map: (json: unknown) => Partial<EgressInfo>;
+}
+
+/**
+ * Read a (possibly nested) string field out of an unknown JSON body.
+ * Providers disagree on both field names and nesting, and every one of them
+ * has reshaped its response at some point — so nothing here may assume a shape.
+ */
+export function pick(json: unknown, path: string): string | undefined {
+  let cur: unknown = json;
+  for (const key of path.split('.')) {
+    if (typeof cur !== 'object' || cur === null) return undefined;
+    cur = (cur as Record<string, unknown>)[key];
+  }
+  if (typeof cur === 'string') return cur.trim() || undefined;
+  if (typeof cur === 'number' || typeof cur === 'boolean') return String(cur);
+  return undefined;
+}
+
+/**
+ * Tried in order until one answers. ipinfo.io is first because it is the
+ * richest and every earlier report used it — but it is hosted on GCP, which
+ * the VM's container network cannot reach, so it timed out on the whole --long
+ * run and that report has `"egress": {}`. The rest are on different networks
+ * deliberately: the point of a fallback chain is not to share a failure mode.
+ */
+const EGRESS_PROVIDERS: readonly EgressProvider[] = [
+  {
+    name: 'ipinfo.io',
+    url: 'https://ipinfo.io/json',
+    map: (j) => ({
+      ip: pick(j, 'ip'),
+      city: pick(j, 'city'),
+      country: pick(j, 'country'),
+      org: pick(j, 'org'),
+    }),
+  },
+  {
+    name: 'ipapi.is',
+    url: 'https://api.ipapi.is/',
+    map: (j) => ({
+      ip: pick(j, 'ip'),
+      city: pick(j, 'location.city'),
+      country: pick(j, 'location.country_code') ?? pick(j, 'cc'),
+      org: pick(j, 'asn.org') ?? pick(j, 'asn_org') ?? pick(j, 'company_name'),
+      // The one field that speaks directly to risk: LinkedIn scores hosting
+      // ASNs differently from consumer/university ones.
+      datacenter: pick(j, 'is_datacenter'),
+    }),
+  },
+  {
+    name: 'ifconfig.co',
+    url: 'https://ifconfig.co/json',
+    map: (j) => ({
+      ip: pick(j, 'ip'),
+      city: pick(j, 'city'),
+      country: pick(j, 'country_iso'),
+      org: pick(j, 'asn_org'),
+    }),
+  },
+  {
+    name: 'geojs.io',
+    url: 'https://get.geojs.io/v1/ip/geo.json',
+    map: (j) => ({
+      ip: pick(j, 'ip'),
+      city: pick(j, 'city'),
+      country: pick(j, 'country_code'),
+      org: pick(j, 'organization_name') ?? pick(j, 'organization'),
+    }),
+  },
+];
+
+const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
+const IPV6 = /^[0-9a-f:]+$/i;
+
+/**
+ * Normalise one provider's payload. Returns null when the answer is unusable —
+ * a body without a plausible IP is a captive portal or an error page, and
+ * recording `ip: "?"` from it would be worse than recording nothing.
+ */
+export function normaliseEgress(
+  source: string,
+  raw: Partial<EgressInfo>,
+): EgressInfo | null {
+  const ip = raw.ip;
+  if (!ip || !(IPV4.test(ip) || IPV6.test(ip))) return null;
+  const info: EgressInfo = { ip, source };
+  for (const key of ['city', 'country', 'org', 'datacenter'] as const) {
+    const value = raw[key];
+    if (value) info[key] = value;
+  }
+  return info;
+}
+
 /**
  * Report the egress IP/ASN actually used for the run.
  *
@@ -205,32 +319,74 @@ function fmtDuration(ms: number): string {
  * out through a different gateway than the VPN client you browse from. Run the
  * probe in both places and compare these lines — if the org/ASN differs, the
  * "LinkedIn already knows this network" assumption doesn't hold.
+ *
+ * Goes through the proxy dispatcher when there is one, so the line reports the
+ * path the Voyager calls actually take rather than the host's own route.
  */
-async function reportEgress(dispatcher: any): Promise<Record<string, string>> {
-  try {
-    const res = await fetch('https://ipinfo.io/json', {
-      headers: { accept: 'application/json' },
-      ...(dispatcher ? { dispatcher } : {}),
-    } as RequestInit);
-    const j: any = await res.json();
-    const info = {
-      ip: j.ip ?? '?',
-      city: j.city ?? '?',
-      country: j.country ?? '?',
-      org: j.org ?? '?',
-    };
-    console.log(
-      `   Egress:     ${info.ip} — ${info.city}, ${info.country} — ${info.org}`,
-    );
-    return info;
-  } catch {
-    console.log('   Egress:     (lookup failed — continuing)');
-    return {};
+async function reportEgress(dispatcher: Dispatcher): Promise<EgressInfo> {
+  const failures: string[] = [];
+
+  for (const provider of EGRESS_PROVIDERS) {
+    try {
+      const res = await fetch(provider.url, {
+        headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(EGRESS_TIMEOUT_MS),
+        ...(dispatcher ? { dispatcher } : {}),
+      } as RequestInit);
+      if (!res.ok) {
+        failures.push(`${provider.name}: HTTP ${res.status}`);
+        continue;
+      }
+      const info = normaliseEgress(
+        provider.name,
+        provider.map(await res.json()),
+      );
+      if (!info) {
+        failures.push(`${provider.name}: no IP in response`);
+        continue;
+      }
+      console.log(
+        `   Egress:     ${info.ip} — ${info.city ?? '?'}, ${info.country ?? '?'}` +
+          ` — ${info.org ?? '?'}  [${provider.name}]`,
+      );
+      if (info.datacenter === 'true') {
+        console.log(
+          '               ⚠️  datacenter ASN — LinkedIn risk-scores these\n' +
+            '                  harder than consumer/university networks.',
+        );
+      }
+      if (failures.length)
+        console.log(`               (after ${failures.join(', ')})`);
+      return info;
+    } catch (err) {
+      failures.push(`${provider.name}: ${errText(err)}`);
+    }
   }
+
+  // Previously this was a bare `catch {}` printing "(lookup failed)", which is
+  // why the --long run's failure went undiagnosed for hours. Say what broke.
+  console.log('   Egress:     ⚠️  UNKNOWN — all lookups failed');
+  for (const f of failures) console.log(`               ${f}`);
+  console.log(
+    '               The run continues, but its result cannot be\n' +
+      '               attributed to a network. Fix this before drawing\n' +
+      '               any conclusion about whether the egress is trusted.',
+  );
+  return { error: failures.join('; ') };
+}
+
+function errText(err: unknown): string {
+  if (err instanceof Error) {
+    // fetch wraps the real reason (ETIMEDOUT, ENOTFOUND, cert errors) in `cause`.
+    const cause = err.cause;
+    const detail = cause instanceof Error ? ` (${cause.message})` : '';
+    return `${err.name === 'TimeoutError' ? 'timed out' : err.message}${detail}`;
+  }
+  return String(err);
 }
 
 /** Optional proxy — only needed if the egress network is not already trusted. */
-async function buildDispatcher(): Promise<any | undefined> {
+async function buildDispatcher(): Promise<Dispatcher> {
   const url = process.env.PROXY_URL;
   if (!url) return undefined;
   try {
@@ -285,6 +441,15 @@ async function main() {
       args.includes(`--${p}`),
     ) ?? 'sustained';
   const phases = PROFILES[profileName];
+
+  // Egress attribution is a precondition for the whole probe, so it must be
+  // checkable on its own — finding out it is broken at the *end* of a 4h run
+  // is how the first --long run came back unattributable. Needs no cookies and
+  // touches nothing LinkedIn owns.
+  if (args.includes('--egress-only')) {
+    await reportEgress(await buildDispatcher());
+    return;
+  }
 
   if (!existsSync(COOKIE_FILE)) {
     printCookieInstructions();
@@ -378,7 +543,7 @@ async function probeOnce(
   phase: string,
   ep: { label: string; path: string; accept?: string },
   jar: CookieJar,
-  dispatcher: any,
+  dispatcher: Dispatcher,
 ): Promise<CallResult> {
   const started = Date.now();
   const base: CallResult = {
@@ -457,7 +622,7 @@ function report(
   fatal: CallResult | null,
   profileName: string,
   jar: CookieJar,
-  egress: Record<string, string>,
+  egress: EgressInfo,
 ) {
   const ok = results.filter((r) => r.ok).length;
   const rotations = results.flatMap((r) => r.rotated);
@@ -468,6 +633,16 @@ function report(
   console.log('📋 RESULT');
   console.log('━'.repeat(64));
   console.log(`   Succeeded:        ${ok}/${results.length}`);
+  // Repeated here, not just at the top: by the time a --long run finishes the
+  // header has scrolled away, and the verdict is meaningless without it.
+  console.log(
+    `   Egress:           ${
+      egress.ip
+        ? `${egress.ip} — ${egress.org ?? '?'}` +
+          (egress.datacenter === 'true' ? ' (datacenter ASN)' : '')
+        : '⚠️  unknown — verdict is not attributable to a network'
+    }`,
+  );
   console.log(
     `   Cookies rotated:  ${uniqRotated.length ? uniqRotated.join(', ') : 'none'}` +
       ` (${rotations.length} times)`,

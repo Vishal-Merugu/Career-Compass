@@ -2,12 +2,16 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
+import cookieParser from 'cookie-parser';
 import bcrypt from 'bcryptjs';
+import { resolve, join } from 'node:path';
+import { existsSync } from 'node:fs';
 import { env } from './config/env.js';
 import { logger } from './lib/logger.js';
 import { prisma } from './lib/prisma.js';
 import { requestLogger } from './middleware/requestLogger.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { NotFoundError } from './errors/AppError.js';
 import { authRouter } from './auth/routes.js';
 import { configRouter } from './api/config.router.js';
 import { profilesRouter } from './api/profiles.router.js';
@@ -24,38 +28,72 @@ import {
 
 const app = express();
 
-const allowedOrigins = process.env.CORS_ORIGIN
-  ? process.env.CORS_ORIGIN.split(',')
-  : ['*'];
+// The dashboard is served same-origin, so it needs no CORS allowance at all.
+// The only legitimate cross-origin caller is the Chrome extension, and every
+// one of its requests carries a `chrome-extension://` origin — it declares no
+// content scripts, so nothing ever calls this API from a linkedin.com page.
+//
+// The default used to be `['*']`, which reflected whatever Origin was sent.
+// That was survivable only because credentials are off (below); it was one
+// line away from letting any website read a signed-in user's data.
+const allowedOrigins =
+  process.env.CORS_ORIGIN?.split(',')
+    .map((o) => o.trim())
+    .filter(Boolean) ?? [];
 
 const corsOptions = {
   origin: (
     origin: string | undefined,
     callback: (err: Error | null, allow?: boolean) => void,
   ) => {
-    if (
+    // No Origin header: same-origin requests, curl, the Telegram bot.
+    const allowed =
       !origin ||
-      allowedOrigins.includes('*') ||
-      allowedOrigins.includes(origin) ||
-      origin.startsWith('chrome-extension://')
-    ) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
+      origin.startsWith('chrome-extension://') ||
+      allowedOrigins.includes(origin);
+    // `false` omits the CORS headers and lets the browser block it. Passing an
+    // Error here instead would surface as an opaque 500 through errorHandler.
+    callback(null, allowed);
   },
+  // Never enable this. The dashboard session is a cookie, and allowing
+  // credentialed cross-origin reads would turn any gap in the origin list above
+  // into account takeover. The extension authenticates with a header, not a
+  // cookie, so it does not need credentialed CORS.
+  credentials: false,
 };
 
-app.use(helmet());
+// `upgrade-insecure-requests` is in helmet's default CSP, and it tells the
+// browser to rewrite every http:// subresource URL to https://. The VM serves
+// the dashboard as plain HTTP on a private IP with nothing listening on 443, so
+// leaving it on would upgrade the page's own /assets/*.js and render a blank
+// page. Dropped unless HTTPS is actually terminated in front of us — the same
+// condition that gates the `secure` cookie flag in auth/cookies.ts.
+const isHttps = process.env.HTTPS === 'true';
+
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: isHttps ? {} : { upgradeInsecureRequests: null },
+    },
+  }),
+);
 app.use(cors(corsOptions));
 app.use(compression());
 app.use(express.json());
+// Reads the httpOnly session cookie the dashboard authenticates with.
+app.use(cookieParser());
 app.use(requestLogger);
 
 // Mount API routers
 app.use('/api/auth', authRouter);
 app.use('/api/config', configRouter);
-app.use('/api/profiles', profilesRouter);
+// Mounted at /api, not /api/profiles: this router's own routes are already
+// `/profiles` and `/companies`, so the deeper mount served them at
+// /api/profiles/profiles and /api/profiles/companies. Nothing consumed either
+// path — the extension does not call them — so the mount is the bug, not the
+// routes.
+app.use('/api', profilesRouter);
 app.use('/api/sync', syncRouter);
 app.use('/api', jobsRouter);
 
@@ -63,6 +101,35 @@ app.use('/api', jobsRouter);
 app.get('/health', (req, res) => {
   res.status(200).json({ ok: true, timestamp: new Date() });
 });
+
+// Unmatched /api/* must fail as JSON. Without this, Express's built-in 404
+// replies with an HTML error page, and a client that mistypes a route gets a
+// parse error instead of a status code it can act on.
+app.use('/api', (_req, _res, next) => {
+  next(new NotFoundError('API route not found'));
+});
+
+// ─── Web dashboard ───────────────────────────────────────────────
+// Built by `client/` (Vite) into `server/public`, served same-origin so the
+// client calls /api/... as a relative path — no CORS, no mixed content.
+// See docs/adr/0004-same-origin-web-dashboard.md.
+//
+// Registered AFTER the API routers so /api/* always wins, and the SPA fallback
+// deliberately excludes /api and /health so a wrong URL there still 404s as JSON
+// instead of silently returning the dashboard's index.html.
+const webRoot = resolve(process.cwd(), 'public');
+
+if (existsSync(webRoot)) {
+  app.use(express.static(webRoot));
+  app.get(/^(?!\/(api|health)(\/|$)).*/, (_req, res) => {
+    res.sendFile(join(webRoot, 'index.html'));
+  });
+  logger.info(`🖥️  Serving web dashboard from ${webRoot}`);
+} else {
+  logger.warn(
+    `No web build at ${webRoot} — API only. Run \`npm run build:client\` to generate it.`,
+  );
+}
 
 // Mount error handler middleware
 app.use(errorHandler);

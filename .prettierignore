@@ -3,12 +3,16 @@ node_modules/
 dist-extension/
 extension.zip
 
+# Dashboard build output (client/ → server/public), generated
+server/public/
+
 # Vendored, minified — not ours to format
 extension/services/socket.io.min.js
 
 # Generated
 package-lock.json
 server/package-lock.json
+client/package-lock.json
 server/prisma/migrations/
 
 # Secrets / runtime artefacts (gitignored, but keep prettier off them anyway)
