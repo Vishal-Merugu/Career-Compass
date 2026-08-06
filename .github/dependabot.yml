@@ -23,6 +23,10 @@ updates:
         patterns:
           - 'husky'
           - 'lint-staged'
+    # Same rule as the server ecosystem below — see the note there.
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
 
   # The application.
   - package-ecosystem: 'npm'
@@ -68,6 +72,31 @@ updates:
         update-types:
           - 'minor'
           - 'patch'
+
+    # No major bumps, ever. Minor and patch still arrive weekly.
+    #
+    # A major is a migration, not a version bump, and Dependabot cannot do the
+    # code change that goes with it — so it opens a PR that is red by
+    # construction. Three have already shown up here:
+    #
+    #   #7  prisma 5.14 -> 7.9.1   removed `url` from the datasource block;
+    #                              broke `prisma generate`, and was merged
+    #                              over a red check
+    #   #9  typescript 5.9 -> 7.0  plus @types/node 20 -> 26, six majors of
+    #                              type definitions ahead of .nvmrc
+    #   #8  express 4 -> 5         `req.query` becomes `string | string[]`,
+    #                              breaking ~15 call sites in jobs.router.ts
+    #
+    # This has to be `ignore`, not `update-types` on the groups above: a
+    # group's update-types only decides what gets bundled together, so an
+    # excluded major still arrives as its own PR. The `other` group was
+    # already capped that way and majors came through regardless.
+    #
+    # To upgrade something: delete nothing here, just run the migration on a
+    # branch and bump it by hand.
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: 'github-actions'
     directory: '/'
