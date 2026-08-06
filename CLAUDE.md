@@ -139,6 +139,41 @@ Extension has no build step for dev — load `extension/` unpacked via
 `chrome://extensions` → Developer mode → Load unpacked. `build:ext` is only for
 producing a distributable zip.
 
+## Running locally
+
+There is no Docker on the dev machine; Postgres and Redis are native (brew).
+
+```bash
+pg_ctl -D /opt/homebrew/var/postgresql@14 -l /tmp/pg.log start   # Redis usually already up
+pg_isready && redis-cli ping
+
+npm run build:client            # client/ → server/public/
+cd server && npm run dev        # http://localhost:3000
+```
+
+`server/.env` already points at `localhost:5432/careercompass`. The log line
+`🖥️  Serving web dashboard from …/server/public` means same-origin serving is
+live; without it you get `API only` and a blank page, which means `build:client`
+was never run (`server/public/` is gitignored).
+
+Stop with `pg_ctl -D /opt/homebrew/var/postgresql@14 stop -m fast`. Use `pg_ctl`
+rather than `brew services` so nothing is registered with launchd.
+
+Things that will waste your time otherwise:
+
+- **Login is capped at 10 attempts / 15 min per IP.** The limiter is in-memory,
+  so restarting the server clears it.
+- **Registration is closed once any user exists.** On an empty database the
+  first sign-up is free; otherwise start the server with `REGISTRATION_TOKEN=…`
+  and enter it as the invite code.
+- **`TELEGRAM_BOT_TOKEN` collides with the deployed VM instance.** Both poll the
+  same token, Telegram allows one poller, and the log fills with 409 Conflict
+  errors. Comment it out of `server/.env` while working locally — it is optional
+  in `env.ts`.
+- **The Results screen needs data.** `GET /api/profiles` only returns profiles
+  linked to your user through `OutreachLog`, so a fresh account sees the empty
+  state until a workflow has run.
+
 ## Deployment
 
 **`git push` does NOT deploy.** Nothing deploys automatically, ever.
