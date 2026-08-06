@@ -8,19 +8,36 @@ import {
   QueryClientProvider,
 } from '@tanstack/react-query';
 import { BrowserRouter } from 'react-router-dom';
+
+// ─── Stylesheets ─────────────────────────────────────────────────
+//
+// These MUST come before any local component import, and the order is load
+// bearing rather than tidiness.
+//
+// ES imports evaluate top to bottom, and a `*.module.css` is emitted when the
+// component importing it is evaluated. With `./App` above this block, every
+// module stylesheet in the app landed BEFORE Mantine's, and Mantine's own
+// rules are single-class — same specificity as a CSS module — so the later
+// sheet won every tie.
+//
+// What that cost: `.navLink { padding: 10px 12px }` lost to
+// `UnstyledButton`'s `padding: 0`, so the nav items had no padding at all and
+// the hover fill sat flush against the icon. The `!important`s in
+// ResultsPage.module.css are the same bug, worked around one rule at a time.
+//
+// Self-hosted font: the VM is VPN-only and may not reach a font CDN, and an
+// http:// page fetching a webfont is a render-blocking request we do not need.
+import '@fontsource-variable/inter';
+import '@mantine/core/styles.css';
+import '@mantine/notifications/styles.css';
+import './theme/global.css';
+
+// Local modules last, so their CSS modules are emitted after Mantine's and
+// win the ties they are written to win.
 import { App } from './App';
 import { AuthProvider, ME_QUERY_KEY } from './auth/AuthProvider';
 import { ApiError } from './api/client';
 import { theme, cssVariablesResolver } from './theme/theme';
-
-// Self-hosted, bundled into server/public. The VM is VPN-only and a font CDN
-// may not be reachable from it — and an http:// page fetching a webfont over
-// the network is a render-blocking request we do not need.
-import '@fontsource-variable/inter';
-
-import '@mantine/core/styles.css';
-import '@mantine/notifications/styles.css';
-import './theme/global.css';
 
 const queryClient = new QueryClient({
   // A 401 from ANY query means the session is gone — a cookie expiring while
