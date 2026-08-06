@@ -4,10 +4,13 @@ import type { CSSVariablesResolver, MantineColorsTuple } from '@mantine/core';
 /**
  * Design tokens.
  *
- * The look is neutral-dominant on purpose: one restrained accent, hairline
- * borders instead of shadows, and a warm off-white rather than pure #fff. Colour
- * is reserved for things that mean something — the primary action, and status.
- * Nothing decorative gets a hue.
+ * The look is neutral-dominant on purpose: one restrained accent and a warm
+ * off-white rather than pure #fff. Colour is reserved for things that mean
+ * something — the primary action, and status. Nothing decorative gets a hue.
+ *
+ * Depth was originally hairlines only, with shadows at 0.04–0.10 alpha. In
+ * practice that read as flat rather than restrained, so surfaces now carry a
+ * real two-layer elevation. Hairlines still define the edges.
  */
 
 /** Deep indigo. Used for the primary action, focus, and the active nav item. */
@@ -81,13 +84,21 @@ export const theme = createTheme({
   defaultRadius: 'md',
   radius: { xs: rem(4), sm: rem(6), md: rem(8), lg: rem(12), xl: rem(16) },
 
-  // Depth comes from hairlines, not drop shadows. These stay deliberately faint
-  // and are used only where something genuinely floats.
+  // Hairlines still define edges; these give surfaces somewhere to sit. The
+  // original values (0.04–0.10 alpha) were faint enough to be invisible in
+  // practice, which read as flat rather than as restrained.
+  //
+  // Two layers each: a tight contact shadow for the edge and a wider ambient
+  // one for the lift. A single blurred shadow is what makes an interface look
+  // like a wireframe with a filter over it.
+  //
+  // Dark mode does NOT reuse these — a black shadow on a near-black surface is
+  // invisible. See --app-shadow-* in the resolver below.
   shadows: {
-    xs: '0 1px 2px rgba(16, 17, 20, 0.04)',
-    sm: '0 1px 3px rgba(16, 17, 20, 0.06), 0 1px 2px rgba(16, 17, 20, 0.04)',
-    md: '0 4px 12px rgba(16, 17, 20, 0.07), 0 1px 3px rgba(16, 17, 20, 0.05)',
-    lg: '0 12px 32px rgba(16, 17, 20, 0.10), 0 2px 6px rgba(16, 17, 20, 0.05)',
+    xs: '0 1px 2px rgba(16, 17, 20, 0.06)',
+    sm: '0 1px 2px rgba(16, 17, 20, 0.07), 0 2px 6px rgba(16, 17, 20, 0.05)',
+    md: '0 2px 4px rgba(16, 17, 20, 0.06), 0 6px 16px rgba(16, 17, 20, 0.08)',
+    lg: '0 4px 8px rgba(16, 17, 20, 0.07), 0 16px 40px rgba(16, 17, 20, 0.12)',
   },
 
   components: {
@@ -139,6 +150,10 @@ export const cssVariablesResolver: CSSVariablesResolver = () => ({
     // item's icon. brand-7 in light, brand-4 in dark: the mid tuple steps are
     // too weak on white and too strong on near-black respectively.
     '--app-accent': '#3c4aae',
+    '--app-shadow-sm':
+      '0 1px 2px rgba(16, 17, 20, 0.07), 0 2px 6px rgba(16, 17, 20, 0.05)',
+    '--app-shadow-md':
+      '0 2px 4px rgba(16, 17, 20, 0.06), 0 6px 16px rgba(16, 17, 20, 0.08)',
     '--app-overlay': 'rgba(251, 251, 250, 0.72)',
     // Mantine resolves `c="dimmed"` to gray-6 / dark-2, which is tuned for
     // captions. Most secondary text in this app is 13px body copy, and at that
@@ -157,6 +172,14 @@ export const cssVariablesResolver: CSSVariablesResolver = () => ({
     '--app-ink-muted': '#a4a5ae',
     '--app-hover': 'rgba(255, 255, 255, 0.06)',
     '--app-accent': '#6d78ce',
+    // Darker AND more opaque than light mode. A shadow works by darkening what
+    // is behind it, and there is very little headroom left below #0b0b0d — so
+    // dark mode leans on the inset highlight along the top edge instead, which
+    // is what actually reads as "raised" against a black background.
+    '--app-shadow-sm':
+      '0 1px 2px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.045)',
+    '--app-shadow-md':
+      '0 2px 6px rgba(0, 0, 0, 0.5), 0 8px 24px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.055)',
     '--app-overlay': 'rgba(11, 11, 13, 0.72)',
     '--mantine-color-dimmed': '#a4a5ae',
   },

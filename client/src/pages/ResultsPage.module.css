@@ -2,6 +2,9 @@
   background-color: var(--app-surface);
   border: 1px solid var(--app-border);
   border-radius: var(--mantine-radius-lg);
+  /* Scheme-aware: a black shadow is invisible on a near-black background, so
+     dark mode swaps in an inset top highlight. See theme.ts. */
+  box-shadow: var(--app-shadow-sm);
   overflow: hidden;
 }
 

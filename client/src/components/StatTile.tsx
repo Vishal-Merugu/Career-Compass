@@ -34,6 +34,7 @@ export function StatTile({ label, value, hint, icon, loading }: StatTileProps) {
       style={{
         backgroundColor: 'var(--app-surface)',
         border: '1px solid var(--app-border)',
+        boxShadow: 'var(--app-shadow-sm)',
       }}
     >
       <Group justify="space-between" align="flex-start" wrap="nowrap">
