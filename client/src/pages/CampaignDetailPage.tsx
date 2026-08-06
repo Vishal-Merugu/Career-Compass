@@ -35,19 +35,14 @@ import type {
   CampaignContact,
   CampaignDetailResponse,
   CampaignProgress,
-  ContactStatus,
 } from '../api/types';
+import { EmptyState } from '../components/EmptyState';
 import { StatTile } from '../components/StatTile';
-import classes from './ResultsPage.module.css';
-
-const CONTACT_COLOR: Record<ContactStatus, string> = {
-  PENDING: 'gray',
-  GENERATING: 'violet',
-  SENDING: 'blue',
-  SUCCESS: 'teal',
-  FAILED: 'red',
-  SKIPPED: 'gray',
-};
+import {
+  CampaignStatusBadge,
+  ContactStatusBadge,
+} from '../components/StatusBadge';
+import classes from './CampaignDetailPage.module.css';
 
 /**
  * Subscribe to the campaign's SSE stream and fold each frame into the cached
@@ -283,20 +278,7 @@ export function CampaignDetailPage() {
           <Box>
             <Group gap="sm">
               <Title order={2}>{campaign.name}</Title>
-              <Badge
-                variant="light"
-                color={
-                  campaign.status === 'COMPLETE'
-                    ? 'teal'
-                    : campaign.status === 'SENDING'
-                      ? 'blue'
-                      : campaign.status === 'FAILED'
-                        ? 'red'
-                        : 'gray'
-                }
-              >
-                {campaign.status.toLowerCase()}
-              </Badge>
+              <CampaignStatusBadge status={campaign.status} size="md" />
             </Group>
             <Text c="dimmed" fz={14} mt={4}>
               {campaign.emailSubject}
@@ -394,18 +376,13 @@ export function CampaignDetailPage() {
 
       <div className={classes.panel}>
         {contacts.length === 0 ? (
-          <Stack align="center" py={56} px="md" gap={6}>
-            <Box c="dimmed" style={{ opacity: 0.4 }}>
-              <IconMail size={32} stroke={1.4} />
-            </Box>
-            <Text fw={600} fz={15} mt={6}>
-              No contacts yet
-            </Text>
-            <Text c="dimmed" fz={13.5} ta="center" maw={400}>
-              Select profiles on the <Link to="/results">Results</Link> screen
-              and add them to this campaign.
-            </Text>
-          </Stack>
+          <EmptyState
+            title="No contacts yet"
+            icon={<IconMail size={34} stroke={1.4} />}
+          >
+            Select profiles on the <Link to="/results">Results</Link> screen and
+            add them to this campaign.
+          </EmptyState>
         ) : (
           <div className={classes.tableWrap}>
             <Table
@@ -426,7 +403,7 @@ export function CampaignDetailPage() {
                 {contacts.map((c) => (
                   <Table.Tr key={c.id}>
                     <Table.Td>
-                      <Text fz={13.5} fw={550} lineClamp={1}>
+                      <Text className={classes.contactName} lineClamp={1}>
                         {c.name}
                       </Text>
                     </Table.Td>
@@ -439,19 +416,13 @@ export function CampaignDetailPage() {
                       </a>
                     </Table.Td>
                     <Table.Td>
-                      <Text fz={13} c="dimmed" lineClamp={1}>
+                      <Text className={classes.company} lineClamp={1}>
                         {c.companyName ?? '—'}
                       </Text>
                     </Table.Td>
                     <Table.Td>
                       <Group gap={6} wrap="nowrap">
-                        <Badge
-                          size="sm"
-                          variant="light"
-                          color={CONTACT_COLOR[c.status]}
-                        >
-                          {c.status.toLowerCase()}
-                        </Badge>
+                        <ContactStatusBadge status={c.status} />
                         {c.errorMessage && (
                           <Tooltip
                             label={c.errorMessage}
@@ -461,7 +432,7 @@ export function CampaignDetailPage() {
                           >
                             <IconAlertCircle
                               size={14}
-                              style={{ opacity: 0.6, cursor: 'help' }}
+                              className={classes.errorHint}
                             />
                           </Tooltip>
                         )}
@@ -478,16 +449,29 @@ export function CampaignDetailPage() {
                             auto
                           </Text>
                         )}
-                        <Tooltip label="Edit draft">
-                          <ActionIcon
-                            variant="subtle"
-                            color="gray"
-                            size="sm"
-                            onClick={() => setEditing(c)}
-                            disabled={c.status === 'SUCCESS'}
-                          >
-                            <IconEdit size={14} />
-                          </ActionIcon>
+                        <Tooltip
+                          label={
+                            c.status === 'SUCCESS'
+                              ? 'Already sent'
+                              : 'Edit draft'
+                          }
+                        >
+                          {/* Wrapped so the tooltip still fires when the
+                              button is disabled — a disabled control emits no
+                              pointer events of its own. */}
+                          <Box>
+                            <ActionIcon
+                              variant="subtle"
+                              color="gray"
+                              size="sm"
+                              className={classes.rowAction}
+                              aria-label={`Edit draft for ${c.name}`}
+                              onClick={() => setEditing(c)}
+                              disabled={c.status === 'SUCCESS'}
+                            >
+                              <IconEdit size={14} />
+                            </ActionIcon>
+                          </Box>
                         </Tooltip>
                       </Group>
                     </Table.Td>

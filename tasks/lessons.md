@@ -322,6 +322,24 @@ all the structure and cannot be that faint.
 `cssVariablesResolver` (now 7.30:1 / 6.54:1). Measure contrast rather than
 eyeballing it — the resolver's values are the single place to change it.
 
+### A CSS module cannot override what it `composes`
+
+Pass the variable part in through a custom property. Never redeclare, in the
+composing rule, a property the base rule already sets.
+
+**Why:** `.tableFooter { composes: panelBar; padding: 10px 14px; background:
+sunken }` rendered with `padding: 14px` and the plain surface colour. `composes`
+puts both classes on the element — identical single-class specificity — and the
+bundler emits `dataPanel.module.css` _after_ the page stylesheets that compose
+from it, so the base won every tie. Caught only by reading the emitted
+`server/public/assets/index-*.css`; typecheck, lint and the build were all green.
+
+**Apply:** `client/src/styles/dataPanel.module.css`. Base classes there carry
+only what no consumer will ever change; per-screen values (`--table-max-height`,
+`--table-min-width`) are custom properties the base reads with a fallback. This
+is the same specificity-tie failure as the Mantine import-order bug (`6c7f152`),
+one layer down.
+
 ### Styling an attribute you never wrote CSS for
 
 `ResultsPage` set `data-selected` on selected rows and nothing rendered it, so

@@ -23,7 +23,6 @@ import {
   IconAlertCircle,
   IconBuilding,
   IconExternalLink,
-  IconInbox,
   IconMail,
   IconMailPlus,
   IconRefresh,
@@ -45,6 +44,7 @@ import type {
   Profile,
   ProfilesResponse,
 } from '../api/types';
+import { EmptyState } from '../components/EmptyState';
 import { StatTile } from '../components/StatTile';
 import { CampaignForm } from './CampaignsPage';
 import classes from './ResultsPage.module.css';
@@ -124,28 +124,6 @@ function TableSkeleton() {
         ))}
       </Table.Tbody>
     </Table>
-  );
-}
-
-function EmptyState({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <Stack align="center" py={64} px="md" gap={6}>
-      <Box c="dimmed" style={{ opacity: 0.4 }}>
-        <IconInbox size={34} stroke={1.4} />
-      </Box>
-      <Text fw={600} fz={15} mt={6}>
-        {title}
-      </Text>
-      <Text c="dimmed" fz={13.5} ta="center" maw={380}>
-        {children}
-      </Text>
-    </Stack>
   );
 }
 

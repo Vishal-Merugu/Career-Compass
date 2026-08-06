@@ -1,0 +1,63 @@
+/* Campaign list. Shares the panel and table surface with Results and Campaign
+   detail — see styles/dataPanel.module.css — and owns nothing else that they
+   need. */
+
+.panel {
+  composes: panel from '../styles/dataPanel.module.css';
+}
+
+.tableWrap {
+  composes: tableWrap from '../styles/dataPanel.module.css';
+  /* No toolbar and no footer here, so the table gets the room Results spends
+     on both. */
+  --table-max-height: min(calc(100vh - 260px), 720px);
+}
+
+.table {
+  composes: table from '../styles/dataPanel.module.css';
+  /* Four columns, two of them narrow. Results' 940px floor made this table
+     scroll sideways on a laptop for no reason. */
+  --table-min-width: 720px;
+}
+
+/* The whole row navigates. The row itself cannot take focus, so the campaign
+   name is a real link and this only styles the pointer affordance — keyboard
+   users tab to the name and press Enter. */
+.row {
+  cursor: pointer;
+}
+
+.nameLink {
+  color: var(--app-ink);
+  text-decoration: none;
+  display: block;
+  transition: color 110ms ease;
+}
+
+.row:hover .nameLink,
+.nameLink:focus-visible {
+  color: var(--mantine-color-brand-6);
+}
+
+/* Counts sit next to a progress bar and change while a campaign sends, so they
+   are tabular — proportional figures make the column twitch on every frame. */
+.count {
+  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+  color: var(--app-ink-muted);
+  width: 76px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.progressBar {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Timestamps are reference material, not the subject of the row. */
+.created {
+  font-size: 13px;
+  color: var(--app-ink-muted);
+  font-variant-numeric: tabular-nums;
+}

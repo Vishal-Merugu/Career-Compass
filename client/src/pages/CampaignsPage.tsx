@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import {
   Alert,
-  Badge,
   Box,
   Button,
   Group,
@@ -16,26 +15,14 @@ import {
   TextInput,
   Title,
 } from '@mantine/core';
-import {
-  IconAlertCircle,
-  IconInbox,
-  IconPlus,
-  IconRefresh,
-} from '@tabler/icons-react';
+import { IconAlertCircle, IconPlus, IconRefresh } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
-import type { Campaign, CampaignsResponse, CampaignStatus } from '../api/types';
-import classes from './ResultsPage.module.css';
-
-/** Colour carries meaning here, so it is one of the few places with a hue. */
-const STATUS_COLOR: Record<CampaignStatus, string> = {
-  PENDING: 'gray',
-  SENDING: 'blue',
-  COMPLETE: 'teal',
-  STOPPED: 'orange',
-  FAILED: 'red',
-};
+import type { Campaign, CampaignsResponse } from '../api/types';
+import { EmptyState } from '../components/EmptyState';
+import { CampaignStatusBadge } from '../components/StatusBadge';
+import classes from './CampaignsPage.module.css';
 
 export function CampaignForm({
   onCreated,
@@ -213,19 +200,11 @@ export function CampaignsPage() {
             ))}
           </Stack>
         ) : campaigns.length === 0 ? (
-          <Stack align="center" py={64} px="md" gap={6}>
-            <Box c="dimmed" style={{ opacity: 0.4 }}>
-              <IconInbox size={34} stroke={1.4} />
-            </Box>
-            <Text fw={600} fz={15} mt={6}>
-              No campaigns yet
-            </Text>
-            <Text c="dimmed" fz={13.5} ta="center" maw={400}>
-              Create one here, or select profiles on the{' '}
-              <Link to="/results">Results</Link> screen and start a campaign
-              from there.
-            </Text>
-          </Stack>
+          <EmptyState title="No campaigns yet">
+            Create one here, or select profiles on the{' '}
+            <Link to="/results">Results</Link> screen and start a campaign from
+            there.
+          </EmptyState>
         ) : (
           <div className={classes.tableWrap}>
             <Table
@@ -249,25 +228,28 @@ export function CampaignsPage() {
                   return (
                     <Table.Tr
                       key={c.id}
-                      style={{ cursor: 'pointer' }}
+                      className={classes.row}
                       onClick={() => navigate(`/campaigns/${c.id}`)}
                     >
                       <Table.Td>
-                        <Text fz={13.5} fw={550} lineClamp={1}>
-                          {c.name}
-                        </Text>
+                        {/* A real link, not just a click handler on the row:
+                            the row cannot take focus, so without this the
+                            screen is unreachable by keyboard. */}
+                        <Link
+                          to={`/campaigns/${c.id}`}
+                          className={classes.nameLink}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <Text fz={13.5} fw={550} lineClamp={1} inherit>
+                            {c.name}
+                          </Text>
+                        </Link>
                         <Text fz={12.5} c="dimmed" lineClamp={1}>
                           {c.emailSubject}
                         </Text>
                       </Table.Td>
                       <Table.Td>
-                        <Badge
-                          size="sm"
-                          variant="light"
-                          color={STATUS_COLOR[c.status]}
-                        >
-                          {c.status.toLowerCase()}
-                        </Badge>
+                        <CampaignStatusBadge status={c.status} />
                       </Table.Td>
                       <Table.Td>
                         <Group gap={10} wrap="nowrap">
@@ -275,12 +257,12 @@ export function CampaignsPage() {
                             value={pct}
                             size="sm"
                             radius="xl"
-                            style={{ flex: 1 }}
+                            className={classes.progressBar}
                             color={c.failedCount > 0 ? 'orange' : 'brand'}
                           />
-                          <Text fz={12.5} c="dimmed" w={72} ta="right">
+                          <span className={classes.count}>
                             {done}/{c.totalContacts}
-                          </Text>
+                          </span>
                         </Group>
                         {c.failedCount > 0 && (
                           <Text fz={12} c="orange.7" mt={3}>
@@ -289,9 +271,9 @@ export function CampaignsPage() {
                         )}
                       </Table.Td>
                       <Table.Td>
-                        <Text fz={13} c="dimmed">
+                        <span className={classes.created}>
                           {new Date(c.createdAt).toLocaleString()}
-                        </Text>
+                        </span>
                       </Table.Td>
                     </Table.Tr>
                   );
