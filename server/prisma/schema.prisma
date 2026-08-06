@@ -71,6 +71,13 @@ model UserConfig {
   // signature the model wrote using a regex over that same name.
   emailSignature String? @db.Text
 
+  // The CV attached to every campaign's emails. Held per user rather than
+  // per campaign: the mailer stored it on Campaign and its uploads/ dir ended
+  // up with fifteen byte-identical copies of the same PDF, one per campaign,
+  // none of which anything ever deleted.
+  resumeFileName String?
+  resumeFilePath String?
+
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
@@ -271,9 +278,6 @@ model Campaign {
   // rate-limit and eventually flag an account that sends without any pacing.
   minDelayMs Int @default(5000)
   maxDelayMs Int @default(10000)
-
-  resumeFileName String?
-  resumeFilePath String?
 
   // Denormalised counters so the list screen does not aggregate per row.
   totalContacts Int @default(0)
