@@ -139,7 +139,12 @@ export function DashboardLayout() {
         </Group>
       </AppShell.Header>
 
-      <AppShell.Navbar className={classes.navbar} p="sm" withBorder={false}>
+      <AppShell.Navbar
+        className={classes.navbar}
+        px="md"
+        py="sm"
+        withBorder={false}
+      >
         <Stack gap={26} style={{ height: '100%' }}>
           {NAV_SECTIONS.map((section) => (
             <Stack key={section.label} gap={3}>

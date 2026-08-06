@@ -134,6 +134,11 @@ export const cssVariablesResolver: CSSVariablesResolver = () => ({
     // Hover fills are their own token rather than reusing the border colour.
     // A border tint is calibrated for a 1px line, not for a filled area.
     '--app-hover': 'rgba(16, 17, 20, 0.05)',
+    // The accent at a strength that survives on a surface, for the few marks
+    // that carry meaning rather than decoration — currently the active nav
+    // item's icon. brand-7 in light, brand-4 in dark: the mid tuple steps are
+    // too weak on white and too strong on near-black respectively.
+    '--app-accent': '#3c4aae',
     '--app-overlay': 'rgba(251, 251, 250, 0.72)',
     // Mantine resolves `c="dimmed"` to gray-6 / dark-2, which is tuned for
     // captions. Most secondary text in this app is 13px body copy, and at that
@@ -151,6 +156,7 @@ export const cssVariablesResolver: CSSVariablesResolver = () => ({
     '--app-ink': '#f0f0f2',
     '--app-ink-muted': '#a4a5ae',
     '--app-hover': 'rgba(255, 255, 255, 0.06)',
+    '--app-accent': '#6d78ce',
     '--app-overlay': 'rgba(11, 11, 13, 0.72)',
     '--mantine-color-dimmed': '#a4a5ae',
   },
