@@ -16,8 +16,10 @@ import { useDisclosure } from '@mantine/hooks';
 import {
   IconChevronDown,
   IconLogout,
+  IconMail,
   IconMoon,
   IconSun,
+  IconSettings,
   IconTable,
 } from '@tabler/icons-react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
@@ -29,6 +31,13 @@ const NAV_SECTIONS = [
   {
     label: 'Pipeline',
     items: [{ to: '/results', label: 'Results', icon: IconTable }],
+  },
+  {
+    label: 'Outreach',
+    items: [
+      { to: '/campaigns', label: 'Campaigns', icon: IconMail },
+      { to: '/settings', label: 'Settings', icon: IconSettings },
+    ],
   },
 ];
 
@@ -143,7 +152,11 @@ export function DashboardLayout() {
                   component={Link}
                   to={to}
                   className={classes.navLink}
-                  data-active={location.pathname === to || undefined}
+                  data-active={
+                    location.pathname === to ||
+                    location.pathname.startsWith(`${to}/`) ||
+                    undefined
+                  }
                   onClick={close}
                 >
                   <Group gap={10} wrap="nowrap">

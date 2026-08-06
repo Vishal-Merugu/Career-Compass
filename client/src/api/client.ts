@@ -85,6 +85,52 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+/**
+ * Multipart upload.
+ *
+ * Deliberately does NOT go through `request`, which sets
+ * `Content-Type: application/json` on every call. For a FormData body the
+ * browser has to set that header itself — it appends the multipart boundary,
+ * and a hand-written value omits it, so the server sees an unparseable body
+ * and reports "no file was uploaded".
+ */
+async function upload<T>(path: string, form: FormData): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      method: 'POST',
+      body: form,
+      credentials: 'include',
+    });
+  } catch {
+    throw new ApiError(
+      'Cannot reach the server. Is the VPN connected?',
+      0,
+      null,
+    );
+  }
+
+  const isJson = res.headers.get('content-type')?.includes('application/json');
+  if (!isJson) {
+    throw new ApiError(
+      `Unexpected non-JSON response (HTTP ${res.status})`,
+      res.status,
+      null,
+    );
+  }
+
+  const body: unknown = await res.json();
+  if (!res.ok) {
+    const err = (body as ErrorBody).error;
+    throw new ApiError(
+      err?.message ?? `Upload failed with HTTP ${res.status}`,
+      res.status,
+      err?.code ?? null,
+    );
+  }
+  return body as T;
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, payload?: unknown) =>
@@ -92,4 +138,11 @@ export const api = {
       method: 'POST',
       body: payload === undefined ? undefined : JSON.stringify(payload),
     }),
+  put: <T>(path: string, payload?: unknown) =>
+    request<T>(path, {
+      method: 'PUT',
+      body: payload === undefined ? undefined : JSON.stringify(payload),
+    }),
+  del: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
+  upload,
 };
