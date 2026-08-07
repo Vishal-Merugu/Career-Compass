@@ -101,18 +101,27 @@ export const theme = createTheme({
   // is bright at every shade a filled control would want to use.
   autoContrast: true,
 
+  // Plus Jakarta Sans: warmer and rounder than Inter, which is what a warm
+  // palette wants under it — a cold neutral grotesk over copper looks like two
+  // designs stacked. Its lowercase 'a' and 'g' carry enough character to be
+  // recognisable without becoming a personality in a table of 200 rows.
   fontFamily:
-    '"Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    '"Plus Jakarta Sans Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
   fontFamilyMonospace:
-    'ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace',
+    '"JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace',
 
   headings: {
     fontWeight: '600',
+    // h1 and h2 are overridden to Instrument Serif in global.css — see the note
+    // there. h3 and h4 stay in the sans: they label sections inside a form, and
+    // a serif at 19px reads as a mistake rather than as a decision.
     sizes: {
       // Negative tracking on large text is most of what separates a considered
-      // typographic setting from a default one.
-      h1: { fontSize: rem(30), lineHeight: '1.2', fontWeight: '650' },
-      h2: { fontSize: rem(24), lineHeight: '1.25', fontWeight: '650' },
+      // typographic setting from a default one. The serif sizes are larger and
+      // lighter than the sans they replaced — a display serif at 650 weight is
+      // a different typeface's job.
+      h1: { fontSize: rem(36), lineHeight: '1.14', fontWeight: '400' },
+      h2: { fontSize: rem(29), lineHeight: '1.2', fontWeight: '400' },
       h3: { fontSize: rem(19), lineHeight: '1.3', fontWeight: '600' },
       h4: { fontSize: rem(16), lineHeight: '1.4', fontWeight: '600' },
     },

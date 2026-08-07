@@ -1,6 +1,22 @@
 /* Base layer. Anything here applies everywhere; component-specific styling
    belongs in that component's *.module.css. */
 
+/* The page title, and only the page title.
+
+   A display serif on the one line that names the screen is what carries the
+   editorial register the palette is aiming at; everything else stays in the
+   sans, because a serif inside a 200-row table is a legibility problem rather
+   than a look. Instrument Serif ships at 400 only, so h1/h2 weights in
+   theme.ts are 400 — asking a browser to synthesise bold from a display serif
+   produces a smeared outline. */
+h1,
+h2 {
+  font-family: 'Instrument Serif', Georgia, 'Times New Roman', serif;
+  /* Display serifs are drawn with their own spacing; the sans's -0.018em pulls
+     them into each other. */
+  letter-spacing: -0.005em;
+}
+
 body {
   background-color: var(--app-bg);
   /* Two very wide, very faint radial washes — accent at the top left, the warm
@@ -10,21 +26,21 @@ body {
   background-attachment: fixed;
   background-repeat: no-repeat;
   color: var(--app-ink);
-  /* Inter's contextual alternates and disambiguation forms — a free upgrade in
-     legibility at small sizes, which is most of a dashboard. */
+  /* Standard ligatures and contextual alternates only. The `cvXX` set that
+     used to be here were Inter's character variants and do nothing in Plus
+     Jakarta Sans — a font-feature-settings list naming features the font does
+     not have is silently inert, which is how it would have survived a
+     typeface change unnoticed. */
   font-feature-settings:
-    'cv02' 1,
-    'cv03' 1,
-    'cv04' 1,
-    'cv11' 1;
+    'liga' 1,
+    'calt' 1;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 }
 
-/* Optical correction: large text set at default tracking looks loose. */
-h1,
-h2,
+/* Optical correction: large text set at default tracking looks loose. h1 and
+   h2 are excluded — they are the serif, and it sets its own tracking above. */
 h3 {
   letter-spacing: -0.018em;
 }
