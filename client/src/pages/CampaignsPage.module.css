@@ -36,7 +36,7 @@
 
 .row:hover .nameLink,
 .nameLink:focus-visible {
-  color: var(--mantine-color-brand-6);
+  color: var(--app-accent);
 }
 
 /* Counts sit next to a progress bar and change while a campaign sends, so they

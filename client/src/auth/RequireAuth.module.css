@@ -1,5 +1,5 @@
 .pulse {
-  color: var(--mantine-color-brand-6);
+  color: var(--app-accent);
   animation: breathe 1.6s ease-in-out infinite;
 }
 

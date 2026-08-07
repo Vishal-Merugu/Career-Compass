@@ -258,14 +258,14 @@ export function CampaignsPage() {
                             size="sm"
                             radius="xl"
                             className={classes.progressBar}
-                            color={c.failedCount > 0 ? 'orange' : 'brand'}
+                            color={c.failedCount > 0 ? 'red' : 'brand'}
                           />
                           <span className={classes.count}>
                             {done}/{c.totalContacts}
                           </span>
                         </Group>
                         {c.failedCount > 0 && (
-                          <Text fz={12} c="orange.7" mt={3}>
+                          <Text fz={12} c="red.7" mt={3}>
                             {c.failedCount} failed
                           </Text>
                         )}

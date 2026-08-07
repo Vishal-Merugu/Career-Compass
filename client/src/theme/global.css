@@ -3,6 +3,12 @@
 
 body {
   background-color: var(--app-bg);
+  /* Two very wide, very faint radial washes — accent at the top left, the warm
+     note at the top right. Fixed rather than scrolled, so a long table does not
+     drag the light across the page. See --app-bg-gradient in theme.ts. */
+  background-image: var(--app-bg-gradient);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
   color: var(--app-ink);
   /* Inter's contextual alternates and disambiguation forms — a free upgrade in
      legibility at small sizes, which is most of a dashboard. */
@@ -32,12 +38,39 @@ h3 {
 
 ::selection {
   background-color: var(--mantine-color-brand-2);
-  color: var(--mantine-color-black);
+  color: var(--app-ink);
 }
 
 [data-mantine-color-scheme='dark'] ::selection {
   background-color: var(--mantine-color-brand-8);
   color: var(--mantine-color-white);
+}
+
+/* The primary action is the one place a gradient earns its keep: it is the
+   only control on a screen that should look like it has a light source.
+   Everything else stays flat.
+
+   Targeted here rather than through `theme.components.Button` because the
+   gradient must apply to the filled variant only — an outline or subtle button
+   with a gradient background is just a filled button with a bug. This file is
+   imported after Mantine's stylesheet in main.tsx, so it wins the tie. */
+.mantine-Button-root[data-variant='filled']:not(:disabled):not(
+    [data-disabled]
+  ) {
+  background-image: var(--app-accent-gradient);
+  box-shadow:
+    var(--mantine-shadow-xs),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.mantine-Button-root[data-variant='filled']:not(:disabled):not(
+    [data-disabled]
+  ):hover {
+  /* Brightening the overlay rather than swapping the gradient: the button
+     should look lit from the same angle in both states. */
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.08)),
+    var(--app-accent-gradient);
 }
 
 /* Slim, recessive scrollbars — the default chrome is visually loud next to
@@ -65,7 +98,7 @@ h3 {
 
 /* Keyboard focus only — a visible ring on every mouse click looks broken. */
 :focus-visible {
-  outline: 2px solid var(--mantine-color-brand-5);
+  outline: 2px solid var(--app-accent);
   outline-offset: 2px;
 }
 

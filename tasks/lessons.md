@@ -322,6 +322,22 @@ all the structure and cannot be that faint.
 `cssVariablesResolver` (now 7.30:1 / 6.54:1). Measure contrast rather than
 eyeballing it — the resolver's values are the single place to change it.
 
+### The accent hue is off-limits to status
+
+No badge, progress bar or alert may use the brand hue or a neighbour of it.
+
+**Why:** the palette moved to copper-amber (Figma's amber/copper scheme, chosen
+by the user over slate-azure and teal). `STOPPED` and the "some failed" progress
+bar were both `orange`, which had been fine against an indigo brand and became
+indistinguishable from the primary button the moment the accent changed. A user
+cannot tell "this is the action" from "this is the state" if they are the same
+colour. `STOPPED` is now `grape`, failure is `red`.
+
+**Apply:** `client/src/components/StatusBadge.tsx` owns both maps; changing the
+accent means re-checking them. Related: `autoContrast: true` is not optional in
+`theme.ts` — dark mode's primary is `brand-4` (#e3933f) and Mantine's default
+white label on it measures 2.47:1.
+
 ### A CSS module cannot override what it `composes`
 
 Pass the variable part in through a custom property. Never redeclare, in the

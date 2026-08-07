@@ -40,15 +40,33 @@
 /* The active item has to outrank the hovered one, and it did not: on a sunken
    navbar, a raised white surface reads *quieter* than a grey hover fill, so
    whichever item the pointer happened to be near looked like the current page.
-   The border steps up, the label gets weight, and the icon takes the accent —
-   which is what the accent is reserved for. */
+   The surface is now washed with the accent rather than left plain, which
+   settles the ranking on colour instead of on a one-pixel border. */
 .navLink[data-active],
 .navLink[data-active]:hover {
   background-color: var(--app-surface);
+  background-image: linear-gradient(
+    var(--app-accent-wash),
+    var(--app-accent-wash)
+  );
   color: var(--app-ink);
   font-weight: 600;
   box-shadow: var(--mantine-shadow-xs);
-  border-color: var(--app-border-strong);
+  border-color: var(--app-accent-line);
+  /* A marker down the left edge. Reads as "you are here" at a glance, without
+     adding a second filled shape to the navbar. */
+  position: relative;
+}
+
+.navLink[data-active]::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 9px;
+  bottom: 9px;
+  width: 2px;
+  border-radius: 999px;
+  background-color: var(--app-accent);
 }
 
 .navLink[data-active] svg {

@@ -89,7 +89,7 @@
 }
 
 .emailLink:hover {
-  color: var(--mantine-color-brand-6);
+  color: var(--app-accent);
 }
 
 /* A strip across the top or bottom of the panel, inside its rounded corners.

@@ -369,7 +369,7 @@ export function CampaignDetailPage() {
             size="sm"
             radius="xl"
             animated={isSending}
-            color={campaign.failedCount > 0 ? 'orange' : 'brand'}
+            color={campaign.failedCount > 0 ? 'red' : 'brand'}
           />
         </Box>
       )}
