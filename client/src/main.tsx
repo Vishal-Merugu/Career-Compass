@@ -25,9 +25,20 @@ import { BrowserRouter } from 'react-router-dom';
 // the hover fill sat flush against the icon. The `!important`s in
 // ResultsPage.module.css are the same bug, worked around one rule at a time.
 //
-// Self-hosted font: the VM is VPN-only and may not reach a font CDN, and an
+// Self-hosted fonts: the VM is VPN-only and may not reach a font CDN, and an
 // http:// page fetching a webfont is a render-blocking request we do not need.
-import '@fontsource-variable/inter';
+//
+// Three families, each with one job, which is why three is not extravagant:
+// Plus Jakarta Sans for every control and every table cell, Instrument Serif
+// for the page title only, JetBrains Mono for the email column. Inter was
+// replaced because it is the house font of every dashboard built since 2020 —
+// correct, and completely anonymous.
+//
+// Only the weight axes are imported. The italic axis is a second file and
+// nothing here is set in italic.
+import '@fontsource-variable/plus-jakarta-sans/wght.css';
+import '@fontsource/instrument-serif/400.css';
+import '@fontsource-variable/jetbrains-mono/wght.css';
 import '@mantine/core/styles.css';
 import '@mantine/notifications/styles.css';
 import './theme/global.css';

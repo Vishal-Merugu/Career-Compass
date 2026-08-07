@@ -1,24 +1,46 @@
 /* Base layer. Anything here applies everywhere; component-specific styling
    belongs in that component's *.module.css. */
 
+/* The page title, and only the page title.
+
+   A display serif on the one line that names the screen is what carries the
+   editorial register the palette is aiming at; everything else stays in the
+   sans, because a serif inside a 200-row table is a legibility problem rather
+   than a look. Instrument Serif ships at 400 only, so h1/h2 weights in
+   theme.ts are 400 — asking a browser to synthesise bold from a display serif
+   produces a smeared outline. */
+h1,
+h2 {
+  font-family: 'Instrument Serif', Georgia, 'Times New Roman', serif;
+  /* Display serifs are drawn with their own spacing; the sans's -0.018em pulls
+     them into each other. */
+  letter-spacing: -0.005em;
+}
+
 body {
   background-color: var(--app-bg);
+  /* Two very wide, very faint radial washes — accent at the top left, the warm
+     note at the top right. Fixed rather than scrolled, so a long table does not
+     drag the light across the page. See --app-bg-gradient in theme.ts. */
+  background-image: var(--app-bg-gradient);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
   color: var(--app-ink);
-  /* Inter's contextual alternates and disambiguation forms — a free upgrade in
-     legibility at small sizes, which is most of a dashboard. */
+  /* Standard ligatures and contextual alternates only. The `cvXX` set that
+     used to be here were Inter's character variants and do nothing in Plus
+     Jakarta Sans — a font-feature-settings list naming features the font does
+     not have is silently inert, which is how it would have survived a
+     typeface change unnoticed. */
   font-feature-settings:
-    'cv02' 1,
-    'cv03' 1,
-    'cv04' 1,
-    'cv11' 1;
+    'liga' 1,
+    'calt' 1;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 }
 
-/* Optical correction: large text set at default tracking looks loose. */
-h1,
-h2,
+/* Optical correction: large text set at default tracking looks loose. h1 and
+   h2 are excluded — they are the serif, and it sets its own tracking above. */
 h3 {
   letter-spacing: -0.018em;
 }
@@ -32,12 +54,39 @@ h3 {
 
 ::selection {
   background-color: var(--mantine-color-brand-2);
-  color: var(--mantine-color-black);
+  color: var(--app-ink);
 }
 
 [data-mantine-color-scheme='dark'] ::selection {
   background-color: var(--mantine-color-brand-8);
   color: var(--mantine-color-white);
+}
+
+/* The primary action is the one place a gradient earns its keep: it is the
+   only control on a screen that should look like it has a light source.
+   Everything else stays flat.
+
+   Targeted here rather than through `theme.components.Button` because the
+   gradient must apply to the filled variant only — an outline or subtle button
+   with a gradient background is just a filled button with a bug. This file is
+   imported after Mantine's stylesheet in main.tsx, so it wins the tie. */
+.mantine-Button-root[data-variant='filled']:not(:disabled):not(
+    [data-disabled]
+  ) {
+  background-image: var(--app-accent-gradient);
+  box-shadow:
+    var(--mantine-shadow-xs),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.mantine-Button-root[data-variant='filled']:not(:disabled):not(
+    [data-disabled]
+  ):hover {
+  /* Brightening the overlay rather than swapping the gradient: the button
+     should look lit from the same angle in both states. */
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.08)),
+    var(--app-accent-gradient);
 }
 
 /* Slim, recessive scrollbars — the default chrome is visually loud next to
@@ -65,7 +114,7 @@ h3 {
 
 /* Keyboard focus only — a visible ring on every mouse click looks broken. */
 :focus-visible {
-  outline: 2px solid var(--mantine-color-brand-5);
+  outline: 2px solid var(--app-accent);
   outline-offset: 2px;
 }
 

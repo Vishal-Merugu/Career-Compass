@@ -1,0 +1,108 @@
+/* The bordered card + scrollable table + sticky header that Results, Campaigns
+   and Campaign detail all render. It lives here because all three screens are
+   the same surface, not because two of them happened to import the third's
+   stylesheet — which is what they did before, and it meant Results' column
+   widths and footer silently governed the campaign tables too.
+
+   Page stylesheets pull these in with `composes`, so the element carries both
+   class names and the descendant rules below still apply. */
+
+.panel {
+  background-color: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--mantine-radius-lg);
+  /* Scheme-aware: a black shadow is invisible on a near-black background, so
+     dark mode swaps in an inset top highlight. See theme.ts. */
+  box-shadow: var(--app-shadow-sm);
+  overflow: hidden;
+}
+
+/* The scroll container for both axes. It has to be THIS element and not the
+   page: `position: sticky` resolves against the nearest scrolling ancestor, and
+   `.panel`'s `overflow: hidden` already makes it one — so a page-level sticky
+   header would silently never stick. Capping the height here gives the sticky
+   `thead` something real to stick to.
+
+   The cap is a variable because it is the one number that legitimately differs
+   per screen: Results carries a pagination footer under the table, the campaign
+   screens carry stat tiles and a progress bar above it. */
+.tableWrap {
+  overflow: auto;
+  max-height: var(--table-max-height, min(calc(100vh - 380px), 680px));
+}
+
+/* Fixed layout, explicit column widths. With `auto`, the widest text column
+   takes whatever it wants and squeezes the rest into ellipses while there is
+   still empty space to the right. `--table-min-width` is per-screen: a
+   four-column table forced to Results' 940px scrolls sideways for no reason. */
+.table {
+  min-width: var(--table-min-width, 940px);
+  table-layout: fixed;
+}
+
+/* Mantine 9 puts row borders on the `tr` (`[data-with-row-border]`) and never
+   on a cell, so these plain-specificity rules win outright. They used to carry
+   `!important`, which was a workaround for the stylesheet-order bug fixed in
+   6c7f152 — with Mantine imported first there is nothing left to outrank. */
+.table thead th {
+  background-color: var(--app-surface-sunken);
+  border-bottom: 1px solid var(--app-border);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--app-ink-muted) 82%, transparent);
+  padding-top: 11px;
+  padding-bottom: 11px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.table tbody td {
+  border-bottom: 1px solid var(--app-border);
+  vertical-align: middle;
+}
+
+/* No border under the final row — the panel's own edge closes it. */
+.table tbody tr:last-of-type td {
+  border-bottom: none;
+}
+
+.table tbody tr {
+  transition: background-color 110ms ease;
+}
+
+.table tbody tr:hover {
+  background-color: var(--app-hover);
+}
+
+/* Monospaced and muted. Colouring two dozen addresses indigo makes the email
+   column the loudest thing on the page and buries the person, who is the
+   actual subject. */
+.emailLink {
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 12.5px;
+  color: var(--app-ink-muted);
+  text-decoration: none;
+  transition: color 110ms ease;
+}
+
+.emailLink:hover {
+  color: var(--app-accent);
+}
+
+/* A strip across the top or bottom of the panel, inside its rounded corners.
+   Layout only — no padding, no background, no wrap.
+
+   That restraint is load bearing. A composed class and the class composing it
+   have identical specificity, and the bundler emits this file AFTER the page
+   stylesheets that pull from it, so the base wins every tie. Anything a
+   consumer might want to change therefore cannot be declared here: it is
+   either left to the consumer, as below, or passed in through a custom
+   property, as with `--table-max-height`. Same shape of bug as 6c7f152. */
+.panelBar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}

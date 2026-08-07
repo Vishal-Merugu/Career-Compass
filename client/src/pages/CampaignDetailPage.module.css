@@ -1,0 +1,54 @@
+/* One campaign's contacts. Shares the panel and table surface with Results and
+   the campaign list — see styles/dataPanel.module.css. */
+
+.panel {
+  composes: panel from '../styles/dataPanel.module.css';
+}
+
+.tableWrap {
+  composes: tableWrap from '../styles/dataPanel.module.css';
+  /* Stat tiles and a progress bar sit above this table, so it gets less room
+     than the campaign list does. */
+  --table-max-height: min(calc(100vh - 440px), 620px);
+}
+
+.table {
+  composes: table from '../styles/dataPanel.module.css';
+  --table-min-width: 820px;
+}
+
+.emailLink {
+  composes: emailLink from '../styles/dataPanel.module.css';
+}
+
+.contactName {
+  font-size: 13.5px;
+  font-weight: 550;
+}
+
+.company {
+  font-size: 13px;
+  color: var(--app-ink-muted);
+}
+
+/* The failure detail is a tooltip on this glyph. It has to look interactive
+   without competing with the status badge beside it. */
+.errorHint {
+  opacity: 0.6;
+  cursor: help;
+  flex-shrink: 0;
+  color: var(--mantine-color-red-6);
+}
+
+/* The draft-edit button is one per row, so it stays quiet until the row is
+   under the pointer — the same rule the external-link glyph follows on
+   Results. Focus reveals it too, or it would be invisible to the keyboard. */
+.rowAction {
+  opacity: 0;
+  transition: opacity 110ms ease;
+}
+
+.table tbody tr:hover .rowAction,
+.rowAction:focus-visible {
+  opacity: 1;
+}

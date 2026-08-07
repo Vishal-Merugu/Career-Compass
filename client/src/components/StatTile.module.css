@@ -1,0 +1,39 @@
+.tile {
+  background-color: var(--app-surface);
+  border: 1px solid var(--app-border);
+  box-shadow: var(--app-shadow-sm);
+  /* The accent enters here as a hairline along the top edge, not as a fill.
+     A tinted tile competes with the number on it; a 2px line at the top reads
+     as a marker on a white card and leaves the number alone. */
+  position: relative;
+  overflow: hidden;
+}
+
+.tile::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background-image: linear-gradient(
+    90deg,
+    var(--app-accent) 0%,
+    var(--app-accent-line) 55%,
+    transparent 100%
+  );
+}
+
+/* Tinted rather than dimmed. The glyph labels the tile, so it should belong to
+   the accent family; at `dimmed` it read as a smudge. */
+.icon {
+  display: flex;
+  color: var(--app-accent);
+  opacity: 0.75;
+}
+
+.label {
+  letter-spacing: 0.005em;
+}
+
+.value {
+  letter-spacing: -0.025em;
+}
