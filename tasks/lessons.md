@@ -20,7 +20,11 @@ auth token arriving without browser-identity cookies looks like a stolen cookie
 to LinkedIn's risk engine.
 
 **Apply:** any code that builds a Cookie header for linkedin.com. The correct
-implementation is `CookieJar` in `src/scratch-voyager-probe.ts`.
+implementation is `CookieJar` in `src/shared/cookieJar.ts`, and
+`VoyagerClient` now takes it directly (`new VoyagerClient({ jar })`). Its
+constructor rejects a jar missing any of `CRITICAL_COOKIES`, so this fails loudly
+at construction instead of quietly at the first 403 — do not soften that check to
+"warn and continue".
 
 ### Read `JSESSIONID` live on every request
 
@@ -59,7 +63,23 @@ verdict.
 **Why:** writing back a gutted jar overwrites a good export with a dead session
 and forces a needless re-extraction.
 
-**Apply:** guard the write — `if (!result.fatal) jar.persist(...)`.
+**Apply:** guard the write — `if (!result.fatal) persistJar(jar, exported)`. From
+`VoyagerClient`, the latched `sessionDead` flag is the same guard; `CookieJar` has
+no `persist()` of its own precisely so that the write is always a caller's
+deliberate act.
+
+### Never retry a fatal Voyager response
+
+A retry policy must distinguish "throttled" from "dead".
+
+**Why:** `withRetry` retried on any non-2xx. A dead session returns 401/403 on
+every attempt, so the client spent four paced calls (~15 s of delay each) proving
+the same thing, and hammering a soft block is how it becomes a hard one. A 429 is
+the opposite case — the session is alive and backing off is correct.
+
+**Apply:** `VoyagerClient._isRetryable` retries only `429` and `5xx` (read off
+`AppError.details.status`) plus bare network errors. `LinkedInSessionError` is
+never retried, and neither is a 4xx.
 
 ### Strip `__cf_bm` when moving a jar between machines
 

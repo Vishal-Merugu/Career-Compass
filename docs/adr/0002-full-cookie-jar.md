@@ -74,13 +74,25 @@ These rules are pinned by `server/src/scratch-voyager-probe.test.ts`.
 - **Still outstanding:** the day-2 test — rerun `--quick` on the VM against the
   _evolved_ cookie file without re-exporting. That decides whether a few-hours-daily
   bot can run without re-exporting cookies every morning.
-- **`server/src/shared/voyagerClient.ts` still has the old two-cookie design.** It is
-  not on the live path (see ADR 0001), so it has not been migrated. Its current
-  behaviour is pinned by a test in `voyagerClient.test.ts` that says so explicitly.
-  It must adopt `CookieJar` before any server-side execution path ships.
-- The cookie jar lives in a `scratch-*` file, which is where it was written. It is
-  now imported by tests, so the file guards its entrypoint with an `import.meta.url`
-  check. Promote it to `shared/` when the server-side path is built.
+- **`server/src/shared/voyagerClient.ts` has been migrated** (2026-08-07). The jar
+  and `classifyFatal` now live in `server/src/shared/cookieJar.ts`; the probe is a
+  driver over them and re-exports both so its tests and this ADR's entry point still
+  read the same. The client takes either `{ jar }` (server-side, the only supported
+  server mode — the `li_at` + `JSESSIONID` pair is gone) or `{ csrfToken }` (running
+  on a linkedin.com context, where the browser attaches its own cookies).
+  In jar mode it sends the whole jar, reads the CSRF token live per request, uses
+  `redirect: 'manual'`, absorbs `Set-Cookie`, and throws `LinkedInSessionError` on a
+  fatal response without retrying it. The constructor rejects a jar missing any of
+  `CRITICAL_COOKIES`, so the two-cookie mistake fails at construction rather than at
+  the first 403.
+- **The jar is still never persisted automatically.** `CookieJar.toExport()` returns
+  a snapshot and the caller writes it; `VoyagerClient.sessionDead` latches on the
+  first fatal response so a caller knows not to. The probe's `persistJar()` is the
+  reference for that (`if (!result.fatal) persistJar(...)`).
+- `extension/services/voyagerClient.js` is **not** a mirror of this file's session
+  handling and deliberately stays as it is: it reads `JSESSIONID` from
+  `chrome.cookies` and lets the browser attach the rest, which is the jar's job done
+  by the browser.
 
 ## Alternatives considered
 
