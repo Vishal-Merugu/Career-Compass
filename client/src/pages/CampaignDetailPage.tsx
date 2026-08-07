@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActionIcon,
   Alert,
@@ -26,6 +26,7 @@ import {
   IconMail,
   IconPlayerPlay,
   IconPlayerStop,
+  IconSparkles,
   IconUsers,
 } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -35,6 +36,7 @@ import type {
   CampaignContact,
   CampaignDetailResponse,
   CampaignProgress,
+  DraftStreamFrame,
 } from '../api/types';
 import { EmptyState } from '../components/EmptyState';
 import { StatTile } from '../components/StatTile';
@@ -124,21 +126,148 @@ function useCampaignProgress(campaignId: string | undefined, live: boolean) {
   }, [campaignId, live, queryClient]);
 }
 
+/**
+ * Watch the model write this contact's email before anything is sent.
+ *
+ * The stream persists nothing — it ends with the composed draft in a `done`
+ * frame, and saving is still the existing explicit action. Closing the modal
+ * mid-stream therefore leaves the campaign sending exactly what it would have
+ * sent anyway.
+ */
+function useDraftStream({
+  contactId,
+  onChunk,
+  onDone,
+}: {
+  contactId: string | undefined;
+  onChunk: (text: string) => void;
+  onDone: (subject: string, body: string) => void;
+}) {
+  const [streaming, setStreaming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const sourceRef = useRef<EventSource | null>(null);
+
+  // The callbacks are re-created every render; reading them through a ref
+  // keeps `start` stable so it does not tear down a live stream.
+  const handlers = useRef({ onChunk, onDone });
+  handlers.current = { onChunk, onDone };
+
+  const close = useCallback(() => {
+    sourceRef.current?.close();
+    sourceRef.current = null;
+    setStreaming(false);
+  }, []);
+
+  useEffect(() => close, [close, contactId]);
+
+  const start = useCallback(() => {
+    if (!contactId) return;
+    sourceRef.current?.close();
+    setError(null);
+    setStreaming(true);
+
+    const source = new EventSource(
+      `/api/campaigns/contacts/${contactId}/draft-stream`,
+      { withCredentials: true },
+    );
+    sourceRef.current = source;
+
+    source.onmessage = (event: MessageEvent<string>) => {
+      let frame: DraftStreamFrame;
+      try {
+        frame = JSON.parse(event.data) as DraftStreamFrame;
+      } catch {
+        return;
+      }
+
+      if (frame.type === 'chunk') {
+        handlers.current.onChunk(frame.text);
+        return;
+      }
+      if (frame.type === 'done') {
+        handlers.current.onDone(frame.subject, frame.body);
+      } else {
+        setError(frame.message);
+      }
+      // Closing here is not optional. EventSource reconnects whenever the
+      // stream ends, so a finished generation would immediately start a second
+      // one and append a whole new email to the first.
+      source.close();
+      sourceRef.current = null;
+      setStreaming(false);
+    };
+
+    source.onerror = () => {
+      // Only reachable while the stream is still ours: a completed or failed
+      // generation clears `sourceRef` above before EventSource can retry.
+      if (sourceRef.current !== source) return;
+      setError('Lost the connection to the server before the draft finished.');
+      source.close();
+      sourceRef.current = null;
+      setStreaming(false);
+    };
+  }, [contactId]);
+
+  return { streaming, error, start, cancel: close };
+}
+
 function DraftModal({
   contact,
+  canGenerate,
   onClose,
 }: {
   contact: CampaignContact | null;
+  canGenerate: boolean;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
+  const bodyRef = useRef<HTMLTextAreaElement>(null);
+
+  const {
+    streaming,
+    error: streamError,
+    start,
+    cancel,
+  } = useDraftStream({
+    contactId: contact?.id,
+    onChunk: (text) => setBody((prev) => prev + text),
+    onDone: (generatedSubject, generatedBody) => {
+      setBody(generatedBody);
+      // The campaign subject is the fallback the server composed with; only a
+      // subject the model actually wrote is worth overwriting the field with.
+      if (generatedSubject) setSubject(generatedSubject);
+    },
+  });
 
   useEffect(() => {
     setSubject(contact?.customSubject ?? '');
     setBody(contact?.customBody ?? '');
   }, [contact]);
+
+  // Follow the text as it is written, or a long draft streams out of view.
+  useEffect(() => {
+    if (!streaming) return;
+    const el = bodyRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [body, streaming]);
+
+  const generate = () => {
+    if (body.trim().length > 0) {
+      const replace = window.confirm(
+        'Replace the current draft with a newly generated one?',
+      );
+      if (!replace) return;
+    }
+    setBody('');
+    start();
+  };
+
+  const dismiss = () => {
+    cancel();
+    onClose();
+  };
 
   const save = useMutation({
     mutationFn: () =>
@@ -155,7 +284,7 @@ function DraftModal({
   return (
     <Modal
       opened={contact !== null}
-      onClose={onClose}
+      onClose={dismiss}
       title={contact ? `Draft for ${contact.name}` : ''}
       size="lg"
       radius="lg"
@@ -163,15 +292,29 @@ function DraftModal({
       <Stack gap="md">
         <Alert color="gray" variant="light" radius="md" fz={13}>
           A saved draft is sent exactly as written — the model is skipped for
-          this contact, and the signature is not appended.
+          this contact, and nothing further is appended. A generated preview
+          already has your signature in it.
         </Alert>
+        {streamError && (
+          <Alert
+            color="red"
+            variant="light"
+            radius="md"
+            fz={13}
+            icon={<IconAlertCircle size={16} />}
+          >
+            {streamError}
+          </Alert>
+        )}
         <TextInput
           label="Subject"
           placeholder="Leave blank to use the campaign subject"
           value={subject}
           onChange={(e) => setSubject(e.currentTarget.value)}
+          disabled={streaming}
         />
         <Textarea
+          ref={bodyRef}
           label="Body"
           placeholder="Leave blank to let the model write it"
           autosize
@@ -179,14 +322,42 @@ function DraftModal({
           maxRows={22}
           value={body}
           onChange={(e) => setBody(e.currentTarget.value)}
+          readOnly={streaming}
+          className={streaming ? classes.streamingBody : undefined}
         />
-        <Group justify="flex-end" gap="sm">
-          <Button variant="subtle" color="gray" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button onClick={() => save.mutate()} loading={save.isPending}>
-            Save draft
-          </Button>
+        <Group justify="space-between" gap="sm">
+          <Tooltip
+            label={
+              canGenerate
+                ? 'Watch the model write this email. Nothing is saved until you save it.'
+                : 'This campaign has no prompt, so there is nothing to generate from'
+            }
+            multiline
+            maw={260}
+          >
+            <Box>
+              <Button
+                variant="light"
+                leftSection={<IconSparkles size={15} />}
+                onClick={streaming ? cancel : generate}
+                disabled={!canGenerate || save.isPending}
+              >
+                {streaming ? 'Stop' : 'Preview with AI'}
+              </Button>
+            </Box>
+          </Tooltip>
+          <Group gap="sm">
+            <Button variant="subtle" color="gray" onClick={dismiss}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => save.mutate()}
+              loading={save.isPending}
+              disabled={streaming}
+            >
+              Save draft
+            </Button>
+          </Group>
         </Group>
       </Stack>
     </Modal>
@@ -483,7 +654,11 @@ export function CampaignDetailPage() {
         )}
       </div>
 
-      <DraftModal contact={editing} onClose={() => setEditing(null)} />
+      <DraftModal
+        contact={editing}
+        canGenerate={Boolean(campaign.commonPrompt)}
+        onClose={() => setEditing(null)}
+      />
     </Stack>
   );
 }

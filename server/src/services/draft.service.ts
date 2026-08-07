@@ -1,3 +1,13 @@
+/**
+ * The system prompt for every generated draft.
+ *
+ * Exported so the streaming preview and the actual send use the same one. A
+ * preview generated from a different prompt than the send would be worse than
+ * no preview: it would look like a review step and not be one.
+ */
+export const DRAFT_SYSTEM_PROMPT =
+  'You write short, specific, professional outreach emails.';
+
 export interface IDraftInput {
   /** Raw model output, or a body the user wrote by hand. */
   body: string;

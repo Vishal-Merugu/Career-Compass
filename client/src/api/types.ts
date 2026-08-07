@@ -151,6 +151,18 @@ export interface CampaignProgress {
 }
 
 /**
+ * One frame of `GET /api/campaigns/contacts/:id/draft-stream`.
+ *
+ * `chunk` carries raw model output as it arrives; `done` carries the composed
+ * draft — subject extracted, preamble stripped, signature appended — which is
+ * what a save should store, not the accumulated chunks.
+ */
+export type DraftStreamFrame =
+  | { type: 'chunk'; text: string }
+  | { type: 'done'; subject: string; body: string }
+  | { type: 'error'; message: string };
+
+/**
  * `smtpPassword` is absent by design — the server never returns it, in any
  * form. `smtpConfigured` is what the UI branches on.
  */
