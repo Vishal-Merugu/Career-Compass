@@ -271,10 +271,14 @@ Hard-won. Violating these is how sessions die.
   when moving a jar between machines; Cloudflare mints a fresh one.
 - A **200 with an HTML body** is an auth wall behind a 200. Not a success.
 
-Reference implementation: `server/src/scratch-voyager-probe.ts` (`CookieJar`,
-`classifyFatal`), covered by tests. `server/src/shared/voyagerClient.ts` still uses
-the **old 2-cookie design** and must be updated before any server-side execution
-path ships. See `docs/adr/0002-full-cookie-jar.md`.
+Reference implementation: `server/src/shared/cookieJar.ts` (`CookieJar`,
+`classifyFatal`), covered by tests and re-exported by
+`server/src/scratch-voyager-probe.ts`. `server/src/shared/voyagerClient.ts` uses it:
+construct it with `{ jar }` server-side, or `{ csrfToken }` only from a
+linkedin.com context where the browser attaches the cookies. It throws
+`LinkedInSessionError` on a fatal response and does not retry one. The jar is never
+written back automatically — `sessionDead` tells you when not to. See
+`docs/adr/0002-full-cookie-jar.md`.
 
 ### Pacing
 

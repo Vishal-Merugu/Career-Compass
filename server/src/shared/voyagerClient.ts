@@ -1,43 +1,88 @@
 import { withRetry } from './resilience.js';
 import { delay } from './rateLimiter.js';
 import { IVoyagerClient } from './types.js';
+import { CookieJar, classifyFatal } from './cookieJar.js';
+import { AppError, LinkedInSessionError } from '../errors/AppError.js';
 
 const VOYAGER_BASE = 'https://www.linkedin.com/voyager/api';
 
-export interface IVoyagerSession {
-  csrfToken: string;
-  liAtCookie?: string;
-}
+/**
+ * How the client authenticates.
+ *
+ * `jar` — server-side. The full exported cookie set, live CSRF, Set-Cookie
+ * absorbed on every response. This is the only supported server-side mode; the
+ * old `li_at` + `JSESSIONID` pair is gone (docs/adr/0002-full-cookie-jar.md).
+ *
+ * `csrfToken` — browser-side, for a caller running on linkedin.com where the
+ * browser attaches the cookies itself and only the CSRF header is needed. The
+ * extension has its own hand-mirrored copy in `extension/services/`, which
+ * reads JSESSIONID from `chrome.cookies`; this branch exists for parity.
+ */
+export type IVoyagerSession =
+  | { jar: CookieJar; csrfToken?: undefined }
+  | { csrfToken: string; jar?: undefined };
 
 export class VoyagerClient implements IVoyagerClient {
-  private csrfToken: string;
-  private liAtCookie?: string;
+  private jar?: CookieJar;
+  private csrfToken?: string;
+
+  /** Set once a response proves the session is dead. Never unset. */
+  public sessionDead = false;
 
   constructor(session: IVoyagerSession) {
+    if (session.jar) {
+      if (!session.jar.csrf()) {
+        throw new LinkedInSessionError(
+          'VoyagerClient: cookie jar has no JSESSIONID (the CSRF token)',
+        );
+      }
+      const missing = session.jar.missingCritical();
+      if (missing.length) {
+        throw new LinkedInSessionError(
+          `VoyagerClient: cookie jar is missing ${missing.join(', ')} — ` +
+            'an auth token without the browser-identity cookies reads as a stolen session',
+        );
+      }
+      this.jar = session.jar;
+      return;
+    }
     if (!session.csrfToken) {
-      throw new Error('VoyagerClient: csrfToken (JSESSIONID) is required');
+      throw new LinkedInSessionError(
+        'VoyagerClient: csrfToken (JSESSIONID) is required',
+      );
     }
     this.csrfToken = session.csrfToken.replace(/"/g, '');
-    this.liAtCookie = session.liAtCookie;
+  }
+
+  /** The live cookie jar, so a caller can persist it. Undefined in browser mode. */
+  public getJar(): CookieJar | undefined {
+    return this.jar;
   }
 
   /**
-   * Get request headers with appropriate tokens and optional cookie payloads
+   * Get request headers with appropriate tokens and optional cookie payloads.
+   *
+   * In jar mode the CSRF token and the Cookie header are read from the jar on
+   * every call: LinkedIn rotates JSESSIONID and lidc during normal use, and a
+   * token snapshotted at construction goes stale at the first rotation.
    */
   public getVoyagerHeaders(accept?: string): Record<string, string> {
     const headers: Record<string, string> = {
-      'csrf-token': this.csrfToken,
+      'csrf-token': this.jar ? this.jar.csrf() : (this.csrfToken ?? ''),
       'x-restli-protocol-version': '2.0.0',
       'x-li-lang': 'en_US',
       'x-li-track': JSON.stringify({
         clientVersion: '1.13.42510',
         mpVersion: '1.13.42510',
         osName: 'web',
-        timezoneOffset: -(new Date().getTimezoneOffset() / 60),
+        timezoneOffset: this.jar
+          ? this.jar.timezoneOffset
+          : -(new Date().getTimezoneOffset() / 60),
         deviceFormFactor: 'DESKTOP',
         mpName: 'voyager-web',
       }),
       'user-agent':
+        this.jar?.userAgent ??
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       referer: 'https://www.linkedin.com/',
     };
@@ -48,9 +93,10 @@ export class VoyagerClient implements IVoyagerClient {
       headers['accept'] = 'application/vnd.linkedin.normalized+json+2.1';
     }
 
-    if (this.liAtCookie) {
-      headers['cookie'] =
-        `li_at=${this.liAtCookie}; JSESSIONID="${this.csrfToken}"`;
+    if (this.jar) {
+      headers['cookie'] = this.jar.header();
+      headers['referer'] = 'https://www.linkedin.com/feed/';
+      headers['accept-language'] = 'en-US,en;q=0.9';
     }
 
     return headers;
@@ -61,44 +107,88 @@ export class VoyagerClient implements IVoyagerClient {
    */
   public async isLinkedInLoggedIn(): Promise<boolean> {
     try {
-      const headers = this.getVoyagerHeaders();
-      const fetchOpts: RequestInit = {
-        method: 'GET',
-        headers,
-      };
-      if (!this.liAtCookie) {
-        fetchOpts.credentials = 'same-origin';
-      }
-      const res = await fetch(
+      await this._send(
+        'GET',
         'https://www.linkedin.com/voyager/uas/authenticate',
-        fetchOpts,
       );
-      return !res.redirected && res.status === 200;
+      return true;
     } catch {
       return false;
     }
   }
 
   /**
-   * Low-level fetch that adds human-like delay and custom credentials if running locally
+   * Low-level fetch: human-like delay, then a request whose response is judged
+   * before its body is handed back.
+   *
+   * `redirect: 'manual'` is load-bearing in jar mode. A dead session answers
+   * with a 302 to the same URL carrying `li_at=…; Max-Age=0`; following it
+   * turns that into a 200 with an HTML body and hides the kill entirely.
    */
-  private async _voyagerFetch(
+  private async _send(
+    method: string,
     url: string,
-    fetchOpts: RequestInit,
-  ): Promise<Response> {
+    opts: { accept?: string; body?: unknown } = {},
+  ): Promise<{ status: number; text: string; contentType: string }> {
     await delay(1500, 3700);
-    if (!this.liAtCookie) {
-      fetchOpts.credentials = 'same-origin';
+
+    const headers = this.getVoyagerHeaders(opts.accept);
+    const init: RequestInit = { method, headers };
+    if (opts.body !== undefined) {
+      headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(opts.body);
     }
-    return fetch(url, fetchOpts);
+    if (this.jar) {
+      init.redirect = 'manual';
+    } else {
+      init.credentials = 'same-origin';
+    }
+
+    const res = await fetch(url, init);
+    const text = await res.text().catch(() => '');
+
+    if (this.jar) {
+      const { cleared } = this.jar.absorb(readSetCookie(res.headers));
+      const fatal = classifyFatal(
+        res.status,
+        res.headers.get('location') ?? '',
+        text,
+        cleared,
+      );
+      if (fatal) {
+        // Latched, so the caller knows never to write this jar back over a
+        // good export — see docs/adr/0002-full-cookie-jar.md.
+        this.sessionDead = true;
+        throw new LinkedInSessionError(fatal);
+      }
+    }
+
+    if (res.status < 200 || res.status >= 300) {
+      throw new AppError(
+        `Voyager ${method} ${url.replace(VOYAGER_BASE, '')} → ${res.status}: ${text.slice(0, 200)}`,
+        502,
+        undefined,
+        { status: res.status },
+      );
+    }
+
+    return {
+      status: res.status,
+      text,
+      contentType: res.headers.get('content-type') ?? '',
+    };
   }
 
-  private _isRetryable(error: any): boolean {
-    const msg = error?.message || '';
-    const match = msg.match(/→ (\d{3})/);
-    if (!match) return true; // network error, retry
-    const code = parseInt(match[1], 10);
-    return code === 429 || code >= 500;
+  private _isRetryable(error: unknown): boolean {
+    // A dead session is not a blip. Retrying it burns the rate budget and can
+    // turn a soft block into a hard one.
+    if (error instanceof LinkedInSessionError) return false;
+    if (error instanceof AppError) {
+      const status = (error.details as { status?: number } | undefined)?.status;
+      if (typeof status !== 'number') return false;
+      return status === 429 || status >= 500;
+    }
+    return true; // network error, retry
   }
 
   /**
@@ -107,18 +197,10 @@ export class VoyagerClient implements IVoyagerClient {
   public async voyagerGet(endpoint: string, accept?: string): Promise<any> {
     return withRetry(
       async () => {
-        const headers = this.getVoyagerHeaders(accept);
-        const res = await this._voyagerFetch(VOYAGER_BASE + endpoint, {
-          method: 'GET',
-          headers,
+        const { text } = await this._send('GET', VOYAGER_BASE + endpoint, {
+          accept,
         });
-        if (!res.ok) {
-          const text = await res.text().catch(() => '');
-          throw new Error(
-            `Voyager GET ${endpoint} → ${res.status}: ${text.slice(0, 200)}`,
-          );
-        }
-        return res.json();
+        return JSON.parse(text);
       },
       {
         maxRetries: 3,
@@ -140,21 +222,11 @@ export class VoyagerClient implements IVoyagerClient {
   ): Promise<any> {
     return withRetry(
       async () => {
-        const headers = this.getVoyagerHeaders(accept);
-        headers['Content-Type'] = 'application/json';
-        const res = await this._voyagerFetch(VOYAGER_BASE + endpoint, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(body),
+        const res = await this._send('POST', VOYAGER_BASE + endpoint, {
+          accept,
+          body,
         });
-        if (!res.ok) {
-          const text = await res.text().catch(() => '');
-          throw new Error(
-            `Voyager POST ${endpoint} → ${res.status}: ${text.slice(0, 200)}`,
-          );
-        }
-        const contentType = res.headers.get('content-type') || '';
-        if (contentType.includes('json')) return res.json();
+        if (res.contentType.includes('json')) return JSON.parse(res.text);
         return { status: res.status };
       },
       {
@@ -173,15 +245,8 @@ export class VoyagerClient implements IVoyagerClient {
   public async voyagerDelete(endpoint: string): Promise<any> {
     return withRetry(
       async () => {
-        const headers = this.getVoyagerHeaders();
-        const res = await this._voyagerFetch(VOYAGER_BASE + endpoint, {
-          method: 'DELETE',
-          headers,
-        });
-        if (!res.ok) {
-          throw new Error(`Voyager DELETE ${endpoint} → ${res.status}`);
-        }
-        return { status: res.status };
+        const { status } = await this._send('DELETE', VOYAGER_BASE + endpoint);
+        return { status };
       },
       {
         maxRetries: 2,
@@ -315,6 +380,21 @@ export class VoyagerClient implements IVoyagerClient {
     const endpoint = `/growth/normInvitations/${invitationId}`;
     return this.voyagerDelete(endpoint);
   }
+}
+
+/**
+ * Read every Set-Cookie line off a response.
+ *
+ * `Headers.getSetCookie()` is the only accessor that does not fold repeated
+ * Set-Cookie headers into one comma-joined string — folding them corrupts the
+ * `Expires=Thu, 01-Jan-1970` dates that signal a killed session. It is present
+ * in Node 18.14+ and every browser the extension targets; the fallback exists
+ * so an older runtime degrades to "no rotation seen" rather than throwing.
+ */
+function readSetCookie(headers: Headers): string[] {
+  if (typeof headers.getSetCookie === 'function') return headers.getSetCookie();
+  const single = headers.get('set-cookie');
+  return single ? [single] : [];
 }
 
 /**
