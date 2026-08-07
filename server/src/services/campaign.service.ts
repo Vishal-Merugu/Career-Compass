@@ -16,7 +16,11 @@ import {
   type ICampaignJob,
 } from '../queue/campaignQueue.js';
 import { sendMail, verifyCredentials } from './mailer.service.js';
-import { buildDraftPrompt, composeDraft } from './draft.service.js';
+import {
+  buildDraftPrompt,
+  composeDraft,
+  DRAFT_SYSTEM_PROMPT,
+} from './draft.service.js';
 import { sendChatCompletion } from '../shared/llmClient.js';
 import type { IUserConfig } from '../shared/types.js';
 
@@ -352,7 +356,7 @@ export async function processCampaignContact(
 
       const generated = await sendChatCompletion(
         config as unknown as IUserConfig,
-        'You write short, specific, professional outreach emails.',
+        DRAFT_SYSTEM_PROMPT,
         buildDraftPrompt({
           commonPrompt: campaign.commonPrompt,
           name: contact.name,

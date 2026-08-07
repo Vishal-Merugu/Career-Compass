@@ -40,6 +40,15 @@
   color: var(--mantine-color-red-6);
 }
 
+/* While the model is writing, the body is read-only rather than disabled: a
+   disabled textarea greys its own text out, which is the opposite of what a
+   preview is for. The accent border is the only signal that it is live. */
+.streamingBody textarea {
+  border-color: var(--mantine-color-brand-5);
+  background: var(--app-surface-sunken);
+  cursor: default;
+}
+
 /* The draft-edit button is one per row, so it stays quiet until the row is
    under the pointer — the same rule the external-link glyph follows on
    Results. Focus reveals it too, or it would be invisible to the keyboard. */

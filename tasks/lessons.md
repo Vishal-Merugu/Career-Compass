@@ -363,3 +363,59 @@ selecting a profile had no visible effect at all. It typechecked and shipped.
 
 **Apply:** a `data-*` attribute added for styling is only half the change. Grep
 the stylesheet for it before calling the feature done.
+
+### EventSource reconnects when the stream ends — close it yourself
+
+On a `done` or `error` frame, call `source.close()` and drop the ref.
+
+**Why:** `EventSource` treats _any_ end of stream as a dropped connection and
+retries. The draft-preview stream ends normally when the model stops writing,
+so leaving it open started a second generation immediately and appended a whole
+second email onto the first — which looks like a model that will not stop
+rather than a client bug.
+
+**Apply:** `useDraftStream` in `client/src/pages/CampaignDetailPage.tsx`. Its
+`onerror` also checks `sourceRef.current === source` first, so a retry on an
+already-closed stream cannot report a connection failure over a finished draft.
+
+### Buffer a token stream by line, never per network chunk
+
+**Why:** both wire formats (Ollama NDJSON, OpenAI SSE) are line-delimited, and a
+`read()` bears no relation to a line — one chunk can carry half a JSON object.
+`JSON.parse` on a fragment throws, the frame is skipped, and the draft comes out
+missing words while still reading as fluent English, so nothing looks broken.
+Same reason `TextDecoder` needs `{ stream: true }`: a three-byte `—` split
+across two reads otherwise decodes as replacement characters.
+
+**Apply:** `readLines()` in `server/src/services/draftStream.service.ts`, pinned
+by tests that split frames and multi-byte characters mid-chunk on purpose.
+
+### `fetch failed` is never the error worth showing
+
+Read `err.cause` — and `cause.code` when `cause.message` is empty.
+
+**Why:** Node's fetch reports every transport failure as the bare string
+"fetch failed" and hides ECONNREFUSED/DNS/TLS on `cause`. The draft stream
+surfaced "fetch failed" to the user when their Ollama was simply not running,
+which is the single most likely cause and the one thing the message did not
+say. A multi-address connect fails with an `AggregateError` whose `message` is
+empty, so `cause.message` alone is not enough.
+
+**Apply:** `describeStreamFailure()` in `server/src/api/campaigns.router.ts`.
+
+### Stream errors have to travel as a frame, not a status code
+
+**Why:** once `res.flushHeaders()` has run, `errorHandler` cannot set a status —
+a `throw` just ends the response, and the client cannot tell a crashed
+generation from a finished one. The route catches inside the stream loop and
+writes `{ type: 'error', message }`; only failures found _before_ the headers go
+out (ownership, missing prompt) still `next(err)` and return real 4xx JSON.
+
+### Server-only code does not belong in `shared/`
+
+**Why:** `shared/llmClient.ts` is hand-mirrored into
+`extension/services/llmClient.js`, which has no imports at all. Putting the
+streaming client there would have meant either importing `AppError` into a file
+that gets copied into the extension, or throwing a raw `Error`. It lives in
+`services/draftStream.service.ts` instead and imports `getBaseUrl`/`getHeaders`
+from the shared module.
