@@ -42,11 +42,11 @@ was for.
 
 ### Publish qualified profiles into `Profile`
 
-`qualificationWorker.publishToResults` upserts a `Profile` (keyed by the
-LinkedIn vanity slug, the same key the mass-connector path uses, so one person
-is one row) and writes the `OutreachLog` that scopes it to the user. Failure is
-logged, not thrown — the decision is already recorded and the pipeline should
-keep moving.
+`profilePublisher.service.ts`'s `publishQualifiedProfile` upserts a `Profile`
+(keyed by the LinkedIn vanity slug, the same key the mass-connector path uses, so
+one person is one row) and writes the `OutreachLog` that scopes it to the user.
+Failure is logged, not thrown — the decision is already recorded and the pipeline
+should keep moving. Shared with the backfill script so the two cannot drift.
 
 ### Lookups are rows in `EmailLookup`, not a job in a queue
 
@@ -77,12 +77,24 @@ result back. Deliberately not a long-lived loop or a `setInterval` — the worke
 is suspended and takes both with it. Claim little and often: anything held when
 the worker dies waits for the sweeper.
 
-### The extension upgrades results, it never gates them
+### The extension does the lookups; the server fallback is opt-in
 
-`emailLookupWorker` reclaims abandoned leases every minute and, after a
-three-minute grace period, hands any row no browser claimed to the server-side
-finder. Pressing the button therefore always produces an answer, with or without
-a browser — the extension only ever makes the answer _better_.
+This started as "the extension upgrades results, it never gates them": any row
+unclaimed for three minutes fell through to the server-side finder, so pressing
+the button always produced an answer.
+
+**That was wrong, and it was corrected before this shipped.** The server only
+reaches the metered API and pattern+SMTP, so the fallback settled rows on a
+`pattern_guess` — and since the extension drains two at a time, a 40-row batch
+meant the server stole ~38 of them within three minutes, before the browser that
+could have resolved them properly ever got a turn. A guess is still an answer, so
+those rows then looked finished.
+
+So `EmailLookup.allowServerFallback` defaults to **false** and
+`POST /api/profiles/find-emails` takes `serverFallback` per request. Rows that did
+not opt in wait for a browser indefinitely — intended, not a stall — and Results
+offers an explicit "guess the N waiting instead" for when no browser is coming.
+`emailLookupWorker` still reclaims abandoned leases every minute regardless.
 
 ### Writes to `Profile` are upgrade-only
 
@@ -95,14 +107,14 @@ stranger's inbox, would be the first anyone heard of it.
 
 Equal strength keeps the existing address, so re-running is idempotent rather
 than a coin flip between two guesses. A rejected result is still recorded on the
-lookup row with `lastError: 'Kept stronger existing address'`.
+lookup row with `lastError: 'Kept existing address — not an upgrade'`.
 
 ### `pattern_guess` stays re-queueable
 
-The fallback marks a guess `done` — it is a real answer and the user should see
-it. But `isVerifiedSource('pattern_guess')` is false, so selecting that profile
-and pressing the button again re-queues it. That is how a guess gets upgraded
-later without the row cycling through the fallback forever.
+A guess is marked `done` — it is a real answer and the user should see it. But
+`isVerifiedSource('pattern_guess')` is false, so selecting that profile and
+pressing the button again re-queues it. That is how a guess gets upgraded later
+without the row cycling through the fallback forever.
 
 ## Consequences
 

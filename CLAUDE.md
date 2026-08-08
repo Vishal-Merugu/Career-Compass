@@ -92,9 +92,11 @@ check the other.
 
 ## Email finding
 
-Runs **on the server**, in `qualificationWorker`, not in the extension — email
-discovery never touches the LinkedIn session, so it has no reason to need a
-browser. A job produces contacts whether or not one is connected.
+**Lookups are never automatic.** `qualificationWorker` does _not_ find emails —
+a qualified profile lands on Results with no address, and you start the lookup
+from there ("Find emails"). It used to run inline, and because the server only
+reaches the two layers below, every profile resolved to a `pattern_guess` before
+a real browser saw it — and a guess is an answer, so the row never got upgraded.
 
 Two layers, the second running only when the first produced nothing:
 
