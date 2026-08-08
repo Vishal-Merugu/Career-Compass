@@ -40,7 +40,6 @@ export interface IUserConfig {
   userContext?: string | null;
   targetGeoId: string;
   emailFinderEnabled: boolean;
-  isServerRun: boolean;
 }
 
 export interface IDailyStats {

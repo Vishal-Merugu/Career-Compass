@@ -169,7 +169,6 @@ export class PrismaStorageAdapter implements IStorageAdapter {
       userContext: config.userContext,
       targetGeoId: config.targetGeoId,
       emailFinderEnabled: config.emailFinderEnabled,
-      isServerRun: config.isServerRun,
     };
   }
 

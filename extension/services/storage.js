@@ -51,7 +51,9 @@ async function setConfig(config, pushToServer = true) {
   await storageSet('config', config);
 
   if (pushToServer && config.apiKey && config.backendUrl) {
-    const { apiKey, backendUrl, isServerRun, ...remoteConfig } = config;
+    // apiKey and backendUrl are how this extension reaches the server; they are
+    // local wiring, not settings the server should store back.
+    const { apiKey, backendUrl, ...remoteConfig } = config;
     try {
       await fetch(`${config.backendUrl}/api/config`, {
         method: 'POST',

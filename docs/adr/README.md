@@ -3,12 +3,15 @@
 Short documents recording a decision that was **expensive to reach** and would
 otherwise be re-litigated or silently reversed.
 
-| #                                                      | Decision                                         | Status   |
-| ------------------------------------------------------ | ------------------------------------------------ | -------- |
-| [0001](0001-extension-executes-server-orchestrates.md) | The extension executes, the server orchestrates  | Accepted |
-| [0002](0002-full-cookie-jar.md)                        | A live cookie jar, not two static cookies        | Accepted |
-| [0003](0003-manual-dispatch-deploys.md)                | Manual-dispatch deploys via a self-hosted runner | Accepted |
-| [0004](0004-same-origin-web-dashboard.md)              | A web dashboard, served same-origin from the VM  | Accepted |
+| #                                                      | Decision                                         | Status                                                             |
+| ------------------------------------------------------ | ------------------------------------------------ | ------------------------------------------------------------------ |
+| [0001](0001-extension-executes-server-orchestrates.md) | The extension executes, the server orchestrates  | Superseded by [0007](0007-server-side-linkedin-calls.md) for reads |
+| [0002](0002-full-cookie-jar.md)                        | A live cookie jar, not two static cookies        | Accepted                                                           |
+| [0003](0003-manual-dispatch-deploys.md)                | Manual-dispatch deploys via a self-hosted runner | Accepted                                                           |
+| [0004](0004-same-origin-web-dashboard.md)              | A web dashboard, served same-origin from the VM  | Accepted                                                           |
+| [0005](0005-server-side-email-finder.md)               | Email finding runs on the server                 | Accepted                                                           |
+| [0006](0006-email-lookup-queue.md)                     | Email lookups are a queue the extension drains   | Accepted                                                           |
+| [0007](0007-server-side-linkedin-calls.md)             | The server makes the LinkedIn calls              | Accepted                                                           |
 
 ## When to write one
 

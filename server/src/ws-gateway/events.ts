@@ -2,16 +2,16 @@
  * Single source of truth for WebSocket events and payloads.
  */
 
+// FETCH_URL_BATCH and SCRAPE_PROFILE are gone: URL collection and profile
+// scraping run on the server, which holds the cookie jar the extension pushes
+// to it. See docs/adr/0007-server-side-linkedin-calls.md.
 export const ServerCommands = {
   SESSION_CHECK: 'SESSION_CHECK',
-  FETCH_URL_BATCH: 'FETCH_URL_BATCH',
-  SCRAPE_PROFILE: 'SCRAPE_PROFILE',
   STOP_LIMIT_REACHED: 'STOP_LIMIT_REACHED',
   PAUSE: 'PAUSE',
   RESUME: 'RESUME',
   REQUEST_STATE_SYNC: 'REQUEST_STATE_SYNC',
   ERROR: 'ERROR',
-  FIND_EMAIL: 'FIND_EMAIL',
 } as const;
 
 export const ClientEvents = {
@@ -25,31 +25,15 @@ export const ClientEvents = {
   RATE_LIMITED: 'RATE_LIMITED',
   TAB_CLOSED: 'TAB_CLOSED',
   HEARTBEAT: 'HEARTBEAT',
-  EMAIL_FOUND: 'EMAIL_FOUND',
-  EMAIL_FIND_FAILED: 'EMAIL_FIND_FAILED',
-  CHECK_PENDING_EMAILS: 'CHECK_PENDING_EMAILS',
 } as const;
 
 // ─── Outbound Payload Interfaces (Server -> Extension) ──────────────────────
 
-export interface FetchUrlBatchPayload {
-  batchNumber: number;
-  targetCount: number;
-  searchUrl?: string;
-}
-
-export interface ScrapeProfilePayload {
-  urlId: string;
-  url: string;
-}
-
-export interface FindEmailPayload {
-  urlId: string;
-  url: string;
-  firstName: string;
-  lastName: string;
-  companyName: string;
-}
+// There is deliberately no FIND_EMAIL command. Email lookups are pulled by the
+// extension over REST, not pushed down this socket: the handshake requires a
+// live SearchJob (see middleware/auth.ts) and an MV3 service worker is killed
+// after ~30s idle, so between jobs there is no socket to push anything down.
+// See docs/adr/0006-email-lookup-queue.md.
 
 export interface ErrorPayload {
   message: string;
@@ -109,20 +93,6 @@ export interface ProfileScrapeFailedPayload {
   urlId: string;
   error: string;
   isPermanent: boolean; // true for private profile, false for timeout/retryable
-}
-
-export interface EmailFoundPayload {
-  jobId: string;
-  urlId: string;
-  email: string;
-  source: string;
-  validation: string;
-}
-
-export interface EmailFindFailedPayload {
-  jobId: string;
-  urlId: string;
-  error: string;
 }
 
 export interface ErrorEventPayload {

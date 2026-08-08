@@ -1,6 +1,5 @@
 import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
-import { sendScrapeProfile } from '../ws-gateway/commands/sendScrapeProfile.js';
 
 export async function dispatchNext(jobId: string): Promise<void> {
   logger.info(
@@ -66,56 +65,19 @@ export async function dispatchNext(jobId: string): Promise<void> {
     return;
   }
 
-  // 4. Atomically select, lock, and update the next queued profile URL to 'dispatched'
-  const nextUrl = await prisma.$transaction(async (tx) => {
-    // Use raw query to atomically find and lock the next queued URL
-    const rows = await tx.$queryRaw<any[]>`
-      SELECT id FROM "ProfileUrl"
-      WHERE "jobId" = ${jobId} AND status = 'queued'
-      ORDER BY "createdAt" ASC
-      LIMIT 1
-      FOR UPDATE SKIP LOCKED
-    `;
+  // 4. Nudge the server-side scrape worker.
+  //
+  // This used to claim a queued URL and emit SCRAPE_PROFILE to the extension.
+  // The scraping runs on the server now (workers/scrapeWorker.ts), which claims
+  // its own row under a `status: 'queued'` guard — claiming here as well would
+  // race it. The worker also polls on a timer, so this only removes the wait for
+  // the next tick; a failure to run now is latency, not lost work.
+  const { scrapeJobOnce } = await import('../workers/scrapeWorker.js');
 
-    if (!rows || rows.length === 0) return null;
-    const itemId = rows[0].id;
-
-    // Transition status to dispatched and increment attempt count
-    return await tx.profileUrl.update({
-      where: { id: itemId },
-      data: {
-        status: 'dispatched',
-        dispatchedAt: new Date(),
-        attempts: { increment: 1 },
-      },
-    });
-  });
-
-  if (!nextUrl) {
-    logger.info(
-      `[Orchestrator] No more queued URLs left to dispatch for Job ${jobId}.`,
-    );
-    return;
-  }
-
-  // 5. Send command to extension
-  try {
-    logger.info(
-      `[Orchestrator] Dispatching profile URL ${nextUrl.url} (ID: ${nextUrl.id})`,
-    );
-    await sendScrapeProfile(jobId, nextUrl.id, nextUrl.url);
-  } catch (err: any) {
+  void scrapeJobOnce(jobId).catch((err) => {
     logger.error(
       err,
-      `[Orchestrator] Failed sending scrape command for URL ID ${nextUrl.id}. Rolling back status to queued.`,
+      `[Orchestrator] Immediate scrape pass failed for ${jobId}`,
     );
-    await prisma.profileUrl.update({
-      where: { id: nextUrl.id },
-      data: {
-        status: 'queued',
-        dispatchedAt: null,
-        attempts: { decrement: 1 },
-      },
-    });
-  }
+  });
 }
