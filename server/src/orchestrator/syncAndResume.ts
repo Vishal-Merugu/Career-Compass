@@ -1,6 +1,5 @@
 import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
-import { sendFetchUrlBatch } from '../ws-gateway/commands/sendFetchUrlBatch.js';
 import { sendStopLimitReached } from '../ws-gateway/commands/sendStopLimitReached.js';
 import { sendSessionCheck } from '../ws-gateway/commands/sendSessionCheck.js';
 import { dispatchNext } from './dispatchNext.js';
@@ -60,14 +59,22 @@ export async function syncAndResumeJobImpl(jobId: string): Promise<void> {
           );
       }
 
-      await sendFetchUrlBatch(jobId, job.currentBatchNumber, batchSize);
+      // Deliberately does NOT collect. The run is started by
+      // `POST /api/jobs` → `startJob`, and collecting here as well meant an
+      // extension connecting mid-run kicked off a *second* concurrent
+      // collector: double the Voyager search traffic, interleaved jar writes,
+      // and a duplicate Telegram start message.
+      logger.info(
+        `[Orchestrator] Job ${jobId} is initializing; the server-side runner owns collection.`,
+      );
       break;
 
     case 'collecting_urls':
+      // Same reason. If the server died mid-collection, the scrape worker's
+      // boot sweep resumes it — not an extension socket.
       logger.info(
-        `[Orchestrator] Job ${jobId} was in URL collection. Requesting batch collection.`,
+        `[Orchestrator] Job ${jobId} is mid-collection server-side; nothing to do here.`,
       );
-      await sendFetchUrlBatch(jobId, job.currentBatchNumber, batchSize);
       break;
 
     case 'scraping':

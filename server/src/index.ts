@@ -19,6 +19,8 @@ import { campaignsRouter } from './api/campaigns.router.js';
 import { outreachSettingsRouter } from './api/outreachSettings.router.js';
 import { jobsRouter } from './api/jobs.router.js';
 import { syncRouter } from './api/sync.router.js';
+import { emailLookupsRouter } from './api/emailLookups.router.js';
+import { sessionRouter } from './api/session.router.js';
 import { SchedulerService } from './services/scheduler.service.js';
 import { telegramBotService } from './telegram/bot.js';
 import { initRedis, redisClient } from './lib/redis.js';
@@ -27,6 +29,11 @@ import {
   startTimeoutSweeper,
   stopTimeoutSweeper,
 } from './orchestrator/timeoutSweeper.js';
+import {
+  startEmailLookupWorker,
+  stopEmailLookupWorker,
+} from './workers/emailLookupWorker.js';
+import { startScrapeWorker, stopScrapeWorker } from './workers/scrapeWorker.js';
 
 const app = express();
 
@@ -101,7 +108,10 @@ app.use('/api', profilesRouter);
 app.use('/api', campaignsRouter);
 app.use('/api', outreachSettingsRouter);
 app.use('/api/sync', syncRouter);
+app.use('/api/session', sessionRouter);
 app.use('/api', jobsRouter);
+// Paths inside are already prefixed /email-lookups.
+app.use('/api', emailLookupsRouter);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -152,6 +162,14 @@ const server = app.listen(env.PORT, async () => {
   // Start Orchestrator timeout sweeper
   startTimeoutSweeper();
 
+  // Reclaims abandoned lookup leases and finishes anything the extension never
+  // claimed. See workers/emailLookupWorker.ts.
+  startEmailLookupWorker();
+
+  // Makes the LinkedIn calls the extension used to make. See
+  // workers/scrapeWorker.ts and docs/adr/0007-server-side-linkedin-calls.md.
+  startScrapeWorker();
+
   // Redis is required — see initRedis. This callback is async, so a throw here
   // would surface as an unhandled rejection and leave a listening socket on a
   // server that cannot dispatch campaigns. Exit deliberately instead.
@@ -192,6 +210,8 @@ const gracefulShutdown = async () => {
 
   // Stop Orchestrator sweeper
   stopTimeoutSweeper();
+  stopEmailLookupWorker();
+  stopScrapeWorker();
 
   server.close(async () => {
     logger.info('HTTP server closed.');

@@ -49,6 +49,15 @@ services:
       # Unset means registration is CLOSED once an account exists, which is the
       # intended default. See server/src/auth/routes.ts.
       REGISTRATION_TOKEN: ${REGISTRATION_TOKEN}
+      # Layer 1 of the email finder. Unset, the layer is skipped and lookups
+      # fall through to patterns + SMTP. 100 free credits on signup; billed
+      # per valid email found. https://anymailfinder.com/email-finder-api
+      ANYMAILFINDER_API_KEY: ${ANYMAILFINDER_API_KEY}
+      # Identity used in the SMTP RCPT probe. A real domain you control makes
+      # the probe look like an ordinary sender rather than a forged one; some
+      # mail servers reject a MAIL FROM whose domain does not resolve.
+      SMTP_PROBE_HELO: ${SMTP_PROBE_HELO:-localhost}
+      SMTP_PROBE_FROM: ${SMTP_PROBE_FROM:-verify@localhost}
     volumes:
       # Résumé attachments. Without this they live in the container's writable
       # layer and every deploy silently discards them, so a campaign started

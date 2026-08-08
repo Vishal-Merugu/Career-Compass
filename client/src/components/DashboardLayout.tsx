@@ -18,6 +18,7 @@ import {
   IconLogout,
   IconMail,
   IconMoon,
+  IconRadar,
   IconSun,
   IconSettings,
   IconTable,
@@ -30,7 +31,11 @@ import classes from './DashboardLayout.module.css';
 const NAV_SECTIONS = [
   {
     label: 'Pipeline',
-    items: [{ to: '/results', label: 'Results', icon: IconTable }],
+    items: [
+      // Runs first: it is the live screen, and Results is what a run produces.
+      { to: '/runs', label: 'Runs', icon: IconRadar },
+      { to: '/results', label: 'Results', icon: IconTable },
+    ],
   },
   {
     label: 'Outreach',

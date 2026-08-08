@@ -87,15 +87,20 @@ class MassConnectorWorkflow extends BaseWorkflow {
             `Finding email for: ${profile.firstName}...`,
           );
           try {
-            const emailResult = await findEmail(
-              profile.publicIdentifier || profileId,
+            // Server-side lookup. Email discovery never needed the LinkedIn
+            // session, so it lives on the backend where it runs whether or
+            // not this browser is open.
+            const emailResult = await apiSync(
+              '/api/profiles/find-email',
+              'POST',
               {
+                linkedinUrl: profile.publicIdentifier || profileId,
                 firstName: profile.firstName,
                 lastName: profile.lastName,
                 companyName: companyName,
               },
             );
-            if (emailResult.ok && emailResult.email) {
+            if (emailResult && emailResult.ok && emailResult.email) {
               emailData = {
                 email: emailResult.email,
                 source: emailResult.source || 'unknown',

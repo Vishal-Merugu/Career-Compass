@@ -18,8 +18,7 @@ export type ApiErrorCode =
   | 'NOT_FOUND'
   | 'LINKEDIN_SESSION_EXPIRED'
   | 'INTERNAL_ERROR'
-  | 'WORKFLOW_RUNNING'
-  | 'SERVER_RUN_DISABLED';
+  | 'WORKFLOW_RUNNING';
 
 export class ApiError extends Error {
   readonly status: number;

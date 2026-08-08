@@ -419,8 +419,7 @@ class TelegramBotService {
 
         let statusText = `*Status Overview*\n\n`;
 
-        statusText += `*LinkedIn Session:* ${session?.isValid ? '🟢 Active' : '🔴 Expired/Invalid'}\n`;
-        statusText += `*Server Run Mode:* ${user.config?.isServerRun ? '🟢 Enabled' : '🔴 Disabled'}\n\n`;
+        statusText += `*LinkedIn Session:* ${session?.isValid ? '🟢 Active' : '🔴 Expired/Invalid'}\n\n`;
 
         if (activeJob) {
           const collectedCount = await prisma.profileUrl.count({
@@ -802,8 +801,7 @@ class TelegramBotService {
         `- Daily Connection Limit: \`${user.config?.dailyLimit || 15}\`\n` +
         `- Email Finder Enabled: \`${user.config?.emailFinderEnabled ? 'Yes' : 'No'}\`\n` +
         `- LLM Provider: \`${user.config?.llmProvider || 'ollama'}\`\n` +
-        `- LLM Model: \`${user.config?.llmModel || 'qwen2.5:1.5b'}\`\n` +
-        `- Server Mode (isServerRun): \`${user.config?.isServerRun ? 'Active' : 'Inactive'}\``;
+        `- LLM Model: \`${user.config?.llmModel || 'qwen2.5:1.5b'}\``;
 
       await this.sendMessage(chatId, configText, { parse_mode: 'Markdown' });
     });
