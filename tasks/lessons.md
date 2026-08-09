@@ -592,3 +592,39 @@ re-queues the row.
 **Why:** reserving the status code for transport failures is what lets the
 client tell "try again later" from "your payload is wrong". A 4xx for "no email
 found" makes a normal outcome indistinguishable from a bug in the caller.
+
+### Anything in front of the server in CMD turns a failure into a boot failure
+
+`server/Dockerfile`'s CMD went from `db push && node dist/index.js` to
+`migrate deploy && node dist/index.js`. `migrate deploy` failed on the VM
+(P3005 — tables built by `db push`, so no `_prisma_migrations`), the `&&`
+short-circuited, and with `restart: always` the container crash-looped instead
+of serving. The dashboard went down.
+
+**Why:** `db push` is forgiving and `migrate deploy` is not, so the swap
+converted a survivable schema mismatch into "the server never starts". The
+deploy step that surfaced it was `docker compose exec … db push`, which returned
+**exit 137** — SIGKILL, because the container it exec'd into died underneath it.
+137 there means "the container went away", not OOM; the 18 ms between
+`cc-server Started` and the exec is the tell.
+
+**Apply:** before changing a container's startup command, check what the deploy
+workflow does around it — `.github/workflows/deploy.yml` had its _own_
+`db push` step, so the change created two schema paths that contradicted each
+other. Recovery is a one-off container (`docker run --rm --entrypoint sh`), not
+`docker exec`, which cannot attach to something that will not stay up.
+
+### Baseline before assuming a wipe is needed
+
+The fix for P3005 looked like "drop and recreate the database", and the database
+really was empty. `prisma migrate resolve --applied` for each migration achieved
+the same thing without a destructive command.
+
+**Why:** baselining only inserts rows into `_prisma_migrations`. It leaves the
+schema and any data alone, so it is correct whether or not the database turns
+out to be empty — and "the database is empty" is a claim worth checking with
+exact `count(*)`s rather than `pg_stat_user_tables.n_live_tup`, which is an
+estimate.
+
+**Apply:** reach for `migrate resolve` first. Verify emptiness before any drop,
+and confirm the backup exists even when you expect not to need it.
