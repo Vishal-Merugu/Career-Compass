@@ -11,7 +11,10 @@ importScripts(
   '../services/voyagerClient.js',
   '../services/llmClient.js',
   '../services/csvExporter.js',
+  '../services/sessionSync.js',
+  // emailFinder must load before emailLookupDrainer — the drainer calls into it.
   '../services/emailFinder.js',
+  '../services/emailLookupDrainer.js',
   '../workflows/baseWorkflow.js',
   '../workflows/registry.js',
   '../workflows/massConnector.js',
@@ -50,13 +53,6 @@ async function handleMessage(message, sendResponse) {
         break;
       }
 
-      case 'findEmail': {
-        const { linkedinUrl, profileData } = message;
-        const result = await findEmail(linkedinUrl, profileData);
-        sendResponse(result);
-        break;
-      }
-
       case 'resetDaily': {
         await resetDailyStats();
         await addActivityEntry('🔄 Daily counters reset');
@@ -82,7 +78,17 @@ async function handleMessage(message, sendResponse) {
 
       case 'saveConfig': {
         await setConfig(message.config, message.pushToServer !== false);
+        // Linking to a backend for the first time happens here, and the server
+        // has no jar until one is pushed.
+        syncSessionToServer().catch(() => {});
         sendResponse({ ok: true });
+        break;
+      }
+
+      // Push the LinkedIn jar now. The popup uses this so a user who just
+      // logged in to LinkedIn does not wait up to 30 minutes for the alarm.
+      case 'session:sync': {
+        sendResponse(await syncSessionToServer());
         break;
       }
 
@@ -226,6 +232,22 @@ chrome.alarms.create('workflowKeepAlive', {
   periodInMinutes: 1,
 });
 
+// Drains email lookups queued from the web dashboard. One minute is the floor
+// Chrome allows for a periodic alarm, and it has to be an alarm rather than a
+// setInterval because the worker is suspended after ~30s idle and takes any
+// timer with it. See services/emailLookupDrainer.js.
+chrome.alarms.create('emailLookupDrain', {
+  periodInMinutes: 1,
+});
+
+// Keep the server's cookie jar fresh. LinkedIn rotates JSESSIONID and lidc
+// during ordinary browsing, and the server cannot obtain a jar on its own, so
+// re-pushing periodically is what keeps server-side scraping alive. 30 minutes
+// is well inside any cookie's lifetime while costing one request.
+chrome.alarms.create('sessionSync', {
+  periodInMinutes: 30,
+});
+
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === 'midnightReset') {
     console.log('[Background] Midnight reset — clearing daily stats');
@@ -233,6 +255,12 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     await addActivityEntry('🌅 New day — daily counters reset');
   } else if (alarm.name === 'workflowKeepAlive') {
     console.log('[Background] Keep-alive alarm fired');
+  } else if (alarm.name === 'emailLookupDrain') {
+    // Failures are logged inside; a rejection here would leave the alarm
+    // handler with an unhandled rejection and no other effect.
+    await drainEmailLookups();
+  } else if (alarm.name === 'sessionSync') {
+    await syncSessionToServer();
   }
 });
 
@@ -248,6 +276,12 @@ function getNextMidnight() {
 async function initWorkflows() {
   console.log('[Background] Initializing workflows state...');
   try {
+    // Before anything else: the server needs a live jar to scrape with, and the
+    // 30-minute alarm may be a long way off after a browser restart.
+    syncSessionToServer().catch((err) =>
+      console.error('[Background] Session sync on startup failed:', err),
+    );
+
     const data = await chrome.storage.local.get('lastActiveJob');
     if (data.lastActiveJob) {
       const { jobId, userId } = data.lastActiveJob;
@@ -307,7 +341,6 @@ console.log(
 
 let socket = null;
 let heartbeatInterval = null;
-let isPaused = false;
 
 async function connectSocket(jobId, userId) {
   try {
@@ -329,7 +362,6 @@ async function connectSocket(jobId, userId) {
     console.log(
       `[Background] Connecting socket to ${backendUrl} for Job ${jobId}...`,
     );
-    isPaused = false;
 
     socket = io(backendUrl, {
       query: { jobId, userId, apiKey },
@@ -342,7 +374,6 @@ async function connectSocket(jobId, userId) {
     socket.on('connect', () => {
       console.log('[Background] Socket connected successfully. Registering...');
       socket.emit('REGISTER', { jobId, userId });
-      socket.emit('CHECK_PENDING_EMAILS');
 
       if (heartbeatInterval) clearInterval(heartbeatInterval);
       heartbeatInterval = setInterval(() => {
@@ -368,15 +399,9 @@ async function connectSocket(jobId, userId) {
       console.error('[Background] Received ERROR event from server:', payload);
     });
 
-    socket.on('PAUSE', () => {
-      console.log('[Background] Received PAUSE command from server');
-      isPaused = true;
-    });
-
-    socket.on('RESUME', () => {
-      console.log('[Background] Received RESUME command from server');
-      isPaused = false;
-    });
+    // PAUSE / RESUME are no longer acted on here — there is no local scrape
+    // loop left to pause. The server pauses its own worker by moving the job
+    // out of the `scraping` state.
 
     socket.on('STOP_LIMIT_REACHED', () => {
       console.log(
@@ -399,39 +424,10 @@ async function connectSocket(jobId, userId) {
       }
     });
 
-    socket.on('FETCH_URL_BATCH', async (payload) => {
-      console.log('[Background] Command received: FETCH_URL_BATCH', payload);
-      const { batchNumber, targetCount, searchUrl } = payload;
-
-      try {
-        await handleFetchUrlBatch(jobId, batchNumber, targetCount, searchUrl);
-      } catch (err) {
-        console.error('[Background] FETCH_URL_BATCH handler failed:', err);
-        socket.emit('ERROR', { jobId, error: err.message || String(err) });
-      }
-    });
-
-    socket.on('SCRAPE_PROFILE', async (payload) => {
-      console.log('[Background] Command received: SCRAPE_PROFILE', payload);
-      const { urlId, url } = payload;
-
-      try {
-        await handleScrapeProfile(jobId, urlId, url);
-      } catch (err) {
-        console.error('[Background] SCRAPE_PROFILE handler failed:', err);
-        socket.emit('PROFILE_SCRAPE_FAILED', {
-          jobId,
-          urlId,
-          error: err.message || String(err),
-          isPermanent: false,
-        });
-      }
-    });
-
-    socket.on('FIND_EMAIL', (payload) => {
-      console.log('[Background] Command received: FIND_EMAIL', payload);
-      enqueueEmailLookup(jobId, payload);
-    });
+    // No FETCH_URL_BATCH or SCRAPE_PROFILE listeners: URL collection and
+    // profile scraping run on the server now, which holds the cookie jar this
+    // extension pushes to it. See docs/adr/0007-server-side-linkedin-calls.md.
+    // Listening here as well would mean two collectors racing over one job.
   } catch (err) {
     console.error('[Background] connectSocket failed:', err);
   }
@@ -447,279 +443,4 @@ function disconnectSocket() {
     socket = null;
   }
   console.log('[Background] Socket disconnected and cleaned up.');
-}
-
-async function getSearchParamsFromUrl(searchUrl) {
-  let companyId = '';
-  let geoId = '101282230'; // default geoId
-  try {
-    const urlObj = new URL(searchUrl);
-    const currentCompanyParam = urlObj.searchParams.get('currentCompany');
-    if (currentCompanyParam) {
-      try {
-        const parsed = JSON.parse(currentCompanyParam);
-        companyId = Array.isArray(parsed) ? parsed[0] : parsed;
-      } catch (e) {
-        const match = currentCompanyParam.match(/"([^"]+)"/);
-        companyId = match ? match[1] : currentCompanyParam;
-      }
-    }
-    const geoUrnParam = urlObj.searchParams.get('geoUrn');
-    if (geoUrnParam) {
-      try {
-        const parsed = JSON.parse(geoUrnParam);
-        geoId = Array.isArray(parsed) ? parsed[0] : parsed;
-      } catch (e) {
-        const match = geoUrnParam.match(/"([^"]+)"/);
-        geoId = match ? match[1] : geoUrnParam;
-      }
-    }
-
-    if (!companyId) {
-      const parts = urlObj.pathname.split('/').filter(Boolean);
-      const companyIdx = parts.indexOf('company');
-      let companySlug = '';
-      if (companyIdx !== -1 && parts[companyIdx + 1]) {
-        companySlug = parts[companyIdx + 1];
-      } else {
-        companySlug = urlObj.searchParams.get('keywords') || '';
-      }
-
-      if (companySlug) {
-        console.log('[Background] Resolving company slug:', companySlug);
-        const companyRes = await resolveCompany(companySlug);
-        const elements =
-          companyRes.data?.['*elements'] || companyRes?.['*elements'] || [];
-        const firstElement = elements[0];
-        companyId =
-          typeof firstElement === 'string'
-            ? firstElement.split(':').pop() || ''
-            : firstElement?.targetUrn?.split(':').pop() || '';
-      }
-    }
-  } catch (err) {
-    console.error('[Background] Error parsing searchUrl:', err);
-  }
-  return { companyId, geoId };
-}
-
-async function handleFetchUrlBatch(jobId, batchNumber, targetCount, searchUrl) {
-  const { companyId, geoId } = await getSearchParamsFromUrl(searchUrl);
-
-  if (!companyId) {
-    throw new Error(
-      `Could not resolve company ID for search URL: ${searchUrl}`,
-    );
-  }
-
-  let count = 0;
-  let start = (batchNumber - 1) * targetCount;
-  let hasMore = true;
-
-  while (count < targetCount && hasMore && !isPaused) {
-    console.log(
-      `[Background] Fetching search page (start: ${start}) for company ${companyId}`,
-    );
-
-    const loggedIn = await isLinkedInLoggedIn();
-    if (!loggedIn) {
-      console.warn(
-        '[Background] LinkedIn session invalid during URL collection',
-      );
-      if (socket) socket.emit('SESSION_INVALID', { jobId });
-      break;
-    }
-
-    const searchRes = await searchPeople(companyId, geoId, start, 12);
-    const people = parsePeopleSearchResults(searchRes);
-    const meta = parsePaginationMetadata(searchRes);
-
-    if (!people || people.length === 0) {
-      hasMore = false;
-      break;
-    }
-
-    for (const person of people) {
-      if (count >= targetCount || isPaused) break;
-
-      const profileUrl = `https://www.linkedin.com/in/${person.profileId}/`;
-      if (socket) {
-        socket.emit('URL_BATCH_ITEM', {
-          jobId,
-          batchNumber,
-          url: profileUrl,
-          previewData: {
-            name: person.name,
-            headline: person.headline,
-            location: person.location,
-          },
-        });
-      }
-      count++;
-    }
-
-    if (meta && meta.count) {
-      start += meta.count;
-    } else {
-      start += 12;
-    }
-  }
-
-  if (socket) {
-    socket.emit('URL_BATCH_COMPLETE', {
-      jobId,
-      batchNumber,
-      count,
-    });
-  }
-}
-
-async function handleScrapeProfile(jobId, urlId, url) {
-  const loggedIn = await isLinkedInLoggedIn();
-  if (!loggedIn) {
-    console.warn('[Background] LinkedIn session invalid during profile scrape');
-    if (socket) socket.emit('SESSION_INVALID', { jobId });
-    throw new Error('Not logged into LinkedIn');
-  }
-
-  const urlParts = url.split('/in/');
-  if (urlParts.length <= 1) {
-    throw new Error(`Invalid LinkedIn profile URL: ${url}`);
-  }
-
-  const memberIdentity = urlParts[1].split('/')[0].split('?')[0];
-  console.log(
-    `[Background] Fetching profile from Voyager for memberIdentity: ${memberIdentity}`,
-  );
-
-  try {
-    const response = await fetchFullProfile(memberIdentity);
-    const parsedProfile = parseFullProfile(response);
-
-    const name = `${parsedProfile.firstName} ${parsedProfile.lastName}`.trim();
-
-    // NOTE: Email finding is now handled server-side by QualificationWorker.
-    // Extension only sends the scraped profile data — no email delay.
-
-    const rawData = {
-      name,
-      headline: parsedProfile.headline,
-      location: parsedProfile.location || '',
-      summary: parsedProfile.about,
-      about: parsedProfile.about,
-      publicIdentifier: parsedProfile.publicIdentifier || '',
-      experience: parsedProfile.experiences.map((exp) => ({
-        title: exp.title,
-        company: exp.companyName,
-        companyName: exp.companyName,
-        startDate: exp.timePeriod?.startDate || {},
-        endDate: exp.timePeriod?.endDate || {},
-        timePeriod: exp.timePeriod || {},
-      })),
-      experiences: parsedProfile.experiences,
-      education: parsedProfile.education,
-      skills: parsedProfile.skills,
-    };
-
-    if (socket) {
-      socket.emit('PROFILE_SCRAPED', {
-        jobId,
-        urlId,
-        rawData,
-      });
-    }
-  } catch (err) {
-    const errorMsg = err.message || String(err);
-    const isPermanent =
-      errorMsg.includes('→ 403') || errorMsg.includes('→ 404');
-
-    console.error(
-      `[Background] Scrape failed for profile ${memberIdentity}:`,
-      err,
-    );
-    if (socket) {
-      socket.emit('PROFILE_SCRAPE_FAILED', {
-        jobId,
-        urlId,
-        error: errorMsg,
-        isPermanent,
-      });
-    }
-  }
-}
-
-// ─── Sequential Email Discovery Queue ─────────────────────────────
-
-const emailLookupQueue = [];
-let isProcessingEmail = false;
-
-function enqueueEmailLookup(jobId, payload) {
-  emailLookupQueue.push({ jobId, payload });
-  triggerEmailQueueProcessing();
-}
-
-function triggerEmailQueueProcessing() {
-  if (isProcessingEmail) return;
-  isProcessingEmail = true;
-  processNextEmailLookup().catch((err) => {
-    console.error('[Background] Error in email queue loop:', err);
-    isProcessingEmail = false;
-  });
-}
-
-async function processNextEmailLookup() {
-  const item = emailLookupQueue.shift();
-  if (!item) {
-    isProcessingEmail = false;
-    return;
-  }
-
-  const { jobId, payload } = item;
-  const { urlId, url, firstName, lastName, companyName } = payload;
-
-  console.log(
-    `[Background] Processing email lookup from queue for URL ID: ${urlId}`,
-  );
-
-  try {
-    const result = await findEmail(url, { firstName, lastName, companyName });
-    if (result && result.ok && result.email) {
-      console.log(
-        `[Background] Email found for URL ID: ${urlId} -> ${result.email}`,
-      );
-      if (socket && socket.connected) {
-        socket.emit('EMAIL_FOUND', {
-          jobId,
-          urlId,
-          email: result.email,
-          source: result.source || 'mailmeteor',
-          validation: result.validation || 'unknown',
-        });
-      }
-    } else {
-      const errorMsg = result ? result.error : 'No email found';
-      console.warn(
-        `[Background] Email lookup failed for URL ID: ${urlId} -> ${errorMsg}`,
-      );
-      if (socket && socket.connected) {
-        socket.emit('EMAIL_FIND_FAILED', {
-          jobId,
-          urlId,
-          error: errorMsg || 'No email found',
-        });
-      }
-    }
-  } catch (err) {
-    console.error(`[Background] Error finding email for URL ID ${urlId}:`, err);
-    if (socket && socket.connected) {
-      socket.emit('EMAIL_FIND_FAILED', {
-        jobId,
-        urlId,
-        error: err.message || String(err),
-      });
-    }
-  }
-
-  // Process next item in queue
-  setTimeout(() => processNextEmailLookup(), 0);
 }

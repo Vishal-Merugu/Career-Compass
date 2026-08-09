@@ -8,7 +8,9 @@ import {
   Checkbox,
   CloseButton,
   Group,
+  Loader,
   Modal,
+  Progress,
   Select,
   SimpleGrid,
   Skeleton,
@@ -25,6 +27,7 @@ import {
   IconExternalLink,
   IconMail,
   IconMailPlus,
+  IconMailSearch,
   IconRefresh,
   IconSearch,
   IconUsers,
@@ -46,6 +49,7 @@ import type {
 } from '../api/types';
 import { EmptyState } from '../components/EmptyState';
 import { StatTile } from '../components/StatTile';
+import { useEmailLookups } from '../hooks/useEmailLookups';
 import { CampaignForm } from './CampaignsPage';
 import classes from './ResultsPage.module.css';
 
@@ -78,6 +82,27 @@ function matches(p: Profile, needle: string): boolean {
     .join(' ')
     .toLowerCase()
     .includes(needle);
+}
+
+/**
+ * How the address was obtained, in the words the user needs.
+ *
+ * `emailSource` is a confidence record, not trivia: outreach sends real mail
+ * from the user's own Gmail, so a generated guess must be visibly different
+ * from an address a provider confirmed. Mirrors
+ * `server/src/services/emailFinder/confidence.ts`.
+ */
+const SOURCE_LABEL: Record<string, { label: string; color: string }> = {
+  anymailfinder: { label: 'verified', color: 'teal' },
+  smtp_verified: { label: 'verified', color: 'teal' },
+  mailmeteor: { label: 'provider', color: 'blue' },
+  pattern_guess: { label: 'guess', color: 'yellow' },
+  not_found: { label: 'not found', color: 'gray' },
+};
+
+function sourceBadge(source: string | null) {
+  if (!source) return null;
+  return SOURCE_LABEL[source] ?? { label: source, color: 'gray' };
 }
 
 function TableSkeleton() {
@@ -257,6 +282,13 @@ export function ResultsPage() {
   const [filter, setFilter] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
+  const {
+    stats: lookupStats,
+    lookups,
+    pending,
+    findEmails,
+    cancel,
+  } = useEmailLookups();
 
   const toggle = (id: string) =>
     setSelected((prev) => {
@@ -308,13 +340,51 @@ export function ResultsPage() {
     return needle ? all.filter((p) => matches(p, needle)) : all;
   }, [all, filter]);
 
-  // Only profiles with an email can be mailed, so only those are selectable.
+  // Every visible row is selectable. It used to be only rows with an email,
+  // because mailing was the only thing selection fed — but finding an email is
+  // now also driven from here, and that is precisely the action you want on a
+  // row that has none.
+  //
   // Scoped to `visible`, so "select all" while filtered means what it looks
   // like it means rather than quietly selecting rows that are not on screen.
-  const selectableIds = useMemo(
-    () => visible.filter((p) => p.email).map((p) => p.id),
-    [visible],
+  const selectableIds = useMemo(() => visible.map((p) => p.id), [visible]);
+
+  // Each action applies to a different subset of the selection, so both counts
+  // are shown rather than making the user work out which rows will be affected.
+  const selectedProfiles = useMemo(
+    () => visible.filter((p) => selected.has(p.id)),
+    [visible, selected],
   );
+  const mailableIds = selectedProfiles.filter((p) => p.email).map((p) => p.id);
+  const lookupIds = selectedProfiles.map((p) => p.id);
+
+  // Which rows have a lookup in flight, so the Email column can say so instead
+  // of showing an em-dash that looks like a final answer.
+  const inFlight = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const l of lookups) {
+      if (l.status === 'queued' || l.status === 'dispatched') {
+        map.set(l.profileId, l.status);
+      }
+    }
+    return map;
+  }, [lookups]);
+
+  // Rows still waiting on a browser, so the "guess instead" action can re-queue
+  // exactly those rather than the current selection.
+  const waitingProfileIds = useMemo(
+    () => lookups.filter((l) => l.status === 'queued').map((l) => l.profileId),
+    [lookups],
+  );
+
+  const lastError = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const l of lookups) {
+      if (l.status === 'failed' && l.lastError)
+        map.set(l.profileId, l.lastError);
+    }
+    return map;
+  }, [lookups]);
 
   if (error) {
     return (
@@ -388,6 +458,106 @@ export function ResultsPage() {
         />
       </SimpleGrid>
 
+      {findEmails.error && (
+        <Alert
+          color="red"
+          variant="light"
+          radius="md"
+          icon={<IconAlertCircle size={17} />}
+          withCloseButton
+          onClose={() => findEmails.reset()}
+        >
+          {findEmails.error.message}
+        </Alert>
+      )}
+
+      {findEmails.data && findEmails.data.skippedVerified > 0 && (
+        <Alert color="gray" variant="light" radius="md">
+          Queued {findEmails.data.queued}. {findEmails.data.skippedVerified}{' '}
+          already had a verified address and were skipped — re-running those
+          would spend a lookup to learn nothing.
+        </Alert>
+      )}
+
+      {/* Shown whenever the queue is non-empty, including after the tab was
+          closed and reopened: the work happens server-side or in the extension,
+          so progress advances with nothing watching. */}
+      {lookupStats && lookupStats.total > 0 && (
+        <Alert
+          color={pending > 0 ? 'brand' : 'teal'}
+          variant="light"
+          radius="lg"
+          icon={pending > 0 ? <Loader size={16} /> : <IconMail size={17} />}
+          title={
+            pending > 0
+              ? `Finding emails — ${lookupStats.done + lookupStats.failed} of ${lookupStats.total} done`
+              : `Email lookups finished — ${lookupStats.done} found, ${lookupStats.failed} failed`
+          }
+        >
+          <Stack gap="xs">
+            <Progress
+              value={
+                ((lookupStats.done + lookupStats.failed) / lookupStats.total) *
+                100
+              }
+              color={pending > 0 ? 'brand' : 'teal'}
+              size="sm"
+              radius="xl"
+            />
+            {pending > 0 && (
+              <Stack gap={8}>
+                <Text fz={13} c="dimmed">
+                  Keep Chrome open with the extension installed — it does these
+                  in a real browser, which is the only place the free provider
+                  lookup works. Progress is saved, so you can leave this tab.
+                </Text>
+                <Group gap="sm" wrap="wrap">
+                  {waitingProfileIds.length > 0 && (
+                    <Tooltip
+                      label="Generates the likely address from the name and company domain and verifies it over SMTP. Free and needs no browser, but usually returns an unverified guess — which is why it is not the default."
+                      multiline
+                      w={300}
+                    >
+                      <Button
+                        size="xs"
+                        variant="light"
+                        color="yellow"
+                        loading={findEmails.isPending}
+                        onClick={() =>
+                          findEmails.mutate({
+                            profileIds: waitingProfileIds,
+                            serverFallback: true,
+                          })
+                        }
+                      >
+                        {/* Counts the ids actually being sent, not
+                            `lookupStats.queued`: the status endpoint returns at
+                            most 100 rows, so the two diverge on a large queue
+                            and the button would claim to act on more than it
+                            does. Also guarded above, since an empty array is a
+                            400 from the endpoint. */}
+                        Guess the {waitingProfileIds.length} waiting instead
+                      </Button>
+                    </Tooltip>
+                  )}
+                  {lookupStats.queued > 0 && (
+                    <Button
+                      size="xs"
+                      variant="subtle"
+                      color="gray"
+                      loading={cancel.isPending}
+                      onClick={() => cancel.mutate()}
+                    >
+                      Cancel {lookupStats.queued} queued
+                    </Button>
+                  )}
+                </Group>
+              </Stack>
+            )}
+          </Stack>
+        </Alert>
+      )}
+
       <div className={classes.panel}>
         <div className={classes.toolbar}>
           <TextInput
@@ -405,13 +575,39 @@ export function ResultsPage() {
           />
           {selected.size > 0 && (
             <Group gap={8} wrap="nowrap">
-              <Button
-                size="sm"
-                leftSection={<IconMailPlus size={15} />}
-                onClick={() => setAdding(true)}
+              <Tooltip
+                label="Queues a lookup for each selected profile. Profiles that already have a verified address are skipped."
+                multiline
+                w={260}
               >
-                Add {selected.size} to campaign
-              </Button>
+                <Button
+                  size="sm"
+                  variant="light"
+                  leftSection={<IconMailSearch size={15} />}
+                  loading={findEmails.isPending}
+                  onClick={() =>
+                    findEmails.mutate(
+                      { profileIds: lookupIds },
+                      { onSuccess: () => setSelected(new Set()) },
+                    )
+                  }
+                >
+                  Find emails ({lookupIds.length})
+                </Button>
+              </Tooltip>
+              <Tooltip
+                label="Only profiles with an email can be mailed"
+                disabled={mailableIds.length > 0}
+              >
+                <Button
+                  size="sm"
+                  leftSection={<IconMailPlus size={15} />}
+                  disabled={mailableIds.length === 0}
+                  onClick={() => setAdding(true)}
+                >
+                  Add {mailableIds.length} to campaign
+                </Button>
+              </Tooltip>
               <Button
                 size="sm"
                 variant="subtle"
@@ -469,10 +665,7 @@ export function ResultsPage() {
                   <Table.Th w="40px">
                     <Checkbox
                       size="xs"
-                      aria-label="Select all loaded profiles with an email"
-                      // Only selectable rows count, so the box is not stuck
-                      // half-checked when the page holds profiles with no
-                      // address.
+                      aria-label="Select all loaded profiles"
                       checked={
                         selectableIds.length > 0 &&
                         selectableIds.every((id) => selected.has(id))
@@ -504,20 +697,12 @@ export function ResultsPage() {
                     data-selected={selected.has(p.id) || undefined}
                   >
                     <Table.Td>
-                      <Tooltip
-                        label="No email address, so this profile cannot be mailed"
-                        disabled={Boolean(p.email)}
-                      >
-                        <span>
-                          <Checkbox
-                            size="xs"
-                            aria-label={`Select ${fullName(p)}`}
-                            checked={selected.has(p.id)}
-                            disabled={!p.email}
-                            onChange={() => toggle(p.id)}
-                          />
-                        </span>
-                      </Tooltip>
+                      <Checkbox
+                        size="xs"
+                        aria-label={`Select ${fullName(p)}`}
+                        checked={selected.has(p.id)}
+                        onChange={() => toggle(p.id)}
+                      />
                     </Table.Td>
                     <Table.Td>
                       {/* A plain <a>, not Mantine's Anchor: Anchor forces the
@@ -586,32 +771,75 @@ export function ResultsPage() {
                     </Table.Td>
 
                     <Table.Td>
-                      {p.email ? (
-                        <Group gap={7} wrap="nowrap">
-                          <a
-                            href={`mailto:${p.email}`}
-                            className={classes.emailLink}
-                          >
-                            {p.email}
-                          </a>
-                          {p.emailValidation && (
-                            <Badge
-                              size="xs"
-                              color={
-                                p.emailValidation === 'valid' ? 'teal' : 'gray'
-                              }
-                            >
-                              {p.emailValidation}
-                            </Badge>
-                          )}
-                        </Group>
-                      ) : (
+                      {(() => {
+                        const searching = inFlight.get(p.id);
+                        const badge = sourceBadge(p.emailSource);
+
+                        // A row being looked up right now must not render as an
+                        // em-dash — that reads as a settled answer, and the
+                        // user would press the button again.
+                        if (searching && !p.email) {
+                          return (
+                            <Group gap={7} wrap="nowrap">
+                              <Loader size={12} />
+                              <Text fz={12.5} c="dimmed">
+                                {searching === 'dispatched'
+                                  ? 'looking up…'
+                                  : 'queued'}
+                              </Text>
+                            </Group>
+                          );
+                        }
+
+                        if (p.email) {
+                          return (
+                            <Group gap={7} wrap="nowrap">
+                              <a
+                                href={`mailto:${p.email}`}
+                                className={classes.emailLink}
+                              >
+                                {p.email}
+                              </a>
+                              {badge && (
+                                <Tooltip
+                                  label={`Source: ${p.emailSource}${
+                                    p.emailValidation
+                                      ? ` · ${p.emailValidation}`
+                                      : ''
+                                  }`}
+                                >
+                                  <Badge size="xs" color={badge.color}>
+                                    {badge.label}
+                                  </Badge>
+                                </Tooltip>
+                              )}
+                            </Group>
+                          );
+                        }
+
+                        const err = lastError.get(p.id);
+                        if (err) {
+                          return (
+                            <Tooltip label={err} multiline w={260}>
+                              <Text
+                                fz={12.5}
+                                c="dimmed"
+                                style={{ cursor: 'help' }}
+                              >
+                                not found
+                              </Text>
+                            </Tooltip>
+                          );
+                        }
+
                         // An em-dash, not a ghost icon — a disabled-looking
                         // button reads as something that ought to work.
-                        <Text fz={13} className={classes.dash}>
-                          —
-                        </Text>
-                      )}
+                        return (
+                          <Text fz={13} className={classes.dash}>
+                            —
+                          </Text>
+                        );
+                      })()}
                     </Table.Td>
                   </Table.Tr>
                 ))}
@@ -637,8 +865,11 @@ export function ResultsPage() {
         )}
       </div>
 
+      {/* Only the mailable subset. Selection now also drives email lookups, so
+          `selected` can hold rows with no address — passing those would inflate
+          the modal's count and then have the server skip them. */}
       <AddToCampaignModal
-        profileIds={[...selected]}
+        profileIds={mailableIds}
         opened={adding}
         onClose={() => setAdding(false)}
         onDone={() => {

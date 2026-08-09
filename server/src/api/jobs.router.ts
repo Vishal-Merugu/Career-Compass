@@ -9,6 +9,7 @@ import { ConnectionRegistry } from '../ws-gateway/connectionRegistry.js';
 import { ServerCommands } from '../ws-gateway/events.js';
 import { dispatchNext } from '../orchestrator/dispatchNext.js';
 import { checkJobStopCondition } from '../orchestrator/stopCondition.js';
+import { startJob } from '../orchestrator/jobRunner.js';
 const router = Router();
 
 const createJobSchema = z.object({
@@ -39,6 +40,14 @@ router.post('/jobs', requireAuthOrApiKey, async (req, res, next) => {
         status: 'initializing',
       },
     });
+
+    // Start it here. Nothing else can: the run used to begin when the extension
+    // opened a socket and was asked to collect URLs, and the server now makes
+    // those calls itself. Not awaited — collection takes tens of seconds at the
+    // configured pacing, and the client only needs the job id.
+    void startJob(job.id).catch((err) =>
+      logger.error(err, `[JobsRouter] Job ${job.id} failed to start`),
+    );
 
     res.status(201).json({
       ok: true,

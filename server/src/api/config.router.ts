@@ -17,7 +17,6 @@ const updateConfigSchema = z.object({
   userContext: z.string().nullable().optional(),
   targetGeoId: z.string().optional(),
   emailFinderEnabled: z.boolean().optional(),
-  isServerRun: z.boolean().optional(),
 });
 
 /**
@@ -45,7 +44,6 @@ const CONFIG_FIELDS = {
   userContext: true,
   targetGeoId: true,
   emailFinderEnabled: true,
-  isServerRun: true,
 } as const;
 
 /**
@@ -58,15 +56,13 @@ router.get('/', requireAuthOrApiKey, async (req, res, next) => {
       where: { userId },
       select: CONFIG_FIELDS,
     });
+    // Created on first read so a fresh account has defaults to edit. There used
+    // to be an `else` branch here that wrote `isServerRun: true` back on every
+    // GET where it was false — a write on a read path, setting a flag nothing
+    // ever read. The flag is gone; so is the write.
     if (!config) {
       config = await prisma.userConfig.create({
-        data: { userId, isServerRun: true },
-        select: CONFIG_FIELDS,
-      });
-    } else if (!config.isServerRun) {
-      config = await prisma.userConfig.update({
-        where: { userId },
-        data: { isServerRun: true },
+        data: { userId },
         select: CONFIG_FIELDS,
       });
     }

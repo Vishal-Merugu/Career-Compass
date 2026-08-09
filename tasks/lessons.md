@@ -106,10 +106,15 @@ budget, and prints every failure reason when all four fail. Check a network
 with `npm run probe:linkedin -- --egress-only` _before_ starting a long run.
 
 **Two runs from different places are not comparable.** The laptop leaves via a
-consumer ISP (AS8881); the VM leaves via the university NAT gateway (AS680 DFN),
-which is _not_ a datacenter ASN. So the clean `--long` result says nothing about
-whether a cloud-hosted worker would survive — that is a different IP reputation
-and still untested. Run `--egress-only` in both places and compare the ASN.
+consumer ISP (AS8881); the VM — the university server, reached over the VPN, and
+the only deployment target — leaves via the university NAT gateway (AS680 DFN).
+Run `--egress-only` in both places and compare the ASN.
+
+**The clean `--long` run was on the VM**, in the `cc-server` container: 14/14
+across 3.5 h. That is why a server-side Voyager worker is viable here. Do not
+read that report's `"egress": {}` as meaning it ran somewhere else — it is a
+symptom of running on the VM, where the container cannot reach GCP-hosted
+ipinfo.io.
 
 Deliberately no IPs here: this file is versioned and the repo is public, which
 is the same reason `probe-report.json` is gitignored.
@@ -439,3 +444,151 @@ streaming client there would have meant either importing `AppError` into a file
 that gets copied into the extension, or throwing a raw `Error`. It lives in
 `services/draftStream.service.ts` instead and imports `getBaseUrl`/`getHeaders`
 from the shared module.
+
+---
+
+## Email finding
+
+### Cloudflare Turnstile will not issue a token to headless Chromium
+
+Measured 2026-08-07 against Mailmeteor's LinkedIn Email Finder: the page logs
+`[Cloudflare Turnstile] Error: 600010`, the hidden `cf-turnstile-response`
+input stays empty, and the Vue instance settles on
+`{found: false, error: {code: ''}}`. Cloudflare fingerprints the runtime before
+deciding — the page probes for console instrumentation on load.
+
+**Why it matters:** the plan was "move the Mailmeteor lookup to the backend".
+It cannot be moved as-is. The only routes past 600010 are a captcha-solving
+service or fingerprint-spoofing, and neither belongs here — the extension
+worked precisely because it was one residential browser at human pace, while
+the VM is a single static datacenter IP doing bulk lookups. That is the traffic
+the challenge exists to stop, and an evasion fails _silently_, recording misses
+as "no email found".
+
+**Apply:** the layer is kept but latches off after two refusals, and Chromium
+is not installed in the image (`INSTALL_CHROMIUM=false`). Don't re-enable it
+without re-measuring. `server/src/services/emailFinder/mailmeteor.ts`.
+
+### Read the page's data model, not its DOM
+
+The extension polled for `.spinner-border`, `.chip` and
+`.linkedin-email-finder__text.text-secondary`. The page ships a Vue instance
+whose `result` object already holds `email`, `validation`, `company` and
+`position` parsed.
+
+**Why:** ~90 lines of class-name polling that any restyle silently breaks, to
+recover fields that were sitting in memory the whole time. Reading the instance
+is stabler and shorter. Always check for a framework instance or an underlying
+JSON endpoint before writing a scraper — Mailmeteor's own JS revealed a clean
+`POST /api/email-finder/linkedin`.
+
+### A top-level `const` is not a property of `globalThis`
+
+`page.evaluate(() => globalThis.linkedinEmailFinder)` is `undefined`; the bare
+identifier `linkedinEmailFinder` resolves.
+
+**Why:** script-level `let`/`const` go into the global _lexical_ environment,
+which is a separate record from the global object. This cost a debugging cycle:
+the `waitForFunction` never resolved, and the 45-second timeout that produced
+looked exactly like a captcha failure — the wrong diagnosis, reached for the
+wrong reason. Two bugs presenting identically.
+
+**Apply:** declare the binding ambiently and reference it bare —
+`declare const x: T | undefined` plus a `typeof x === 'undefined'` guard.
+Never reach for it through `globalThis`. Never conclude "captcha" from a
+timeout without confirming the read path works.
+
+### Catch-all domains make SMTP verification a guess, not a check
+
+Google Workspace and Microsoft 365 accept every `RCPT TO` at the edge. Probing
+more candidates against such a domain cannot separate them.
+
+**Why:** without a decoy probe, every generated pattern comes back `250 OK` and
+the finder reports ten mutually-exclusive addresses as all valid. Verified in
+testing — `google.com` and `stripe.com` both return catch-all.
+
+**Apply:** `verifyEmailViaSmtp` probes one random local part on the same
+connection; if that is accepted the verdict is `catch_all`, the loop stops, and
+the result is labelled `pattern_guess`, never `smtp_verified`.
+
+### The free demo widget is never the API
+
+Anymail Finder's marketing page posts to
+`apiapp.anymailfinder.com/www/search` with a `recaptchaToken`. Their actual
+product is `api.anymailfinder.com/v5.1/find-email/linkedin-url`, authenticated
+with a plain `Authorization: <key>` header and no captcha at all.
+
+**Why:** two providers in a row (Mailmeteor, then Anymail Finder) were
+approached by capturing what their public tool does in a browser, and both
+times the captured request was the one path that _cannot_ be called from a
+server. Reading a HAR tells you what the marketing site does, not what the
+vendor sells. Check for a documented API before reverse-engineering a widget —
+in both cases it would have saved the whole detour.
+
+**Apply:** `server/src/services/emailFinder/anymailfinder.ts`.
+
+### Latch off metered layers on 401/402, not just on failure
+
+**Why:** a rejected key and exhausted credits both persist until a human acts.
+Retrying per profile adds a network round trip to every remaining lookup and
+returns the identical answer. A 5xx is the opposite case — transient, and must
+_not_ latch.
+
+### A table the pipeline writes is not the table the dashboard reads
+
+The scrape pipeline wrote `ScrapedProfile` + `ProfileDecision`. The dashboard's
+Results screen reads `Profile`, joined to the user through `OutreachLog`.
+Nothing bridged them: `PrismaStorageAdapter.upsertProfile` existed with **zero
+callers**, so a completed run left Results empty and its profiles unreachable
+from a campaign (`CampaignContact` also FKs to `Profile.id`).
+
+**Why:** the symptom was reported as "I can't see the found results", which
+reads like a UI or auth bug. It was neither — the query was correct and the rows
+it wanted had never been created. `CLAUDE.md` even documented the empty state as
+expected until "a workflow has run", which made the real gap look like normal
+behaviour.
+
+**Apply:** when a screen is empty, check that something writes the table it
+reads before debugging the read. `grep` for callers of the writer, not just for
+the writer. `qualificationWorker.publishToResults` is the bridge; the
+`OutreachLog` row is what scopes the profile to the user, so omitting it leaves
+the profile invisible even though it exists.
+
+### Do not push work to an MV3 extension — let it pull
+
+Sending a dashboard-triggered command to the extension over the existing socket
+is not possible: `socketAuthMiddleware` requires a valid `jobId` on the
+handshake and `ConnectionRegistry` maps `jobId → socket`, so there is no
+`userId → socket` route. Adding one would not help — an MV3 service worker is
+killed after ~30s idle, so the extension is not connected between jobs anyway.
+
+**Why:** the natural design ("button sends a message to the extension") assumes
+a client that is always there. The correct shape for a worker that exists only
+sometimes is durable rows it claims under a lease, drained on a
+`chrome.alarms` tick.
+
+**Apply:** `EmailLookup` + `emailLookupDrainer.js`. Never a long-lived loop or
+`setInterval` in a service worker — suspension takes both with it.
+
+### Never let a fallback executor downgrade a better answer
+
+Two executors produce results of different quality: the extension can get a
+provider hit, the server fallback usually produces a `pattern_guess`. Writing
+whichever finished last would overwrite a confirmed address with a guess.
+
+**Why:** outreach sends real mail from the user's own Gmail. A silent downgrade
+surfaces as a bounce weeks later — or as mail to a stranger, since a guessed
+address on a guessed domain can belong to someone else.
+
+**Apply:** `emailFinder/confidence.ts`. `isEmailUpgrade` compares source
+strength and equal strength keeps the incumbent, so a re-run is idempotent. The
+rejected result is still recorded on the lookup row rather than discarded.
+
+### A miss from a scraper is a result, not an HTTP error
+
+`POST /api/email-lookups/:id/result` returns 200 for `{ ok: false, error }` and
+re-queues the row.
+
+**Why:** reserving the status code for transport failures is what lets the
+client tell "try again later" from "your payload is wrong". A 4xx for "no email
+found" makes a normal outcome indistinguishable from a bug in the caller.

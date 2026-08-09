@@ -88,11 +88,8 @@ router.post(
         data: {
           email,
           passwordHash,
-          config: {
-            create: {
-              isServerRun: true,
-            },
-          },
+          // Every column has a default; the row just needs to exist.
+          config: { create: {} },
         },
         select: { id: true, email: true, apiKey: true },
       });

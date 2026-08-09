@@ -8,6 +8,11 @@ node_modules/
 *cookies.json
 dist/
 .env.*
+# ...but the template is meant to be committed: it documents which variables
+# exist and holds only placeholders. It is already tracked, so `.env.*` never
+# applied to it — this negation just makes the intent explicit, so a future
+# `.env.something` template is not silently ignored.
+!.env.example
 # Probe output (contains egress IP)
 probe-report.json
 **/probe-report.json

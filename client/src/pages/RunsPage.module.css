@@ -1,0 +1,18 @@
+/* Runs-only rules. Panel and table come from the shared data-panel styles, so
+   this screen matches Results and the campaign screens. */
+
+.panel {
+  composes: panel from '../styles/dataPanel.module.css';
+}
+
+.tableWrap {
+  composes: tableWrap from '../styles/dataPanel.module.css';
+  /* No toolbar and no pagination footer here, so there is more room than
+     Results gets. */
+  --table-max-height: min(calc(100vh - 300px), 760px);
+}
+
+.table {
+  composes: table from '../styles/dataPanel.module.css';
+  --table-min-width: 820px;
+}

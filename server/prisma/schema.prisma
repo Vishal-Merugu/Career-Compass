@@ -24,18 +24,40 @@ model User {
   companyQueue CompanyQueue[]
   searchJobs   SearchJob[]
   campaigns    Campaign[]
+  emailLookups EmailLookup[]
 }
 
+/// The LinkedIn session the server makes Voyager calls with.
+///
+/// Holds the **whole cookie jar**, not an auth token. `li_at` alone is not a
+/// session: without `JSESSIONID`, `bcookie`, `bscookie`, `lidc` and `li_rm` the
+/// request reads to LinkedIn's risk engine like a stolen cookie. The old shape
+/// here was `csrfToken` + `liAtCookie` and nothing else, which could not
+/// construct a working `CookieJar` — and nothing ever wrote it. See
+/// docs/adr/0002-full-cookie-jar.md.
+///
+/// `cookies` is a `CookieExport` map, rewritten after every successful call
+/// because `JSESSIONID` (the CSRF token) and `lidc` rotate during normal use.
+/// It is deliberately **not** rewritten after a fatal response — that would
+/// overwrite a good jar with a dead one and force a needless re-extraction.
+///
+/// `userAgent` travels with the jar. A jar harvested from one browser and
+/// replayed under a different user-agent is a mismatched fingerprint.
 model LinkedInSession {
-  id          String    @id @default(uuid())
-  userId      String    @unique
-  csrfToken   String
-  liAtCookie  String
-  isValid     Boolean   @default(true)
-  lastChecked DateTime  @default(now())
-  expiresAt   DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id             String    @id @default(uuid())
+  userId         String    @unique
+  cookies        Json
+  userAgent      String
+  timezoneOffset Float     @default(5.5)
+  isValid        Boolean   @default(true)
+  /// Why the session was last invalidated, for the dashboard and the bot.
+  invalidReason  String?
+  /// When the jar was last pushed from a browser.
+  importedAt     DateTime  @default(now())
+  lastChecked    DateTime  @default(now())
+  expiresAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
@@ -53,7 +75,6 @@ model UserConfig {
   userContext        String? @db.Text
   targetGeoId        String  @default("101282230")
   emailFinderEnabled Boolean @default(true)
-  isServerRun        Boolean @default(false)
 
   // ─── Outreach ──────────────────────────────────────────────────
   // SMTP credentials for campaign sending. The standalone mailer took these
@@ -115,6 +136,60 @@ model Profile {
   company          Company?          @relation(fields: [companyId], references: [id], onDelete: SetNull)
   outreachLogs     OutreachLog[]
   campaignContacts CampaignContact[]
+  emailLookups     EmailLookup[]
+}
+
+/// A request to find one profile's work email, and the record of how it went.
+///
+/// This is a queue, not a log: the work is executed by the Chrome extension,
+/// which is offline most of the time — an MV3 service worker is killed after
+/// ~30s idle and the WebSocket handshake requires a live `SearchJob`. So the
+/// request cannot be pushed at a connected client; it has to sit somewhere
+/// durable until a browser shows up and drains it. A BullMQ job would stall
+/// and retry blindly against a worker that may not exist for hours.
+///
+/// Shaped after `ProfileUrl`, which already solved this in the scrape
+/// pipeline: a status the client claims, an attempt count, the last error, and
+/// a lease timestamp a sweeper can reclaim.
+///
+/// One row per (user, profile) — re-requesting resets the existing row rather
+/// than stacking duplicates, so the table reads as "current state of finding
+/// this person's email" and the dashboard can render progress straight from a
+/// count. The found address is written to `Profile`, which is what the
+/// dashboard and `CampaignContact` actually read; `email` here is the audit
+/// copy of what this attempt produced.
+model EmailLookup {
+  id                  String    @id @default(uuid())
+  userId              String
+  profileId           String
+  /// queued | dispatched | done | failed
+  status              String    @default("queued")
+  attempts            Int       @default(0)
+  /// Which executor took it: `extension` or `server`.
+  claimedBy           String?
+  /// May the server finish this with patterns + SMTP if no browser claims it?
+  ///
+  /// Default **false**, and that is the important part. The server can only
+  /// reach the metered API and pattern+SMTP, so letting it pick up every
+  /// unclaimed row means most profiles end as a `pattern_guess` — an answer
+  /// weak enough to be misleading, produced before the extension (a real
+  /// browser, where the provider captcha solves) ever had a turn. Opt in per
+  /// request when you know no browser is coming.
+  allowServerFallback Boolean   @default(false)
+  email               String?
+  emailSource         String?
+  emailValidation     String?
+  lastError           String?   @db.Text
+  requestedAt         DateTime  @default(now())
+  dispatchedAt        DateTime?
+  completedAt         DateTime?
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  profile Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, profileId])
+  @@index([userId, status])
+  @@index([status, requestedAt])
 }
 
 model WorkflowRun {

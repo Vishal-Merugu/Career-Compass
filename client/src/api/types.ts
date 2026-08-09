@@ -70,6 +70,111 @@ export interface ProfilesResponse {
   };
 }
 
+// ─── Email lookups ───────────────────────────────────────────────
+
+export type LookupStatus = 'queued' | 'dispatched' | 'done' | 'failed';
+
+/** Mirrors `LookupStats` in `server/src/services/emailLookup.service.ts`. */
+export interface LookupStats {
+  queued: number;
+  dispatched: number;
+  done: number;
+  failed: number;
+  /** queued + dispatched — what the UI calls "still working". */
+  pending: number;
+  total: number;
+}
+
+export interface EmailLookup {
+  id: string;
+  profileId: string;
+  status: LookupStatus;
+  attempts: number;
+  /** Which executor took it: `extension` or `server`. */
+  claimedBy: string | null;
+  email: string | null;
+  emailSource: string | null;
+  emailValidation: string | null;
+  lastError: string | null;
+  requestedAt: string;
+  completedAt: string | null;
+}
+
+export interface FindEmailsResponse {
+  ok: true;
+  queued: number;
+  skippedVerified: number;
+  skippedUnknown: number;
+  stats: LookupStats;
+}
+
+export interface LookupStatusResponse {
+  ok: true;
+  stats: LookupStats;
+  lookups: EmailLookup[];
+}
+
+/** One frame of `GET /api/profiles/find-emails/events`. */
+export interface LookupProgress {
+  userId: string;
+  type: 'ITEM' | 'STATS';
+  lookupId?: string;
+  profileId?: string;
+  status?: LookupStatus;
+  email?: string | null;
+  emailSource?: string | null;
+  emailValidation?: string | null;
+  error?: string | null;
+  stats?: LookupStats;
+}
+
+// ─── Search jobs ─────────────────────────────────────────────────
+
+/** `GET /api/jobs`. */
+export interface SearchJob {
+  id: string;
+  status: string;
+  limitRequested: number;
+  qualifiedCount: number;
+  currentBatchNumber: number;
+  createdAt: string;
+  searchParams: { companyUrl?: string; prompt?: string; batchSize?: number };
+  totalUrls: number;
+}
+
+export interface JobsResponse {
+  ok: true;
+  jobs: SearchJob[];
+}
+
+/** `GET /api/jobs/:id/status`. */
+export interface JobStatusResponse {
+  ok: true;
+  job: {
+    id: string;
+    status: string;
+    limitRequested: number;
+    qualifiedCount: number;
+    currentBatchNumber: number;
+    createdAt: string;
+  };
+  stats: {
+    collectedCount: number;
+    scrapedCount: number;
+    remainingCount: number;
+    failedCount: number;
+    inFlightCount: number;
+  };
+  decisions: Array<{
+    name: string;
+    headline: string | null;
+    title: string | null;
+    about: string;
+    isQualified: boolean;
+    email: string | null;
+  }>;
+}
+
 // ─── Outreach ────────────────────────────────────────────────────
 
 export type CampaignStatus =

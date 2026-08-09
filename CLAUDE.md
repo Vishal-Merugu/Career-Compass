@@ -10,24 +10,62 @@ LinkedIn job-discovery + outreach automation. Three parts:
 - **`extension/`** — Manifest V3 Chrome extension, plain JS, no build step. The **hands**.
 - **`client/`** — Vite/React/TypeScript/Mantine web dashboard. The **face**.
 
-Server and extension talk over Socket.io. The server decides what to do; the
-extension does it inside the user's logged-in browser tab. The dashboard is a
-plain REST client of the server.
+The server does the LinkedIn work; the extension supplies the LinkedIn session
+and drives the two things that genuinely need a real browser (the email-finder
+widget and connection requests). The dashboard is a plain REST client of the
+server.
 
 **Git root is `CareerCompass/`, not the parent `linkedin-automationV2/`.**
 
-## Architecture: server orchestrates, extension executes
+## Architecture: the server calls LinkedIn, the extension supplies the session
 
-This split is deliberate. The extension holds the _real_ browser session — real
-cookies, real TLS fingerprint, real user-agent — so LinkedIn sees ordinary
-browsing. The server never needs to impersonate a browser. See
-`docs/adr/0001-extension-executes-server-orchestrates.md`.
+**This reversed on 2026-08-08.** The extension used to make every Voyager call;
+the server now makes the read calls itself (`resolveCompany`, `searchPeople`,
+`fetchFullProfile`) and the extension's job is to keep the server's cookie jar
+fresh. A run no longer needs a browser open. See
+`docs/adr/0007-server-side-linkedin-calls.md`, which supersedes ADR 0001 for the
+read path.
+
+What made it safe was a measurement, not a preference: `probe:linkedin --long`
+ran **14/14 clean across 3.5 h from the VM**, which egresses via the university
+NAT (AS680 DFN) rather than a datacenter ASN.
+
+**Connection requests did NOT move.** `sendConnectionRequest`,
+`withdrawInvitation` and `checkRelationship` stay in `massConnector.js`: a write
+to someone else's account is the most restriction-prone call here, and at 15/day
+there is no throughput to gain. Do not "finish the migration" by moving them
+without deciding that deliberately.
+
+```
+server/src/services/linkedinSession.service.ts   the jar + withVoyager()
+server/src/services/urlCollector.service.ts      resolveCompany + searchPeople
+server/src/services/scrapeIngest.service.ts      what to do with a scraped profile
+server/src/workers/scrapeWorker.ts               fetchFullProfile, paced + buffered
+server/src/orchestrator/jobRunner.ts             startJob / collectNextBatch
+extension/services/sessionSync.js                pushes the cookie jar
+```
+
+**Call LinkedIn only through `withVoyager(userId, fn)`.** It is the one place
+that knows to persist the jar after success (JSESSIONID rotates and is the CSRF
+token) and **not** to persist after a fatal response (that overwrites a good
+export with a dead session). Constructing `VoyagerClient` directly at a call site
+bypasses both.
+
+**A dead session pauses the job, it does not fail the URLs.** Marking URLs
+permanently failed because the credential expired would silently skip reachable
+people.
+
+**The server cannot obtain a session.** No API-key auth exists, and a server
+logging in would be a headless browser on a datacenter-adjacent IP. A jar always
+comes from a real browser: `POST /api/session/cookies` (the extension, every
+30 min) or `npm run cookies:import` by hand. So "open the extension occasionally"
+is a real operational requirement now — if cookies expire, every run pauses.
 
 ```
 server/src/ws-gateway/        Socket.io gateway
   events.ts                   single source of truth for event names + payloads
-  commands/                   server → extension  (SESSION_CHECK, FETCH_URL_BATCH,
-                              SCRAPE_PROFILE, STOP_LIMIT_REACHED, FIND_EMAIL)
+  commands/                   server → extension  (SESSION_CHECK,
+                              STOP_LIMIT_REACHED, PAUSE, RESUME)
   handlers/                   extension → server  (REGISTER, URL_BATCH_ITEM,
                               PROFILE_SCRAPED, SESSION_INVALID, HEARTBEAT, …)
   connectionRegistry.ts       userId → live socket
@@ -37,6 +75,7 @@ server/src/api/               REST routers (config, jobs, profiles, sync)
 server/src/shared/            code mirrored between server and extension
                               (parsers, rateLimiter, voyagerClient, resilience)
 server/src/workers/           qualificationWorker (LLM profile scoring)
+server/src/services/emailFinder/  work-email discovery, server-side
 server/src/telegram/          bot — job control + lifecycle notifications
 ```
 
@@ -44,8 +83,108 @@ Adding a WS message means touching **three** places: `events.ts` (name +
 payload), a `commands/` or `handlers/` file, and the extension counterpart in
 `extension/scripts/background.js`. Never invent an event string inline.
 
+The gateway is now mostly vestigial: `FETCH_URL_BATCH` and `SCRAPE_PROFILE` are
+gone, and the extension acts on no scrape command. Heartbeat, session check and
+the mass connector's registration are what keep it alive.
+
 `server/src/shared/*` is duplicated by hand in `extension/services/*`. Change one,
 check the other.
+
+## Email finding
+
+**Lookups are never automatic.** `qualificationWorker` does _not_ find emails —
+a qualified profile lands on Results with no address, and you start the lookup
+from there ("Find emails"). It used to run inline, and because the server only
+reaches the two layers below, every profile resolved to a `pattern_guess` before
+a real browser saw it — and a guess is an answer, so the row never got upgraded.
+
+Two layers, the second running only when the first produced nothing:
+
+1. **Anymail Finder** — a real key-authenticated API. Set
+   `ANYMAILFINDER_API_KEY` to enable; unset, the layer is skipped. Metered
+   (one credit per valid email found, 100 free on signup), so it latches off
+   on 401/402 rather than retrying per profile.
+2. **Patterns + SMTP** — needs no credentials at all.
+
+**There is no server-side Mailmeteor layer, and no browser in the image.** There
+used to be: it drove their free widget in headless Chromium and returned nothing,
+because Cloudflare refuses a Turnstile token to an automated browser — measured
+against headless Chromium, headful bundled Chromium, _and headful real Chrome on
+a residential IP_. It was deleted along with `playwright` and the
+`INSTALL_CHROMIUM` build arg. That lookup now runs in the extension, where it
+works, and reports back through the lookup queue — so `mailmeteor` is still a
+live `emailSource`, it just arrives from a browser.
+
+Do not "fix" this with a captcha-solving service, a stealth plugin, or by
+relaying a token minted in the extension. The token is single-use and expires
+in minutes, so a relay still requires a live browser per lookup. Use a provider
+that sells API access instead; that is what layer 1 is for.
+
+**Outbound port 25 decides whether anything gets verified.** Blocked on most
+hosts; if blocked, every result is a `pattern_guess` rather than a verified
+address. Check before trusting verdicts:
+
+```bash
+npx tsx src/scratch-emailfinder-probe.ts --smtp-only
+```
+
+`emailSource` records which layer produced the address — `anymailfinder`,
+`mailmeteor`, `smtp_verified`, `pattern_guess`, `not_found` — so outreach can
+tell a verified address from a weighted guess. **Google Workspace and
+Microsoft 365 accept every recipient**, so a `catch_all` verdict is not a
+confirmation.
+
+See `docs/adr/0005-server-side-email-finder.md`.
+
+### Lookups requested by hand
+
+Select rows on Results → "Find emails". That does **not** look anything up in
+the request: it writes `queued` rows to `EmailLookup` and returns. Executors
+claim them under a lease.
+
+```
+server/src/services/emailLookup.service.ts   enqueue / claim / complete / sweep
+server/src/services/emailFinder/confidence.ts  source ranking, upgrade rule
+server/src/workers/emailLookupWorker.ts      lease sweeper + server fallback
+server/src/api/emailLookups.router.ts        claim + report (extension, api key)
+extension/services/emailLookupDrainer.js     the drainer, on a chrome.alarms tick
+```
+
+**The queue is a table, not BullMQ.** BullMQ is for work the server does; the
+preferred executor is the extension, which may be gone for hours — an MV3
+worker dies after ~30s idle and the socket handshake needs a live `SearchJob`,
+so there is nothing to push a command down. Pending work that outlives every
+process belongs in Postgres. Shaped after `ProfileUrl`, which solved this
+already.
+
+**The extension upgrades results; it never gates them.** A row no browser
+claims within three minutes is handed to the server-side finder by
+`emailLookupWorker`. Pressing the button always produces an answer.
+
+**Writes to `Profile.email` are upgrade-only** (`isEmailUpgrade`). The fallback
+would otherwise overwrite a provider-confirmed address with a guess generated
+seconds later, and outreach mails from the user's own Gmail. Equal strength
+keeps the existing address, so a re-run is idempotent. A `pattern_guess` is
+deliberately still re-queueable — that is how it gets upgraded later.
+
+**A miss is a 200, not an error.** `{ ok: false, error }` re-queues the row;
+the status code is reserved for transport failures. Three attempts, then
+`failed`.
+
+See `docs/adr/0006-email-lookup-queue.md`.
+
+## The finder pipeline reaches the dashboard through `Profile`
+
+`ScrapedProfile` and `ProfileDecision` are keyed by **job**. Everything
+user-facing hangs off **`Profile`**: `GET /api/profiles` scopes rows by
+`outreachLogs.some.userId`, and `CampaignContact` FKs to `Profile.id`.
+
+`qualificationWorker.publishToResults` is the bridge — it upserts the `Profile`
+(keyed by LinkedIn vanity slug, same key the mass connector uses, so one person
+is one row) and writes the `OutreachLog` that scopes it to the user. **Without
+that `OutreachLog` the profile is invisible**, so it is not optional
+bookkeeping. This was missing entirely: `upsertProfile` had zero callers, so a
+finished run left Results empty and its profiles unreachable from a campaign.
 
 ## The dashboard
 
@@ -58,7 +197,11 @@ client/src/
   components/        DashboardLayout (Mantine AppShell)
 ```
 
-Screens: Results, Campaigns, Campaign detail, Settings.
+Screens: Runs, Results, Campaigns, Campaign detail, Settings.
+
+**Runs is polled, not streamed** (3s while a job is active, 10s for the list).
+Job progress is driven by the extension over WebSocket, so there is no
+server-side emitter to subscribe to the way campaigns have one.
 
 Vite builds `client/` → **`server/public/`** (gitignored), which
 `express.static` serves **same-origin**. So the client calls `/api/...` as a

@@ -4,9 +4,8 @@ import { evaluateProfile } from '../shared/llmClient.js';
 import { IParsedProfile } from '../shared/parsers.js';
 import { PrismaStorageAdapter } from '../services/storage.adapter.js';
 import { checkJobStopCondition } from '../orchestrator/stopCondition.js';
-import { ConnectionRegistry } from '../ws-gateway/connectionRegistry.js';
-import { getIo } from '../ws-gateway/index.js';
 import { telegramBotService } from '../telegram/bot.js';
+import { publishQualifiedProfile } from '../services/profilePublisher.service.js';
 
 export class QualificationWorker {
   private static instance: QualificationWorker | null = null;
@@ -16,7 +15,6 @@ export class QualificationWorker {
     scrapedProfileId: string;
   }> = [];
   private isProcessing = false;
-  public pendingTimeouts: Map<string, NodeJS.Timeout> = new Map();
 
   private constructor() {}
 
@@ -277,109 +275,46 @@ export class QualificationWorker {
       }
     }
 
-    // 4. Handle email discovery and decision creation
+    // 4. Record the decision. **No email lookup happens here.**
+    //
+    // It used to: a qualified profile went straight into `findEmail()`. The
+    // problem is that the server can only reach two layers — the metered API and
+    // pattern+SMTP — so without a key every profile resolved to a
+    // `pattern_guess` before a real browser ever saw it. And because a guess
+    // *is* an answer, the row looked done and never got upgraded.
+    //
+    // Lookups are now started deliberately from Results ("Find emails"), which
+    // queues them for the extension's widget driver — a real browser, where the
+    // captcha actually solves. See docs/adr/0006-email-lookup-queue.md.
     if (isQualified) {
-      if (config.emailFinderEnabled) {
-        // Try to locate active socket to delegate email search to extension
-        const socketId = ConnectionRegistry.getInstance().getSocketId(jobId);
-        let socketInstance: any = null;
+      await prisma.profileDecision.create({
+        data: {
+          profileId: profile.id,
+          email: null,
+          // Not `not_found` and not `disabled`: nothing has been attempted yet.
+          emailSource: null,
+          isQualified: true,
+          qualificationReason,
+        },
+      });
 
-        if (socketId) {
-          try {
-            socketInstance = getIo().sockets.sockets.get(socketId);
-          } catch (err) {
-            logger.warn(
-              `[QualificationWorker] Could not retrieve socket ${socketId} from io server pool`,
-            );
-          }
-        }
+      await publishQualifiedProfile(job.userId, {
+        slug,
+        linkedinUrl,
+        firstName,
+        lastName,
+        headline: profile.headline,
+        about: parsedProfile.about,
+        location: profile.location,
+        companyName: targetCompany,
+        rawProfileJson: profile.rawData,
+        email: null,
+        emailSource: null,
+        emailValidation: null,
+        qualificationReason,
+      });
 
-        if (socketInstance && socketInstance.connected) {
-          logger.info(
-            `[QualificationWorker] Delegating email search for ${profile.name} to extension via Socket ID ${socketId}...`,
-          );
-
-          // Save pending decision record
-          await prisma.profileDecision.create({
-            data: {
-              profileId: profile.id,
-              email: null,
-              emailSource: 'pending_extension',
-              isQualified: true,
-              qualificationReason,
-            },
-          });
-
-          // Register safety timeout (60 seconds)
-          const timeoutId = setTimeout(async () => {
-            logger.warn(
-              `[QualificationWorker] Safety timeout fired. Email discovery timed out for URL ID: ${urlId}, Profile: ${profile.id}`,
-            );
-            this.pendingTimeouts.delete(urlId);
-
-            // Update pending decision to timeout
-            try {
-              await prisma.profileDecision.updateMany({
-                where: {
-                  profileId: profile.id,
-                  emailSource: 'pending_extension',
-                },
-                data: {
-                  emailSource: 'timeout',
-                },
-              });
-            } catch (err) {
-              logger.error(
-                err,
-                `[QualificationWorker] Failed to update timeout decision in DB`,
-              );
-            }
-
-            // Finalize decision as qualified but email not found
-            await this.finalizeQualifiedDecision(jobId, profile.id, null);
-          }, 60000);
-
-          this.pendingTimeouts.set(urlId, timeoutId);
-
-          // Emit event to phone
-          socketInstance.emit('FIND_EMAIL', {
-            urlId,
-            url: linkedinUrl,
-            firstName,
-            lastName,
-            companyName: targetCompany,
-          });
-        } else {
-          logger.warn(
-            `[QualificationWorker] No active socket connection for Job ${jobId}. Falling back to qualified with no email.`,
-          );
-
-          await prisma.profileDecision.create({
-            data: {
-              profileId: profile.id,
-              email: null,
-              emailSource: 'disconnected',
-              isQualified: true,
-              qualificationReason,
-            },
-          });
-
-          await this.finalizeQualifiedDecision(jobId, profile.id, null);
-        }
-      } else {
-        // Email finder disabled
-        await prisma.profileDecision.create({
-          data: {
-            profileId: profile.id,
-            email: null,
-            emailSource: 'disabled',
-            isQualified: true,
-            qualificationReason,
-          },
-        });
-
-        await this.finalizeQualifiedDecision(jobId, profile.id, null);
-      }
+      await this.finalizeQualifiedDecision(jobId, profile.id, null);
     } else {
       // Not qualified
       await prisma.profileDecision.create({

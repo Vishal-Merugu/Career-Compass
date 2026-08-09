@@ -1,7 +1,7 @@
 import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
 import { sendStopLimitReached } from '../ws-gateway/commands/sendStopLimitReached.js';
-import { sendFetchUrlBatch } from '../ws-gateway/commands/sendFetchUrlBatch.js';
+import { collectNextBatch } from './jobRunner.js';
 import { dispatchNext } from './dispatchNext.js';
 import { telegramBotService } from '../telegram/bot.js';
 
@@ -109,8 +109,16 @@ export async function checkJobStopCondition(jobId: string): Promise<boolean> {
       },
     });
 
-    // Request extension to fetch next batch
-    await sendFetchUrlBatch(jobId, nextBatchNumber, batchSize);
+    // Collect it here rather than asking the extension. Not awaited: collection
+    // walks several search pages at the configured pacing, and this runs inside
+    // the qualification loop — blocking it would stall every decision behind a
+    // minute of network calls. Failures park the job in `paused_error`.
+    void collectNextBatch(jobId, nextBatchNumber, batchSize).catch((err) =>
+      logger.error(
+        err,
+        `[Orchestrator] Next-batch collection failed for ${jobId}`,
+      ),
+    );
     return true;
   }
 

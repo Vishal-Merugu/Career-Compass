@@ -16,7 +16,8 @@
     "db:studio": "prisma studio",
     "db:clean": "prisma migrate reset --force",
     "probe:linkedin": "tsx src/scratch-voyager-probe.ts",
-    "cookies:import": "tsx src/scratch-cookies-from-curl.ts"
+    "cookies:import": "tsx src/scratch-cookies-from-curl.ts",
+    "backfill:profiles": "tsx src/scratch-backfill-profiles.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.14.0",

@@ -28,6 +28,12 @@ COPY server/package*.json ./
 # Install npm dependencies
 RUN npm ci --verbose
 
+# No browser is installed, deliberately. The email finder's provider lookup
+# needs a real user browser to pass Cloudflare Turnstile, which no server-side
+# Chromium achieves (measured — see docs/adr/0005-server-side-email-finder.md),
+# so that layer runs in the Chrome extension instead. The server does the API
+# and pattern+SMTP layers, neither of which needs a browser.
+
 # Copy the rest of the application files
 COPY server/ ./
 
