@@ -12,13 +12,14 @@ name: Deploy to VM
 # repo is PUBLIC — a `push` or `pull_request` trigger on a self-hosted runner
 # would let fork PRs execute code on the VM. Keep it dispatch-only while public.
 
+# The schema is applied by the container itself (`prisma migrate deploy` in
+# server/Dockerfile's CMD), so there is no schema step here and no input to skip
+# one. There used to be a `db push` step; running it *after* the CMD's
+# `migrate deploy` would push schema.prisma straight onto the database and leave
+# `_prisma_migrations` describing something the database no longer matches —
+# which is the drift migrations exist to prevent.
 on:
   workflow_dispatch:
-    inputs:
-      skip_db_push:
-        description: 'Skip prisma db push (use if the schema is unchanged)'
-        type: boolean
-        default: false
 
 concurrency:
   group: vm-deploy
@@ -67,24 +68,24 @@ jobs:
       - name: Start containers
         run: docker compose up -d
 
-      - name: Sync database schema
-        if: ${{ !inputs.skip_db_push }}
-        # --accept-data-loss can drop columns. Skippable for the common case
-        # of a code-only deploy against an unchanged schema.
-        run: docker compose exec -T server npx prisma db push --accept-data-loss
-
       - name: Verify the server is actually up
+        # Polls /health rather than `compose ps --status running`. The container
+        # has `restart: always`, so a boot that dies every few seconds — a failed
+        # migration, an unreachable Redis — spends part of each cycle reporting
+        # "running" and the old check passed a deploy that was crash-looping.
+        # Answering on the port is the only proof it got past startup.
         run: |
           set -euo pipefail
-          for i in $(seq 1 12); do
-            if docker compose ps --status running --services | grep -qx server; then
-              echo "server is running"
+          for i in $(seq 1 24); do
+            if curl -fsS -m 5 http://localhost:3000/health >/dev/null 2>&1; then
+              echo "server is healthy"
               exit 0
             fi
-            echo "waiting for server... ($i/12)"
+            echo "waiting for /health... ($i/24)"
             sleep 5
           done
-          echo "::error::server container did not come up"
+          echo "::error::server did not answer /health within 2 minutes"
+          docker compose ps
           docker compose logs --tail 60 server
           exit 1
 

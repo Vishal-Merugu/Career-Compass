@@ -55,10 +55,19 @@ EXPOSE 3000
 # for one) never ran on the VM, and push refuses a destructive change without
 # --accept-data-loss — the next dropped column would fail the deploy at boot.
 #
-# `migrate deploy` needs `_prisma_migrations` to agree with the database. A
-# database previously built by `db push` has the tables but no such table, so
-# `init` would try to recreate them and fail. Baseline it once, on the VM:
-#   docker exec cc-server sh -c 'for m in $(ls prisma/migrations | grep -v lock); \
-#     do npx prisma migrate resolve --applied "$m"; done'
-# (or drop and recreate the database and let `init` build it, while it is empty).
+# `migrate deploy` needs `_prisma_migrations` to agree with the database, and it
+# runs in front of the server — so when it fails, the container does not boot.
+# The VM was built by `db push` and so had the tables without that table; the
+# first deploy of this CMD crash-looped on P3005 ("schema is not empty") until
+# the ten migrations were baselined on 2026-08-09:
+#
+#   docker run --rm --network careercompass_default \
+#     -e DATABASE_URL="postgresql://ccuser:ccpassword@db:5432/careercompass?schema=public" \
+#     --entrypoint sh careercompass-server -c \
+#     'for m in $(ls prisma/migrations | grep -v migration_lock); do \
+#        npx prisma migrate resolve --applied "$m"; done'
+#
+# A one-off container, not `docker exec` — the crash-looping one will not stay
+# up long enough to exec into. Any future database that already has tables needs
+# the same treatment before its first deploy.
 CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
