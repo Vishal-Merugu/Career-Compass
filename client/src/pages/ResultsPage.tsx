@@ -282,8 +282,13 @@ export function ResultsPage() {
   const [filter, setFilter] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
-  const { stats: lookupStats, lookups, pending, findEmails, cancel } =
-    useEmailLookups();
+  const {
+    stats: lookupStats,
+    lookups,
+    pending,
+    findEmails,
+    cancel,
+  } = useEmailLookups();
 
   const toggle = (id: string) =>
     setSelected((prev) => {
@@ -368,17 +373,15 @@ export function ResultsPage() {
   // Rows still waiting on a browser, so the "guess instead" action can re-queue
   // exactly those rather than the current selection.
   const waitingProfileIds = useMemo(
-    () =>
-      lookups
-        .filter((l) => l.status === 'queued')
-        .map((l) => l.profileId),
+    () => lookups.filter((l) => l.status === 'queued').map((l) => l.profileId),
     [lookups],
   );
 
   const lastError = useMemo(() => {
     const map = new Map<string, string>();
     for (const l of lookups) {
-      if (l.status === 'failed' && l.lastError) map.set(l.profileId, l.lastError);
+      if (l.status === 'failed' && l.lastError)
+        map.set(l.profileId, l.lastError);
     }
     return map;
   }, [lookups]);
@@ -470,9 +473,9 @@ export function ResultsPage() {
 
       {findEmails.data && findEmails.data.skippedVerified > 0 && (
         <Alert color="gray" variant="light" radius="md">
-          Queued {findEmails.data.queued}.{' '}
-          {findEmails.data.skippedVerified} already had a verified address and
-          were skipped — re-running those would spend a lookup to learn nothing.
+          Queued {findEmails.data.queued}. {findEmails.data.skippedVerified}{' '}
+          already had a verified address and were skipped — re-running those
+          would spend a lookup to learn nothing.
         </Alert>
       )}
 

@@ -128,7 +128,9 @@ function JobRow({ job }: { job: SearchJob }) {
           <Text fz={12} c="dimmed">
             {scraped} of {collected} scraped
             {stats && stats.failedCount > 0 && ` · ${stats.failedCount} failed`}
-            {stats && stats.inFlightCount > 0 && ` · ${stats.inFlightCount} in flight`}
+            {stats &&
+              stats.inFlightCount > 0 &&
+              ` · ${stats.inFlightCount} in flight`}
           </Text>
         </Stack>
       </Table.Td>
@@ -249,7 +251,11 @@ export function RunsPage() {
 
       <SimpleGrid cols={{ base: 1, xs: 3 }} spacing="md">
         <StatTile label="Runs" value={jobs.length} loading={isPending} />
-        <StatTile label="Active now" value={active.length} loading={isPending} />
+        <StatTile
+          label="Active now"
+          value={active.length}
+          loading={isPending}
+        />
         <StatTile
           label="Profiles qualified"
           value={qualified}
