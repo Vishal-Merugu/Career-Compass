@@ -49,5 +49,16 @@ COPY --from=client /repo/server/public ./public
 
 EXPOSE 3000
 
-# Run migrations/pushes and start the server
-CMD ["sh", "-c", "npx prisma db push && node dist/index.js"]
+# Apply migrations, then start. NOT `db push`: push diffs the schema straight
+# onto the database and never records anything in `_prisma_migrations`, so the
+# hand-written SQL inside a migration (the `DELETE FROM "LinkedInSession"` guard,
+# for one) never ran on the VM, and push refuses a destructive change without
+# --accept-data-loss — the next dropped column would fail the deploy at boot.
+#
+# `migrate deploy` needs `_prisma_migrations` to agree with the database. A
+# database previously built by `db push` has the tables but no such table, so
+# `init` would try to recreate them and fail. Baseline it once, on the VM:
+#   docker exec cc-server sh -c 'for m in $(ls prisma/migrations | grep -v lock); \
+#     do npx prisma migrate resolve --applied "$m"; done'
+# (or drop and recreate the database and let `init` build it, while it is empty).
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
