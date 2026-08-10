@@ -6,16 +6,20 @@ import { ValidationError } from '../errors/AppError.js';
 
 const router = Router();
 
+/**
+ * What the extension may still write.
+ *
+ * The AI settings are **not** here any more. They are consumed only by the
+ * server, they are edited in the dashboard (`PUT /api/settings/ai`), and this
+ * route is reachable with the extension's long-lived API key — so leaving
+ * `llmApiKey` writable here would let a scraping credential set a billable one.
+ *
+ * It also removes the second writer: the extension pushed its whole local
+ * config on save and merged the server's on load, so whichever ran last won.
+ */
 const updateConfigSchema = z.object({
-  keywords: z.string().optional(),
-  locations: z.string().optional(),
   dailyLimit: z.number().int().min(1).optional(),
-  llmProvider: z.string().optional(),
-  llmApiKey: z.string().nullable().optional(),
-  llmUrl: z.string().optional(),
-  llmModel: z.string().optional(),
   userContext: z.string().nullable().optional(),
-  targetGeoId: z.string().optional(),
   emailFinderEnabled: z.boolean().optional(),
 });
 
@@ -35,14 +39,11 @@ const updateConfigSchema = z.object({
 const CONFIG_FIELDS = {
   id: true,
   userId: true,
-  keywords: true,
-  locations: true,
   dailyLimit: true,
   llmProvider: true,
   llmUrl: true,
   llmModel: true,
   userContext: true,
-  targetGeoId: true,
   emailFinderEnabled: true,
 } as const;
 

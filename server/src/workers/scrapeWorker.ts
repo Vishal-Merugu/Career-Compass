@@ -36,7 +36,8 @@ import {
   isPermanentScrapeError,
   type ScrapedRawData,
 } from '../services/scrapeIngest.service.js';
-import { telegramBotService } from '../telegram/bot.js';
+import { recordJobEvent } from '../services/jobEvents.service.js';
+import { pauseJobWithFailure } from '../services/jobControl.service.js';
 
 const POLL_INTERVAL_MS = 5_000;
 
@@ -149,7 +150,10 @@ async function scrapeOne(
     return;
   }
 
-  logger.info(`[ScrapeWorker] Fetching ${identity} for job ${jobId}`);
+  // debug, not info: one line per profile is 400 lines per run in a log an
+  // operator shares with every other user. The run's own event log carries
+  // progress now, at a rate a person can read.
+  logger.debug(`[ScrapeWorker] Fetching ${identity} for job ${jobId}`);
 
   try {
     const response = await withVoyager(userId, (client) =>
@@ -161,6 +165,8 @@ async function scrapeOne(
       urlRow.id,
       toRawData(parseFullProfile(response)),
     );
+
+    await recordScrapeProgress(jobId);
   } catch (err) {
     // A dead session is not this profile's fault. Pause the job, leave the URL
     // queued, and tell the user — the fix is pushing a fresh jar, and every
@@ -170,7 +176,7 @@ async function scrapeOne(
         where: { id: urlRow.id },
         data: { status: 'queued', dispatchedAt: null },
       });
-      await pauseForDeadSession(userId, jobId, err.message);
+      await pauseForDeadSession(jobId, err.message);
       return;
     }
 
@@ -185,33 +191,36 @@ async function scrapeOne(
 }
 
 async function pauseForDeadSession(
-  userId: string,
   jobId: string,
   reason: string,
 ): Promise<void> {
-  logger.error(
-    `[ScrapeWorker] Pausing job ${jobId} — LinkedIn session unusable: ${reason}`,
-  );
-
-  await prisma.searchJob.update({
-    where: { id: jobId },
-    data: { status: JOB_STATUS_PAUSED_SESSION },
+  // `paused_session`, not `paused_error`: only the former is auto-resumed when
+  // the extension pushes a fresh jar. The Telegram notice and the failure code
+  // come from jobControl, so every pause reads the same way wherever it is seen.
+  await pauseJobWithFailure(jobId, {
+    stage: 'scrape',
+    status: JOB_STATUS_PAUSED_SESSION,
+    code: 'SESSION_EXPIRED',
+    detail: reason,
   });
+}
 
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { telegramId: true },
+/** Rolling progress, at a rate that keeps the run log readable. */
+const PROGRESS_EVERY = 25;
+
+async function recordScrapeProgress(jobId: string): Promise<void> {
+  const [scraped, collected] = await Promise.all([
+    prisma.profileUrl.count({ where: { jobId, status: 'scraped' } }),
+    prisma.profileUrl.count({ where: { jobId } }),
+  ]);
+
+  if (scraped === 0 || scraped % PROGRESS_EVERY !== 0) return;
+
+  await recordJobEvent(jobId, {
+    stage: 'scrape',
+    code: 'SCRAPE_PROGRESS',
+    message: `${scraped} of ${collected} profiles read from LinkedIn.`,
   });
-
-  if (user?.telegramId) {
-    await telegramBotService.sendMessage(
-      user.telegramId,
-      '🔴 *LinkedIn session expired*\nThe run is paused. Open the Chrome ' +
-        'extension while logged in to LinkedIn — it pushes a fresh session ' +
-        'automatically — then resume the run.',
-      { parse_mode: 'Markdown' },
-    );
-  }
 }
 
 /**

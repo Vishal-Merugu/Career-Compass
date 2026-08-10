@@ -65,16 +65,39 @@ model LinkedInSession {
 model UserConfig {
   id                 String  @id @default(uuid())
   userId             String  @unique
-  keywords           String  @default("Werkstudent, Internship, Praktikum")
-  locations          String  @default("Erlangen, Nuremberg, Munich")
   dailyLimit         Int     @default(15)
-  llmProvider        String  @default("ollama")
+  /// `server` | `ollama` | `gemini` | `openrouter`.
+  ///
+  /// `server` means "this instance's built-in model", resolved from
+  /// DEFAULT_LLM_URL / DEFAULT_LLM_MODEL. It is the default because the
+  /// operator knows an address that works and a model that is installed, and a
+  /// new user does not.
+  ///
+  /// This used to default to `ollama` at `http://localhost:11434` — which
+  /// inside the container is the container. Every fresh account therefore
+  /// pointed at nothing, and because an LLM failure was recorded as a
+  /// rejection, a run would evaluate hundreds of profiles, qualify none, and
+  /// report itself healthy. Measured on the VM 2026-08-09: 368 of 368.
+  llmProvider        String  @default("server")
   llmApiKey          String?
-  llmUrl             String  @default("http://localhost:11434")
-  llmModel           String  @default("qwen2.5:1.5b")
+  /// Empty unless the user picked an explicit provider. No localhost default:
+  /// an address that is wrong in every containerised deployment is worse than
+  /// a blank the preflight can complain about.
+  llmUrl             String  @default("")
+  llmModel           String  @default("")
   userContext        String? @db.Text
-  targetGeoId        String  @default("101282230")
   emailFinderEnabled Boolean @default(true)
+
+  /// The user's default evaluation criteria for a new run.
+  ///
+  /// Lived as a hardcoded `<textarea>` default in the extension popup, which
+  /// meant it could not be edited without editing markup and was lost the
+  /// moment the finder moved to the dashboard. Null falls back to
+  /// `config/defaultPrompt.ts`.
+  ///
+  /// Per-run, not per-account, is the thing the run itself stores — this is
+  /// only what the New run form is prefilled with.
+  searchPrompt String? @db.Text
 
   // ─── Outreach ──────────────────────────────────────────────────
   // SMTP credentials for campaign sending. The standalone mailer took these
@@ -216,10 +239,18 @@ model OutreachLog {
   status    String
   message   String?  @db.Text
   details   Json?
+  /// Which run found this profile, for the Results run filter.
+  ///
+  /// A plain column rather than a relation, deliberately: this row is what
+  /// scopes a profile to a user, and deleting a run must never cascade into
+  /// erasing the record that we found — or mailed — someone.
+  searchJobId String?
   createdAt DateTime @default(now())
 
   user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   profile Profile? @relation(fields: [profileId], references: [id], onDelete: SetNull)
+
+  @@index([userId, searchJobId])
 }
 
 model ActivityLog {
@@ -262,17 +293,71 @@ model CompanyQueue {
 model SearchJob {
   id                 String   @id @default(uuid())
   userId             String
-  status             String   @default("initializing") // initializing | collecting_urls | scraping | completed | paused_error
+  status             String   @default("initializing") // initializing | collecting_urls | scraping | completed | paused_error | paused_session
   limitRequested     Int
   qualifiedCount     Int      @default(0)
   currentBatchNumber Int      @default(1)
   searchParams       Json
+
+  /// Why the run stopped, as a `JobErrorCode` — see server/src/errors/jobErrors.ts.
+  /// Denormalised onto the job so the Runs list can say *why* in one line
+  /// without joining the event log. Null while the run is healthy.
+  failureCode   String?
+  /// The provider's own words. Shown behind a disclosure, never as the headline.
+  failureDetail String? @db.Text
+  /// Provider, model, target and company as they were when the run started.
+  /// A run that failed three days ago cannot be explained by settings the user
+  /// has since changed.
+  configSnapshot Json?
+
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
   user        User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
   profileUrls ProfileUrl[]
   connections ExtensionConnection[]
+  events      JobEvent[]
+}
+
+/// The readable, per-run event log.
+///
+/// Not piped server logs — a curated record aimed at whoever started the run.
+/// The budget is **20–40 rows for a 400-profile run**, and it is enforced
+/// structurally rather than by convention: `@@unique([jobId, stage, code])`
+/// means a repeated error can only ever `upsert` and increment `count`, so a
+/// failure that recurs 300 times is one line reading "×300".
+///
+/// What is deliberately absent: per-profile fetches, and per-rejection rows.
+/// Rejections are the bulk of the volume and the least informative thing an
+/// operator can read.
+///
+/// Every write goes through `services/jobEvents.service.ts`. Calling
+/// `prisma.jobEvent.create` directly at a call site is how the budget dies.
+model JobEvent {
+  id    String   @id @default(uuid())
+  jobId String
+  at    DateTime @default(now())
+  /// `info` | `warn` | `error`
+  level String   @default("info")
+  /// `collect` | `scrape` | `qualify` | `publish` | `email`
+  stage String
+  /// A `JobErrorCode`, or a lifecycle key such as `RUN_STARTED`.
+  code  String
+  /// One plain sentence. No error codes, no stack traces, no jargon.
+  message String  @db.Text
+  /// The raw error, collapsed by default in the UI.
+  detail  String? @db.Text
+  /// Repeats roll up here rather than inserting another row.
+  count   Int     @default(1)
+  /// Who the event is about, when it is about a person.
+  profileRef String?
+  /// Bumped on every roll-up, so "last seen" is answerable.
+  updatedAt DateTime @updatedAt
+
+  job SearchJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, stage, code])
+  @@index([jobId, at])
 }
 
 model ProfileUrl {
@@ -315,6 +400,18 @@ model ProfileDecision {
   email               String?
   emailSource         String?
   isQualified         Boolean  @default(false)
+  /// `qualified` | `rejected` | `error`.
+  ///
+  /// `error` means the model never gave a verdict — unreachable, rate limited,
+  /// unparseable output. It exists because `isQualified: false` cannot tell the
+  /// difference between "not a good candidate" and "we never asked", and
+  /// conflating them is what hid a completely broken run behind a plausible
+  /// screen of rejections.
+  ///
+  /// An `error` row does not resolve its ProfileUrl for the stop condition, and
+  /// is deleted and re-evaluated on resume — so fixing the model costs no
+  /// further LinkedIn calls.
+  status              String   @default("rejected")
   qualificationReason String?  @db.Text
   decidedAt           DateTime @default(now())
 

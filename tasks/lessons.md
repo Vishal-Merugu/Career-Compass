@@ -628,3 +628,117 @@ estimate.
 
 **Apply:** reach for `migrate resolve` first. Verify emptiness before any drop,
 and confirm the backup exists even when you expect not to need it.
+
+### A fallible call that returns a neutral value will be read as an answer
+
+`evaluateProfile` caught every failure and returned
+`{ ok: false, match: false, reason: 'LLM Error: …' }`. The caller read `.match`
+and never `.ok`. On 2026-08-09 that turned an unreachable model into **368
+profiles rejected** — a full run, ~20 minutes of real LinkedIn calls against the
+user's own session, reporting itself healthy the whole way.
+
+**Why:** `match: false` is a perfectly plausible verdict. Nothing downstream
+could tell "the model said no" from "we never asked", so the run kept going,
+kept collecting fresh batches to fail on, and the dashboard kept rendering
+`scraping`. The `try/catch` wrapped around the call site was dead code, because
+nothing ever threw.
+
+**Apply:** a function that can fail should throw, not return a value that is
+indistinguishable from a real result. If a caller must be able to ignore the
+failure, make ignoring it explicit — do not make it the default by returning a
+falsy-but-valid answer. When fixing one of these, **delete the `ok` field from
+the return type**: the type is what stops the next caller repeating it.
+Corollary: an infrastructure failure must be stored differently from a business
+outcome (`ProfileDecision.status = 'error'`, not `isQualified: false`).
+
+### Test the process that does the work, not a convenient one
+
+The extension's "Test AI" button ran the health check in its own service worker,
+which reaches the _user's laptop_. The model is called by the _server_. The
+button could go green while the server could not resolve the address at all —
+which is exactly the state the VM was in.
+
+**Why:** the check and the real call ran in different processes on different
+networks. `localhost:11434` means two different machines depending on who is
+asking, and inside Docker it means the container itself.
+
+**Apply:** a connectivity check belongs in the process that owns the connection,
+and its result should say where it ran (`checkedFrom: 'server'`). When something
+"works locally but not in production", check whether the test and the work were
+ever on the same host.
+
+### The same person is keyed two different ways, on purpose
+
+`ProfileUrl.url` is `/in/ACoAAB…/` — the Voyager `fsd_profile` **urn**, because
+that is all a people-search result yields. `Profile.profileId` is `jane-doe` —
+the **vanity slug**, read from `publicIdentifier` once the full profile has been
+fetched. They describe the same human and share no characters.
+
+**Why:** it has now caused two separate bugs. First, Mailmeteor's finder was
+sent the urn URL and could not find anybody, because their widget resolves a
+vanity URL — fixed by building `linkedinUrl` from `publicIdentifier` in
+`qualificationWorker` (the `// Mailmeteor expects a clean vanity URL` comment is
+that fix). Then the delete feature reached for the obvious mapping —
+slug-from-URL versus `Profile.profileId` — which matches **nothing** on any
+normally collected run, so a delete would have reported success and left every
+scrape behind.
+
+**Apply:** the only reliable join is
+`ScrapedProfile.rawData->>'publicIdentifier'`, the same field the publisher read
+on the way in. `slugFromUrl` in `profilePublisher.service.ts` is the fallback for
+rows that never got scraped, not the primary key. Anything mapping between the
+run-scoped tables and `Profile` must go through the scraped payload — see the
+`$queryRaw` in `dataDeletion.service.ts`, pinned by
+`dataDeletion.service.test.ts`.
+
+### A delete has to reach both halves of the schema
+
+Deleting a `SearchJob` cascades `ProfileUrl` → `ScrapedProfile` →
+`ProfileDecision`, `JobEvent` and `ExtensionConnection` — and nothing else.
+`OutreachLog.searchJobId` is a plain column, deliberately, so the run's profiles
+stay on Results attached to a run that no longer exists.
+
+**Why:** the cascade looks like the whole answer and covers about half the rows.
+The remainder — `OutreachLog`, the `Profile` rows the run published, their
+`EmailLookup`s, and any `Company` left with no employees — is invisible in
+`schema.prisma` precisely because it is _not_ wired up.
+
+**Apply:** `dataDeletion.service.ts` is the only place that deletes either. The
+orphan test is "no `OutreachLog` rows remain **at all**", never "we just deleted
+one" — that is what lets a person two runs found survive losing one of them, and
+what stops one user's delete erasing another's profile. Process memory counts as
+state too: `QualificationWorker`'s queue and `ConnectionRegistry`'s socket are
+keyed by job id and no database write clears them.
+
+### Refuse to delete a running job; do not stop it and delete it
+
+Raised by the user on 2026-08-10, against a first implementation that quiesced
+the run and deleted it anyway.
+
+**Why:** mid-flight there is no moment at which the delete is safe. `scrapeWorker`
+is inside a fetch, `dispatchNext` is about to insert the next batch, and a
+Voyager call already in the air lands on a `jobId` that is gone — every one of
+them a foreign-key error in the log, which is the same "junk left behind" the
+feature exists to prevent, only somewhere nobody looks. Pause and Cancel already
+exist and both take effect in seconds.
+
+**Apply:** `ACTIVE_STATUSES` in `dataDeletion.service.ts`, a 409 carrying
+`WORKFLOW_RUNNING`. A selection containing one working run is refused **whole** —
+a partial delete reports success, leaves some runs standing and says nothing
+about which. The dashboard disables the button and says why, but the server
+check is the real one.
+
+### An exact-match check that is too lenient is not a check
+
+The model-installed preflight first matched on family name, so a config asking
+for `qwen2.5:1.5b` was considered satisfied by an installed `qwen2.5:14b` — the
+**exact** mismatch the check existed to catch. It passed a hand test that should
+have failed, and was only noticed because the test was actually run.
+
+**Why:** the leniency was added speculatively, for tag variations nobody had
+observed, and it swallowed the one real case. For Ollama the size tag _is_ the
+model.
+
+**Apply:** write the failing case first and confirm it fails. Add tolerance only
+for a variation you have actually seen, and only as narrowly as it needs to be
+(`name` vs `name:latest`, and nothing more).

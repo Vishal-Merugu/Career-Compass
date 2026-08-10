@@ -6,6 +6,23 @@ import { PrismaStorageAdapter } from '../services/storage.adapter.js';
 import { checkJobStopCondition } from '../orchestrator/stopCondition.js';
 import { telegramBotService } from '../telegram/bot.js';
 import { publishQualifiedProfile } from '../services/profilePublisher.service.js';
+import { LlmError } from '../errors/AppError.js';
+import { isRunFatal } from '../errors/jobErrors.js';
+import { pauseJobWithFailure } from '../services/jobControl.service.js';
+import { recordJobEvent } from '../services/jobEvents.service.js';
+
+/**
+ * How many profiles in a row may fail evaluation before the run is parked.
+ *
+ * Only non-fatal failures get to count this high — an unreachable host or a bad
+ * key pauses on the first one, because it will fail identically for every
+ * remaining profile. This budget is for `LLM_BAD_JSON`, where the next profile
+ * genuinely might succeed.
+ *
+ * Five, not fifty: on 2026-08-09 a run evaluated 368 profiles against a model
+ * it had never once reached, and reported itself healthy throughout.
+ */
+const CONSECUTIVE_ERROR_LIMIT = 5;
 
 export class QualificationWorker {
   private static instance: QualificationWorker | null = null;
@@ -15,6 +32,9 @@ export class QualificationWorker {
     scrapedProfileId: string;
   }> = [];
   private isProcessing = false;
+
+  /** Consecutive evaluation failures per job. Reset by any success. */
+  private consecutiveErrors = new Map<string, number>();
 
   private constructor() {}
 
@@ -29,11 +49,33 @@ export class QualificationWorker {
    * Enqueue a profile for qualification.
    */
   public enqueue(jobId: string, urlId: string, scrapedProfileId: string) {
-    logger.info(
+    logger.debug(
       `[QualificationWorker] Enqueuing profile ${scrapedProfileId} for Job: ${jobId}`,
     );
     this.queue.push({ jobId, urlId, scrapedProfileId });
     this.triggerProcessing();
+  }
+
+  /**
+   * Drop queued work for jobs that are about to be deleted.
+   *
+   * The queue is process memory, so nothing in the database can clear it. An
+   * item left behind spends a round trip discovering its `ScrapedProfile` is
+   * gone and then logs "not found in DB" — an error that reads like corruption
+   * and is really just a delete the worker was never told about.
+   */
+  public forgetJobs(jobIds: string[]): void {
+    const doomed = new Set(jobIds);
+    const before = this.queue.length;
+    this.queue = this.queue.filter((item) => !doomed.has(item.jobId));
+    for (const jobId of doomed) this.consecutiveErrors.delete(jobId);
+
+    const dropped = before - this.queue.length;
+    if (dropped > 0) {
+      logger.info(
+        `[QualificationWorker] Dropped ${dropped} queued profile(s) for ${doomed.size} deleted job(s)`,
+      );
+    }
   }
 
   /**
@@ -120,7 +162,7 @@ export class QualificationWorker {
     urlId: string,
     scrapedProfileId: string,
   ) {
-    logger.info(
+    logger.debug(
       `[QualificationWorker] Processing profile ${scrapedProfileId} for Job ${jobId}`,
     );
 
@@ -216,19 +258,19 @@ export class QualificationWorker {
       : profile.profileUrl.url;
 
     // 3. Run LLM Profile Evaluation
+    const searchParams = job.searchParams as { prompt?: string };
+    const criteriaPrompt =
+      searchParams.prompt ||
+      'Evaluate if the profile represents an engineering manager, tech lead, software engineering director, software developer, recruiter, talent acquisition specialist, or co-founder. Reject entry level graduates.';
+
+    logger.debug(
+      `[QualificationWorker] Evaluating profile ${profile.name} with LLM...`,
+    );
+
     let isQualified = false;
-    let qualificationReason = 'LLM evaluation failed';
+    let qualificationReason = '';
 
     try {
-      const searchParams = job.searchParams as any;
-      const criteriaPrompt =
-        searchParams.prompt ||
-        'Evaluate if the profile represents an engineering manager, tech lead, software engineering director, software developer, recruiter, talent acquisition specialist, or co-founder. Reject entry level graduates.';
-
-      logger.info(
-        `[QualificationWorker] Evaluating profile ${profile.name} with LLM...`,
-      );
-
       const evaluation = await evaluateProfile(
         parsedProfile,
         criteriaPrompt,
@@ -238,6 +280,9 @@ export class QualificationWorker {
 
       isQualified = evaluation.match;
       qualificationReason = evaluation.reason;
+
+      // A verdict arrived, so whatever was failing has recovered.
+      this.consecutiveErrors.delete(jobId);
 
       logger.info(
         `[QualificationWorker] LLM Evaluation for ${profile.name}: Match=${isQualified}, Reason=${qualificationReason}`,
@@ -260,19 +305,20 @@ export class QualificationWorker {
           },
         );
       }
-    } catch (err: any) {
-      logger.error(err, `[QualificationWorker] LLM profile evaluation failed`);
-      qualificationReason = `Evaluation error: ${err.message}`;
-      if (chatId && telegramMsgId) {
-        await telegramBotService.editMessageText(
-          `⚠️ *Error Evaluating:* ${profile.name}\n*Error:* ${err.message}`,
-          {
-            chat_id: chatId,
-            message_id: telegramMsgId,
-            parse_mode: 'Markdown',
-          },
-        );
+    } catch (err) {
+      // The model never gave a verdict. This is emphatically **not** a
+      // rejection, and recording it as one is what let a run with an
+      // unreachable model look like a run full of unsuitable people.
+      if (err instanceof LlmError) {
+        await this.recordEvaluationFailure(jobId, profile.id, {
+          name: profile.name,
+          error: err,
+          chatId,
+          telegramMsgId,
+        });
+        return;
       }
+      throw err;
     }
 
     // 4. Record the decision. **No email lookup happens here.**
@@ -294,6 +340,7 @@ export class QualificationWorker {
           // Not `not_found` and not `disabled`: nothing has been attempted yet.
           emailSource: null,
           isQualified: true,
+          status: 'qualified',
           qualificationReason,
         },
       });
@@ -312,17 +359,19 @@ export class QualificationWorker {
         emailSource: null,
         emailValidation: null,
         qualificationReason,
+        searchJobId: jobId,
       });
 
       await this.finalizeQualifiedDecision(jobId, profile.id, null);
     } else {
-      // Not qualified
+      // Not qualified — an actual verdict from the model, not a failure.
       await prisma.profileDecision.create({
         data: {
           profileId: profile.id,
           email: null,
           emailSource: null,
           isQualified: false,
+          status: 'rejected',
           qualificationReason,
         },
       });
@@ -330,6 +379,120 @@ export class QualificationWorker {
       // Check stop condition or dispatch next
       await checkJobStopCondition(jobId);
     }
+
+    await this.recordProgress(jobId);
+  }
+
+  /**
+   * Handle an evaluation that never produced a verdict.
+   *
+   * Writes a decision with `status: 'error'` — which does **not** resolve the
+   * URL for the stop condition and is deleted and retried on resume — and then
+   * decides whether the run can continue.
+   *
+   * The two cases are genuinely different. An unreachable host, a rejected key,
+   * a missing model or an exhausted quota will fail identically for every
+   * remaining profile, so there is nothing to learn from trying 300 more; the
+   * run pauses immediately. Unreadable output is about this particular prompt,
+   * so it is counted, and only a run of them stops the job.
+   */
+  private async recordEvaluationFailure(
+    jobId: string,
+    scrapedProfileId: string,
+    context: {
+      name: string;
+      error: LlmError;
+      chatId?: string | null;
+      telegramMsgId?: number;
+    },
+  ): Promise<void> {
+    const { error, name, chatId, telegramMsgId } = context;
+
+    logger.error(
+      `[QualificationWorker] Evaluation failed for ${name}: ${error.code} — ${error.message}`,
+    );
+
+    await prisma.profileDecision.create({
+      data: {
+        profileId: scrapedProfileId,
+        email: null,
+        emailSource: null,
+        isQualified: false,
+        status: 'error',
+        qualificationReason: error.message,
+      },
+    });
+
+    if (chatId && telegramMsgId) {
+      await telegramBotService.editMessageText(
+        `⚠️ *Could not evaluate:* ${name}\n${error.message}`,
+        { chat_id: chatId, message_id: telegramMsgId, parse_mode: 'Markdown' },
+      );
+    }
+
+    const errorCtx = {
+      model: error.model ?? null,
+      provider: error.provider ?? null,
+      retryAfterSeconds: error.retryAfterSeconds ?? null,
+    };
+
+    if (isRunFatal(error.code)) {
+      this.consecutiveErrors.delete(jobId);
+      await pauseJobWithFailure(jobId, {
+        stage: 'qualify',
+        code: error.code,
+        detail: error.detail ?? null,
+        ctx: errorCtx,
+      });
+      return;
+    }
+
+    const seen = (this.consecutiveErrors.get(jobId) ?? 0) + 1;
+    this.consecutiveErrors.set(jobId, seen);
+
+    if (seen >= CONSECUTIVE_ERROR_LIMIT) {
+      this.consecutiveErrors.delete(jobId);
+      await pauseJobWithFailure(jobId, {
+        stage: 'qualify',
+        code: error.code,
+        detail:
+          `${seen} profiles in a row could not be evaluated. ${error.detail ?? ''}`.trim(),
+        ctx: errorCtx,
+      });
+      return;
+    }
+
+    await recordJobEvent(jobId, {
+      stage: 'qualify',
+      code: error.code,
+      level: 'warn',
+      message: `${error.message} Skipped this profile and carried on.`,
+      detail: error.detail ?? null,
+      profileRef: name,
+    });
+
+    await checkJobStopCondition(jobId);
+  }
+
+  /**
+   * One rolling "N of M qualified" line for the run.
+   *
+   * Rolls up onto a single row by design — see jobEvents.service.ts. Individual
+   * decisions are not events: qualified people are listed on the run page as
+   * people, and rejections are the noise this log exists to avoid.
+   */
+  private async recordProgress(jobId: string): Promise<void> {
+    const job = await prisma.searchJob.findUnique({
+      where: { id: jobId },
+      select: { qualifiedCount: true, limitRequested: true },
+    });
+    if (!job) return;
+
+    await recordJobEvent(jobId, {
+      stage: 'qualify',
+      code: 'QUALIFY_PROGRESS',
+      message: `${job.qualifiedCount} of ${job.limitRequested} profiles qualified.`,
+    });
   }
 
   /**

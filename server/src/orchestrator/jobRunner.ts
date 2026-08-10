@@ -13,6 +13,14 @@ import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
 import { runCollection } from '../services/urlCollector.service.js';
 import { telegramBotService } from '../telegram/bot.js';
+import { recordJobEvent } from '../services/jobEvents.service.js';
+import { pauseJobWithFailure } from '../services/jobControl.service.js';
+import {
+  normalizeProvider,
+  providerLabel,
+  resolveModel,
+} from '../shared/llmClient.js';
+import { PrismaStorageAdapter } from '../services/storage.adapter.js';
 
 interface SearchParams {
   companyUrl?: string;
@@ -60,13 +68,44 @@ export async function startJob(jobId: string): Promise<void> {
   }
 
   if (!searchParams.companyUrl) {
-    logger.error(`[JobRunner] Job ${jobId} has no companyUrl; pausing`);
-    await prisma.searchJob.update({
-      where: { id: jobId },
-      data: { status: 'paused_error' },
+    await pauseJobWithFailure(jobId, {
+      stage: 'collect',
+      code: 'COMPANY_NOT_FOUND',
+      detail: 'The run was created without a company URL.',
     });
     return;
   }
+
+  // Record what this run is actually about to use. A run that failed three days
+  // ago cannot be explained by settings the user has since changed, and "which
+  // model was this?" was unanswerable after the fact.
+  const config = await new PrismaStorageAdapter(job.userId)
+    .getConfig()
+    .catch(() => null);
+
+  const provider = config ? normalizeProvider(config) : 'server';
+  const model = config ? resolveModel(config) : '';
+
+  await prisma.searchJob.update({
+    where: { id: jobId },
+    data: {
+      configSnapshot: {
+        llmProvider: provider,
+        llmModel: model,
+        companyUrl: searchParams.companyUrl,
+        limitRequested: job.limitRequested,
+        batchSize,
+      },
+      failureCode: null,
+      failureDetail: null,
+    },
+  });
+
+  await recordJobEvent(jobId, {
+    stage: 'run',
+    code: 'RUN_STARTED',
+    message: `Looking for ${job.limitRequested} profiles, judged by ${providerLabel(provider)}${model ? ` (${model})` : ''}.`,
+  });
 
   await runCollection(
     job.userId,

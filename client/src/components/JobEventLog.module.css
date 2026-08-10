@@ -1,0 +1,46 @@
+.row {
+  padding: 10px 14px;
+  border-bottom: 1px solid
+    light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-5));
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+
+/* Errors earn a tint. Everything else stays quiet, so the tint means something. */
+.row[data-level='error'] {
+  background: light-dark(var(--mantine-color-red-0), rgba(224, 49, 49, 0.06));
+}
+
+.row[data-level='warn'] {
+  background: light-dark(
+    var(--mantine-color-orange-0),
+    rgba(232, 139, 0, 0.05)
+  );
+}
+
+.detailToggle {
+  margin-top: 4px;
+  color: var(--mantine-color-dimmed);
+}
+
+.detailToggle:hover {
+  color: light-dark(var(--mantine-color-dark-6), var(--mantine-color-gray-3));
+}
+
+.detail {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: var(--mantine-radius-sm);
+  background: light-dark(
+    var(--mantine-color-gray-1),
+    var(--mantine-color-dark-6)
+  );
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--mantine-color-dimmed);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

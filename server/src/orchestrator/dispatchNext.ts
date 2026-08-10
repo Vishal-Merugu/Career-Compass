@@ -2,7 +2,7 @@ import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
 
 export async function dispatchNext(jobId: string): Promise<void> {
-  logger.info(
+  logger.debug(
     `[Orchestrator] Attempting to dispatch next URL for Job ${jobId}`,
   );
 

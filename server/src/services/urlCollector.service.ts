@@ -23,6 +23,8 @@ import {
   JOB_STATUS_PAUSED_SESSION,
   withVoyager,
 } from './linkedinSession.service.js';
+import { recordJobEvent } from './jobEvents.service.js';
+import { pauseJobWithFailure } from './jobControl.service.js';
 
 /** Voyager's people-search page size. Not ours to choose. */
 const SEARCH_PAGE_SIZE = 12;
@@ -183,7 +185,7 @@ export async function collectProfileUrls(
       break;
     }
 
-    logger.info(
+    logger.debug(
       `[UrlCollector] Search page start=${start} for company ${companyId}`,
     );
 
@@ -280,12 +282,25 @@ export async function runCollection(
       logger.warn(
         `[UrlCollector] No URLs found for job ${jobId}; marking completed`,
       );
+      await recordJobEvent(jobId, {
+        stage: 'collect',
+        code: 'NO_RESULTS',
+        level: 'warn',
+        message:
+          'LinkedIn returned no more people for this search, so the run is finished.',
+      });
       await prisma.searchJob.update({
         where: { id: jobId },
         data: { status: 'completed' },
       });
       return;
     }
+
+    await recordJobEvent(jobId, {
+      stage: 'collect',
+      code: 'COLLECT_PROGRESS',
+      message: `Batch ${batchNumber}: ${collected} people found${exhausted ? ' (no more available)' : ''}.`,
+    });
 
     await prisma.searchJob.update({
       where: { id: jobId },
@@ -299,11 +314,17 @@ export async function runCollection(
       `[UrlCollector] Collection failed for job ${jobId}${paused ? ' (session)' : ''}`,
     );
 
-    await prisma.searchJob.update({
-      where: { id: jobId },
-      // A session pause is resumable by pushing a fresh jar; anything else needs
-      // a human, so it stays `paused_error`.
-      data: { status: paused ? JOB_STATUS_PAUSED_SESSION : 'paused_error' },
+    await pauseJobWithFailure(jobId, {
+      stage: 'collect',
+      // A session pause is resumable by pushing a fresh jar; anything else
+      // needs a human, so it stays `paused_error`.
+      status: paused ? JOB_STATUS_PAUSED_SESSION : undefined,
+      code: paused
+        ? 'SESSION_EXPIRED'
+        : err instanceof ValidationError
+          ? 'COMPANY_NOT_FOUND'
+          : 'UNKNOWN',
+      detail: err instanceof Error ? err.message : String(err),
     });
 
     if (!paused) throw err;

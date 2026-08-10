@@ -35,7 +35,7 @@ export function RegisterPage() {
   });
 
   if (!isLoading && user) {
-    return <Navigate to="/results" replace />;
+    return <Navigate to="/setup" replace />;
   }
 
   const handleSubmit = form.onSubmit(
@@ -45,7 +45,7 @@ export function RegisterPage() {
       try {
         await register(email, password, registrationToken);
         // Registering signs you in; the server set the session cookie.
-        navigate('/results', { replace: true });
+        navigate('/setup', { replace: true });
       } catch (err) {
         setError(
           err instanceof ApiError

@@ -30,15 +30,14 @@ export interface IVoyagerClient {
 }
 
 export interface IUserConfig {
-  keywords: string;
-  locations: string;
   dailyLimit: number;
+  /** `server` (the instance's built-in model) | `ollama` | `gemini` | `openrouter` */
   llmProvider: string;
+  /** Decrypted at read time by the storage adapter. Never the stored blob. */
   llmApiKey?: string | null;
   llmUrl: string;
   llmModel: string;
   userContext?: string | null;
-  targetGeoId: string;
   emailFinderEnabled: boolean;
 }
 

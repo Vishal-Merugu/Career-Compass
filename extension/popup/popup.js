@@ -1,4 +1,13 @@
-// ─── CareerCompass v2 Popup Controller ───────────────────────────
+// ─── CareerCompass Popup Controller ──────────────────────────────
+//
+// The extension is a supplier of browser-bound capabilities, not a control
+// surface. It does three things that genuinely need a logged-in browser: it
+// keeps the server's LinkedIn cookie jar fresh, it drives the email-finder
+// widget, and it sends connection requests. Everything else — starting runs,
+// choosing an AI model, reading results — is in the dashboard, where the work
+// actually happens and where there is room to explain it.
+//
+// So this file is two tabs: Connect, and Status.
 
 let pollInterval = null;
 let activeWorkflowId = null;
@@ -9,20 +18,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   setupAuth();
   setupTabs();
-  setupConfig();
-  setupResults();
-  setupWorkflows();
+  setupConnector();
+  setupStatusTab();
 
   const statusRes = await sendMessage({ action: 'getStatus' });
   const config = statusRes?.config || {};
 
-  if (!config.apiKey || config.apiKey === 'dev-api-key-careercompass') {
+  if (!config.apiKey) {
     document.getElementById('loginOverlay').style.display = 'flex';
   } else {
     document.getElementById('loginOverlay').style.display = 'none';
     await sendMessage({ action: 'syncConfig' });
-    await loadConfig();
     await refreshState();
+    await refreshStatusTab();
     startPolling();
   }
 });
@@ -42,157 +50,87 @@ function setupTabs() {
       const panel = document.getElementById(`tab-${tab.dataset.tab}`);
       if (panel) panel.classList.add('active');
 
-      if (tab.dataset.tab === 'results') loadResultsDropdown();
+      if (tab.dataset.tab === 'status') refreshStatusTab();
     });
   });
 }
 
-// ─── Config & Settings ───────────────────────────────────────────
+// ─── Status tab ──────────────────────────────────────────────────
 
-function setupConfig() {
+function setupStatusTab() {
   document
-    .getElementById('btnSaveConfig')
-    .addEventListener('click', () => saveConfig());
-  document.getElementById('btnCheckLlm').addEventListener('click', checkLlm);
+    .getElementById('btnSaveBackend')
+    .addEventListener('click', saveBackendUrl);
+
   document
-    .getElementById('cfgLlmProvider')
-    .addEventListener('change', syncLlmFields);
+    .getElementById('btnOpenDashboard')
+    .addEventListener('click', async () => {
+      const config = (await sendMessage({ action: 'getStatus' }))?.config || {};
+      const url = config.backendUrl || 'http://localhost:3000';
+      chrome.tabs.create({ url });
+    });
 }
 
-function syncLlmFields() {
-  const provider = document.getElementById('cfgLlmProvider').value;
-  const groupUrl = document.getElementById('groupLlmUrl');
-  const groupKey = document.getElementById('groupLlmApiKey');
-  const modelLabel = document.getElementById('lblLlmModel');
-  const fetchBtn = document.getElementById('btnCheckLlm');
-
-  groupUrl.style.display = provider === 'ollama' ? 'block' : 'none';
-  groupKey.style.display = provider === 'ollama' ? 'none' : 'block';
-
-  if (provider === 'gemini') {
-    modelLabel.textContent = '> AI Model';
-    fetchBtn.querySelector('.btn-text').textContent = 'Test AI';
-  } else {
-    modelLabel.textContent = '> AI Model (Fetch to Populate)';
-    fetchBtn.querySelector('.btn-text').textContent = 'Fetch Models';
-  }
-}
-
-async function loadConfig() {
-  const res = await sendMessage({ action: 'getStatus' });
-  if (!res?.config) return;
-
-  const config = res.config;
-
-  // Settings Tab
-  document.getElementById('cfgLlmProvider').value =
-    config.llmProvider || 'ollama';
-  document.getElementById('cfgLlmUrl').value =
-    config.llmUrl || 'http://localhost:11434';
-  document.getElementById('cfgLlmApiKey').value = config.llmApiKey || '';
-  document.getElementById('cfgDailyLimit').value = config.dailyLimit || 15;
-  document.getElementById('cfgTargetGeoId').value =
-    config.targetGeoId || '101282230';
-  document.getElementById('cfgEmailFinderEnabled').value =
-    config.emailFinderEnabled !== false ? 'true' : 'false';
-
-  if (config.llmModel) {
-    document.getElementById('cfgLlmModel').innerHTML =
-      `<option value="${config.llmModel}">${config.llmModel}</option>`;
-  }
-
-  syncLlmFields();
-}
-
-async function saveConfig() {
+async function saveBackendUrl() {
   const statusRes = await sendMessage({ action: 'getStatus' });
-  const currentConfig = statusRes?.config || {};
+  const config = statusRes?.config || {};
+  const value = document.getElementById('cfgBackendUrl').value.trim();
 
-  const newConfig = {
-    ...currentConfig,
-    llmProvider: document.getElementById('cfgLlmProvider').value,
-    llmUrl: document.getElementById('cfgLlmUrl').value.trim(),
-    llmApiKey: document.getElementById('cfgLlmApiKey').value.trim(),
-    llmModel: document.getElementById('cfgLlmModel').value.trim(),
-    dailyLimit:
-      parseInt(document.getElementById('cfgDailyLimit').value, 10) || 15,
-    targetGeoId: document.getElementById('cfgTargetGeoId').value.trim(),
-    emailFinderEnabled:
-      document.getElementById('cfgEmailFinderEnabled').value === 'true',
-  };
+  config.backendUrl = value.replace(/\/$/, '');
+  await sendMessage({ action: 'saveConfig', config });
+  await refreshStatusTab();
+}
 
-  const btn = document.getElementById('btnSaveConfig');
-  const textSpan = btn.querySelector('.btn-text');
+function minutesAgo(iso) {
+  const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  return hours < 24 ? `${hours} h ago` : `${Math.round(hours / 24)} d ago`;
+}
 
-  btn.classList.add('is-loading');
-  await sendMessage({ action: 'saveConfig', config: newConfig });
+async function refreshStatusTab() {
+  const statusRes = await sendMessage({ action: 'getStatus' });
+  const config = statusRes?.config || {};
+  const backendUrl = config.backendUrl || 'http://localhost:3000';
 
-  // Sync to backend
-  if (currentConfig.apiKey) {
-    try {
-      const backendUrl = currentConfig.backendUrl || 'http://localhost:3000';
-      await fetch(`${backendUrl}/api/config`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': currentConfig.apiKey,
-        },
-        body: JSON.stringify(newConfig),
-      });
-    } catch (e) {
-      console.error('Failed to sync config to backend:', e);
+  document.getElementById('cfgBackendUrl').value = backendUrl;
+  document.getElementById('statusAccount').textContent = config.apiKey
+    ? 'Signed in'
+    : 'Not signed in';
+
+  const sessionEl = document.getElementById('statusSession');
+
+  if (!config.apiKey) {
+    sessionEl.textContent = 'Sign in first.';
+    return;
+  }
+
+  const headers = { 'X-API-Key': config.apiKey };
+
+  try {
+    const res = await fetch(`${backendUrl}/api/session`, { headers });
+    const data = await res.json();
+    const session = data?.session;
+
+    if (!session?.present) {
+      sessionEl.textContent =
+        'Not sent yet. Open a LinkedIn tab, then reopen this.';
+    } else if (!session.isValid) {
+      sessionEl.textContent = `Expired${
+        session.invalidReason ? ` — ${session.invalidReason}` : ''
+      }`;
+    } else {
+      sessionEl.textContent = `Active · sent ${minutesAgo(session.importedAt)}`;
     }
+  } catch {
+    sessionEl.textContent = 'Could not reach the server.';
   }
-
-  btn.classList.remove('is-loading');
-
-  textSpan.textContent = '✓ Saved!';
-  setTimeout(() => (textSpan.textContent = 'Save Configuration'), 1500);
 }
 
-async function checkLlm() {
-  const btn = document.getElementById('btnCheckLlm');
-  const modelSelect = document.getElementById('cfgLlmModel');
-  const statusText = document.getElementById('llmStatusText');
+// ─── Mass Connector ──────────────────────────────────────────────
 
-  btn.classList.add('is-loading');
-  const config = {
-    llmProvider: document.getElementById('cfgLlmProvider').value,
-    llmUrl: document.getElementById('cfgLlmUrl').value.trim(),
-    llmApiKey: document.getElementById('cfgLlmApiKey').value.trim(),
-  };
-
-  const res = await sendMessage({ action: 'llmHealthCheck', config });
-
-  if (res?.ok && res.models) {
-    statusText.textContent = 'Connected!';
-    statusText.style.color = 'var(--tech-accent)';
-    modelSelect.innerHTML = res.models
-      .map((m) => `<option value="${m}">${m}</option>`)
-      .join('');
-  } else {
-    statusText.textContent = 'Connection failed.';
-    statusText.style.color = '#ef4444';
-  }
-  btn.classList.remove('is-loading');
-}
-
-// ─── Workflows ───────────────────────────────────────────────────
-
-function setupWorkflows() {
-  // People Finder
-  document.getElementById('btnStartFinder').addEventListener('click', () => {
-    const params = {
-      companyUrl: document.getElementById('pfCompanyUrl').value.trim(),
-      searchPrompt: document.getElementById('pfPrompt').value.trim(),
-      maxResults:
-        parseInt(document.getElementById('pfMaxResults').value) || 100,
-    };
-    if (!params.companyUrl) return alert('Company URL is required');
-    startWorkflow('peopleFinder', params);
-  });
-
-  // Mass Connector
+function setupConnector() {
   document.getElementById('btnStartConnector').addEventListener('click', () => {
     const urlsText = document.getElementById('mcUrls').value;
     const urls = urlsText
@@ -208,7 +146,6 @@ function setupWorkflows() {
     startWorkflow('massConnector', { urls, prompt });
   });
 
-  // CSV Upload for Mass Connector
   const csvInput = document.getElementById('mcCsvInput');
   const columnSelect = document.getElementById('mcColumnSelect');
   let parsedCsvData = null;
@@ -223,8 +160,7 @@ function setupWorkflows() {
 
     const reader = new FileReader();
     reader.onload = (event) => {
-      const text = event.target.result;
-      parsedCsvData = parseCsvBasic(text);
+      parsedCsvData = parseCsvBasic(event.target.result);
 
       if (parsedCsvData.length > 0) {
         const headers = Object.keys(parsedCsvData[0]);
@@ -252,7 +188,6 @@ function setupWorkflows() {
       `${urls.length} URLs loaded from CSV`;
   });
 
-  // Update URL count manually
   document.getElementById('mcUrls').addEventListener('input', (e) => {
     const urls = e.target.value
       .split(/[\n,]+/)
@@ -262,7 +197,6 @@ function setupWorkflows() {
       `${urls.length} URLs loaded`;
   });
 
-  // Global Controls
   document
     .getElementById('btnGlobalPause')
     .addEventListener('click', async () => {
@@ -310,68 +244,12 @@ function parseCsvBasic(text) {
 }
 
 async function startWorkflow(workflowId, params) {
-  const statusRes = await sendMessage({ action: 'getStatus' });
-  const config = statusRes?.config;
-
-  if (workflowId === 'peopleFinder') {
-    const backendUrl = config?.backendUrl || 'http://localhost:3000';
-    const apiKey = config?.apiKey;
-
-    if (!apiKey) {
-      throw new Error(
-        'You must be logged in to start a search. Please log in first.',
-      );
-    }
-
-    try {
-      const body = {
-        limitRequested: params.maxResults || 20,
-        searchParams: {
-          companyUrl: params.companyUrl,
-          prompt: params.searchPrompt || '',
-          batchSize: 100,
-        },
-      };
-
-      const res = await fetch(`${backendUrl}/api/jobs`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': apiKey,
-        },
-        body: JSON.stringify(body),
-      });
-
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
-        throw new Error(
-          data.error || data.message || 'Server error starting job',
-        );
-      }
-
-      const userId = data.job.userId;
-      const jobId = data.jobId;
-
-      await chrome.storage.local.set({
-        activeServerJob: {
-          jobId,
-          userId,
-          limitRequested: params.maxResults || 20,
-        },
-      });
-
-      await sendMessage({ action: 'job:start', jobId, userId });
-    } catch (err) {
-      alert(`Failed to start job on server: ${err.message}`);
-    }
-  } else {
-    const res = await sendMessage({
-      action: 'workflow:start',
-      workflow: workflowId,
-      params,
-    });
-    if (!res.ok) alert(res.error || 'Failed to start workflow');
-  }
+  const res = await sendMessage({
+    action: 'workflow:start',
+    workflow: workflowId,
+    params,
+  });
+  if (!res.ok) alert(res.error || 'Failed to start workflow');
   refreshState();
 }
 
@@ -382,78 +260,6 @@ function startPolling() {
 }
 
 async function refreshState() {
-  const statusRes = await sendMessage({ action: 'getStatus' });
-  const config = statusRes?.config;
-  const backendUrl = config?.backendUrl || 'http://localhost:3000';
-  const apiKey = config?.apiKey || 'dev-api-key-careercompass';
-
-  const activeServerJob = await chrome.storage.local.get('activeServerJob');
-  const serverJob = activeServerJob?.activeServerJob;
-
-  if (serverJob) {
-    try {
-      const res = await fetch(
-        `${backendUrl}/api/jobs/${serverJob.jobId}/status`,
-        {
-          headers: {
-            'X-API-Key': apiKey,
-          },
-        },
-      );
-      const data = await res.json();
-      if (res.ok && data.ok) {
-        const jobStatus = data.job?.status || data.status;
-        const scrapedCount = data.stats?.scrapedCount ?? data.scrapedCount ?? 0;
-        const collectedCount =
-          data.stats?.collectedCount ?? data.collectedCount ?? 0;
-        const qualifiedCount =
-          data.job?.qualifiedCount ?? data.qualifiedCount ?? 0;
-
-        const statusMap = {
-          initializing: 'running',
-          collecting_urls: 'running',
-          scraping: 'running',
-          paused_error: 'paused',
-          completed: 'completed',
-          failed: 'error',
-        };
-
-        const mappedStatus = statusMap[jobStatus] || 'idle';
-        const displayStep =
-          jobStatus === 'collecting_urls'
-            ? 'Collecting URLs...'
-            : `Scraped ${scrapedCount} profiles (${qualifiedCount}/${serverJob.limitRequested || 20} qualified)`;
-
-        const mockWf = {
-          id: 'peopleFinder',
-          name: 'People Finder (Server)',
-          status: mappedStatus,
-          progress: {
-            total: serverJob.limitRequested || 20,
-            current: qualifiedCount,
-            step: displayStep,
-          },
-        };
-
-        updateStatusBadge(mappedStatus, mockWf.name);
-        updateGlobalControls(mappedStatus, mockWf.name);
-        updateWorkflowUI(mockWf);
-
-        if (
-          mappedStatus === 'completed' ||
-          mappedStatus === 'error' ||
-          jobStatus === 'completed'
-        ) {
-          await chrome.storage.local.remove('activeServerJob');
-          await sendMessage({ action: 'job:stop' });
-        }
-        return;
-      }
-    } catch (err) {
-      console.error('Failed to sync server job status:', err);
-    }
-  }
-
   const res = await sendMessage({ action: 'workflow:list' });
   if (!res?.workflows) return;
 
@@ -499,436 +305,54 @@ function updateGlobalControls(status, name) {
   wfName.textContent =
     status === 'idle' ? 'No active workflow' : `Active: ${name}`;
 
-  if (status === 'running') {
-    btnPause.style.display = '';
-    btnStop.style.display = '';
-    btnPause.disabled = false;
-    btnPause.querySelector('.btn-text').textContent = 'Pause';
-    btnStop.disabled = false;
-  } else if (status === 'paused') {
-    btnPause.style.display = '';
-    btnStop.style.display = '';
-    btnPause.disabled = false;
-    btnPause.querySelector('.btn-text').textContent = 'Resume';
-    btnStop.disabled = false;
-  } else {
-    btnPause.style.display = 'none';
-    btnStop.style.display = 'none';
-    btnPause.disabled = true;
-    btnPause.querySelector('.btn-text').textContent = 'Pause';
-    btnStop.disabled = true;
-  }
+  const isActive = status === 'running' || status === 'paused';
+  btnPause.style.display = isActive ? '' : 'none';
+  btnStop.style.display = isActive ? '' : 'none';
+  btnPause.disabled = !isActive;
+  btnStop.disabled = !isActive;
+  btnPause.querySelector('.btn-text').textContent =
+    status === 'paused' ? 'Resume' : 'Pause';
 
   btnPause.onclick = async () => {
-    const activeServerJob = await chrome.storage.local.get('activeServerJob');
-    const serverJob = activeServerJob?.activeServerJob;
-    const statusRes = await sendMessage({ action: 'getStatus' });
-    const config = statusRes?.config;
-    const backendUrl = config?.backendUrl || 'http://localhost:3000';
-    const apiKey = config?.apiKey || 'dev-api-key-careercompass';
-
-    if (serverJob) {
-      const endpoint = status === 'running' ? 'pause' : 'resume';
-      try {
-        await fetch(`${backendUrl}/api/jobs/${serverJob.jobId}/${endpoint}`, {
-          method: 'POST',
-          headers: {
-            'X-API-Key': apiKey,
-          },
-        });
-      } catch (err) {
-        alert(`Failed to ${endpoint} job on server: ${err.message}`);
-      }
-    } else {
-      if (status === 'running')
-        await sendMessage({
-          action: 'workflow:pause',
-          workflow: activeWorkflowId,
-        });
-      if (status === 'paused')
-        await sendMessage({
-          action: 'workflow:resume',
-          workflow: activeWorkflowId,
-        });
-    }
+    if (!activeWorkflowId) return;
+    await sendMessage({
+      action: status === 'paused' ? 'workflow:resume' : 'workflow:pause',
+      workflow: activeWorkflowId,
+    });
     refreshState();
   };
 
   btnStop.onclick = async () => {
-    const activeServerJob = await chrome.storage.local.get('activeServerJob');
-    const serverJob = activeServerJob?.activeServerJob;
-    const statusRes = await sendMessage({ action: 'getStatus' });
-    const config = statusRes?.config;
-    const backendUrl = config?.backendUrl || 'http://localhost:3000';
-    const apiKey = config?.apiKey || 'dev-api-key-careercompass';
-
-    if (serverJob) {
-      try {
-        await fetch(`${backendUrl}/api/jobs/${serverJob.jobId}/cancel`, {
-          method: 'POST',
-          headers: {
-            'X-API-Key': apiKey,
-          },
-        });
-        await chrome.storage.local.remove('activeServerJob');
-        await sendMessage({ action: 'job:stop' });
-      } catch (err) {
-        alert(`Failed to stop job on server: ${err.message}`);
-      }
-    } else {
-      if (activeWorkflowId) {
-        await sendMessage({
-          action: 'workflow:cancel',
-          workflow: activeWorkflowId,
-        });
-      }
-    }
+    if (!activeWorkflowId) return;
+    await sendMessage({
+      action: 'workflow:cancel',
+      workflow: activeWorkflowId,
+    });
     refreshState();
   };
 }
 
 function hideAllProgress() {
-  document.getElementById('pfProgressContainer').style.display = 'none';
   document.getElementById('mcProgressContainer').style.display = 'none';
-
-  document.getElementById('btnStartFinder').disabled = false;
 }
 
 function updateWorkflowUI(wf) {
   const isRunning = wf.status === 'running' || wf.status === 'paused';
+  document.getElementById('btnStartConnector').disabled = isRunning;
 
-  // Disable all start buttons if ANY workflow is running
-  document.getElementById('btnStartFinder').disabled = isRunning;
+  if (wf.id === 'massConnector') {
+    const container = document.getElementById('mcProgressContainer');
+    const fill = document.getElementById('mcProgressFill');
+    const text = document.getElementById('mcProgressText');
 
-  if (wf.id === 'peopleFinder') {
-    const pContainer = document.getElementById('pfProgressContainer');
-    const pFill = document.getElementById('pfProgressFill');
-    const pText = document.getElementById('pfProgressText');
-
-    pContainer.style.display = 'flex';
+    container.style.display = 'flex';
     const percent =
       wf.progress.total > 0
         ? (wf.progress.current / wf.progress.total) * 100
         : 0;
-    pFill.style.width = `${percent}%`;
-    pText.textContent = `${wf.progress.step} (${wf.progress.current} / ${wf.progress.total})`;
+    fill.style.width = `${percent}%`;
+    text.textContent = `${wf.progress.step} (${wf.progress.current} / ${wf.progress.total})`;
   }
-}
-
-// ─── Results Tab ─────────────────────────────────────────────────
-
-async function setupResults() {
-  document
-    .getElementById('resRunSelect')
-    .addEventListener('change', renderSelectedResults);
-  document
-    .getElementById('btnExportCsv')
-    .addEventListener('click', exportResultsCsv);
-  document
-    .getElementById('btnPipeConnect')
-    .addEventListener('click', pipeToConnect);
-}
-
-function pipeToConnect() {
-  if (
-    !currentSelectedRun ||
-    !currentSelectedRun.results ||
-    currentSelectedRun.results.length === 0
-  )
-    return;
-
-  const profileIds = currentSelectedRun.results
-    .map((r) => r.profileId || r.linkedinUrl || r.url) // Added r.url fallback
-    .filter(Boolean);
-  if (profileIds.length === 0)
-    return alert('No valid Profile URLs found in this run');
-
-  // Populate the Mass Connector text area
-  document.getElementById('mcUrls').value = profileIds.join('\n');
-  document.getElementById('mcCount').textContent =
-    `${profileIds.length} URLs piped from Finder`;
-
-  // Switch to the Connect tab
-  document.querySelector('.tab[data-tab="connect"]').click();
-}
-
-async function loadResultsDropdown() {
-  const sel = document.getElementById('resRunSelect');
-  sel.innerHTML = '<option value="">Loading...</option>';
-
-  const statusRes = await sendMessage({ action: 'getStatus' });
-  const config = statusRes?.config;
-  const backendUrl = config?.backendUrl || 'http://localhost:3000';
-  const apiKey = config?.apiKey;
-
-  let options = '<option value="">Select a run...</option>';
-
-  // Fetch server jobs
-  if (apiKey) {
-    try {
-      const res = await fetch(`${backendUrl}/api/jobs`, {
-        headers: { 'X-API-Key': apiKey },
-      });
-      const data = await res.json();
-      if (res.ok && data.jobs) {
-        data.jobs.forEach((job, i) => {
-          const date = new Date(job.createdAt).toLocaleString();
-          let company = '';
-          if (job.searchParams?.companyUrl) {
-            try {
-              const parts = job.searchParams.companyUrl
-                .split('/')
-                .filter(Boolean);
-              const idx = parts.indexOf('company');
-              if (idx !== -1 && parts[idx + 1])
-                company = parts[idx + 1].toUpperCase();
-              else company = parts[parts.length - 1].toUpperCase();
-            } catch {}
-          }
-          const companyTag = company ? ` [${company}]` : '';
-          options += `<option value='{"wf":"serverJob","id":"${job.id}"}'>Server Search${companyTag} - ${date} (${job.qualifiedCount} qualified)</option>`;
-        });
-      }
-    } catch (err) {
-      console.error('Failed to fetch server jobs:', err);
-    }
-  }
-
-  // Fetch massConnector history from backend
-  if (apiKey) {
-    try {
-      const res = await fetch(
-        `${backendUrl}/api/sync/workflow-history?type=massConnector`,
-        {
-          headers: { 'X-API-Key': apiKey },
-        },
-      );
-      const data = await res.json();
-      if (res.ok && data.history) {
-        data.history.forEach((h, i) => {
-          const date = new Date(h.startedAt).toLocaleString();
-          const count = h.results.length;
-          // Store backend ID in the option value so we can fetch it via the same history array locally by caching it,
-          // or we just fetch the history array again when selecting.
-          // To keep it simple, we'll store the index, and fetch history again when rendering, just like local history.
-          options += `<option value='{"wf":"massConnector","idx":${i}}'>Mass Connector - ${date} (${count} processed)</option>`;
-        });
-      }
-    } catch (err) {
-      console.error('Failed to fetch massConnector history:', err);
-    }
-  }
-
-  sel.innerHTML = options;
-}
-
-let currentSelectedRun = null;
-
-async function renderSelectedResults() {
-  const val = document.getElementById('resRunSelect').value;
-  const tbody = document.getElementById('resultsBody');
-  const thead = document.getElementById('resultsThead');
-  const stats = document.getElementById('resStats');
-  const btnExport = document.getElementById('btnExportCsv');
-  const btnPipe = document.getElementById('btnPipeConnect');
-
-  if (!val) {
-    tbody.innerHTML =
-      '<tr><td colspan="2" style="text-align: center; color: var(--tech-muted); padding: 20px;">Select a run to view results</td></tr>';
-    stats.style.display = 'none';
-    btnExport.disabled = true;
-    btnPipe.disabled = true;
-    currentSelectedRun = null;
-    return;
-  }
-
-  const { wf, idx, id } = JSON.parse(val);
-
-  if (wf === 'serverJob') {
-    const statusRes = await sendMessage({ action: 'getStatus' });
-    const config = statusRes?.config;
-    const backendUrl = config?.backendUrl || 'http://localhost:3000';
-    const apiKey = config?.apiKey;
-
-    try {
-      const res = await fetch(`${backendUrl}/api/jobs/${id}/status`, {
-        headers: { 'X-API-Key': apiKey },
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error('Failed to load job details');
-
-      const run = {
-        results: data.decisions || [],
-        startedAt: data.job.createdAt,
-      };
-      currentSelectedRun = run;
-
-      stats.style.display = 'flex';
-      document.getElementById('resCount').textContent =
-        `${run.results.length} results`;
-      document.getElementById('resDate').textContent = new Date(
-        run.startedAt,
-      ).toLocaleString();
-
-      btnExport.disabled = run.results.length === 0;
-      btnPipe.disabled = run.results.length === 0;
-
-      if (run.results.length === 0) {
-        tbody.innerHTML =
-          '<tr><td colspan="2" style="text-align: center; color: var(--tech-muted); padding: 20px;">No results in this run</td></tr>';
-        return;
-      }
-
-      thead.innerHTML = '<th>Person</th><th>Match Status</th>';
-      tbody.innerHTML = run.results
-        .map(
-          (r) => `
-        <tr>
-          <td>
-            <strong>${escapeHtml(r.name)}</strong><br>
-            <span style="color: var(--tech-muted); font-size: 9px;">${escapeHtml(r.headline)}</span>
-            ${r.email ? `<br><span style="color: var(--tech-accent); font-size: 9px; font-family: monospace;">📧 ${escapeHtml(r.email)}</span>` : ''}
-          </td>
-          <td style="font-size: 10px; color: ${r.isQualified ? 'var(--tech-cyan)' : 'var(--tech-muted)'};">
-            ${r.isQualified ? 'Qualified' : 'Not Qualified'}
-          </td>
-        </tr>
-      `,
-        )
-        .join('');
-    } catch (err) {
-      tbody.innerHTML = `<tr><td colspan="2" style="color: red;">Error: ${err.message}</td></tr>`;
-    }
-  } else {
-    // Backend Mass Connector History
-    const statusRes = await sendMessage({ action: 'getStatus' });
-    const config = statusRes?.config;
-    const backendUrl = config?.backendUrl || 'http://localhost:3000';
-    const apiKey = config?.apiKey;
-
-    try {
-      const res = await fetch(
-        `${backendUrl}/api/sync/workflow-history?type=${wf}`,
-        {
-          headers: { 'X-API-Key': apiKey },
-        },
-      );
-      const data = await res.json();
-      if (!res.ok) throw new Error('Failed to load mass connector history');
-
-      const run = data.history[idx];
-      currentSelectedRun = run;
-
-      stats.style.display = 'flex';
-      document.getElementById('resCount').textContent =
-        `${run.results.length} results`;
-      document.getElementById('resDate').textContent = new Date(
-        run.startedAt,
-      ).toLocaleString();
-
-      btnExport.disabled = run.results.length === 0;
-      btnPipe.disabled = true;
-
-      if (run.results.length === 0) {
-        tbody.innerHTML =
-          '<tr><td colspan="2" style="text-align: center; color: var(--tech-muted); padding: 20px;">No results in this run</td></tr>';
-        return;
-      }
-
-      thead.innerHTML = '<th>Person</th><th>Status</th>';
-      tbody.innerHTML = run.results
-        .map(
-          (r) => `
-        <tr>
-          <td>
-            <strong>${escapeHtml(r.name)}</strong><br>
-            <span style="color: var(--tech-muted); font-size: 9px;">${escapeHtml(r.company)}</span>
-            ${r.email ? `<br><span style="color: var(--tech-accent); font-size: 9px; font-family: monospace;">📧 ${escapeHtml(r.email)}</span>` : ''}
-          </td>
-          <td style="font-size: 10px; color: var(--tech-accent);">${escapeHtml(r.status)}</td>
-        </tr>
-      `,
-        )
-        .join('');
-    } catch (err) {
-      tbody.innerHTML = `<tr><td colspan="2" style="color: red;">Error: ${err.message}</td></tr>`;
-    }
-  }
-}
-
-function exportResultsCsv() {
-  if (!currentSelectedRun || currentSelectedRun.results.length === 0) return;
-
-  const results = currentSelectedRun.results;
-
-  // Transform results for better CSV columns
-  const transformedResults = results.map((r) => {
-    const row = {};
-    row['Name'] = r.name || r.Name || '';
-    row['Title'] = r.headline || r.title || r.Title || '';
-    row['Bio/About'] =
-      r.about || r.bio || r['bio/about'] || r['Bio/About'] || '';
-
-    if (r.hasOwnProperty('isQualified') || r.hasOwnProperty('Qualified')) {
-      row['Match Status'] =
-        r.isQualified || r.Qualified ? 'Qualified' : 'Not Qualified';
-    }
-    if (r.hasOwnProperty('status')) {
-      row['Status'] = r.status;
-    }
-    if (r.company) row['Company'] = r.company;
-
-    row['Email'] = r.email || r.Email || '';
-
-    // Add any other properties dynamically
-    for (const key of Object.keys(r)) {
-      if (
-        ![
-          'name',
-          'headline',
-          'title',
-          'about',
-          'bio',
-          'isQualified',
-          'status',
-          'company',
-          'email',
-          'Name',
-          'Title',
-          'Bio/About',
-          'Match Status',
-          'Status',
-          'Company',
-          'Email',
-        ].includes(key)
-      ) {
-        row[key] = r[key];
-      }
-    }
-    return row;
-  });
-
-  const headers = Object.keys(transformedResults[0]);
-
-  const rows = transformedResults.map((r) =>
-    headers.map((h) => `"${String(r[h] || '').replace(/"/g, '""')}"`).join(','),
-  );
-
-  const csv = [headers.join(','), ...rows].join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-
-  const sel = document.getElementById('resRunSelect');
-  const selectedText = sel.options[sel.selectedIndex].text;
-  const safeName = selectedText
-    .replace(/[\/\\:*?"<>|]/g, '-')
-    .replace(/\s+/g, '_');
-
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${safeName}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
 }
 
 // ─── Utilities ───────────────────────────────────────────────────
@@ -972,7 +396,7 @@ async function checkLinkedInContext() {
     }
     overlay.classList.remove('active');
     return true;
-  } catch (err) {
+  } catch {
     return false;
   }
 }
@@ -1020,52 +444,14 @@ async function handleAuth(action) {
       throw new Error(data.error || data.message || `Failed to ${action}`);
     }
 
-    // Save apiKey to config via background without pushing to server,
-    // so we don't overwrite the user's remote config with the local default
     config.apiKey = data.apiKey;
-    await sendMessage({ action: 'saveConfig', config, pushToServer: false });
+    await sendMessage({ action: 'saveConfig', config });
 
     document.getElementById('loginOverlay').style.display = 'none';
 
-    // Initialize the app now that we have an API key
     await sendMessage({ action: 'syncConfig' });
-    await loadConfig();
-
-    // Check for any active server jobs and restore them
-    try {
-      const resJobs = await fetch(`${backendUrl}/api/jobs`, {
-        headers: { 'X-API-Key': data.apiKey },
-      });
-      const dataJobs = await resJobs.json();
-      if (resJobs.ok && dataJobs.ok && dataJobs.jobs) {
-        const activeJob = dataJobs.jobs.find((j) =>
-          [
-            'initializing',
-            'collecting_urls',
-            'scraping',
-            'paused_error',
-          ].includes(j.status),
-        );
-        if (activeJob) {
-          await chrome.storage.local.set({
-            activeServerJob: {
-              jobId: activeJob.id,
-              userId: 'me',
-              limitRequested: activeJob.limitRequested || 20,
-            },
-          });
-          await sendMessage({
-            action: 'job:start',
-            jobId: activeJob.id,
-            userId: 'me',
-          });
-        }
-      }
-    } catch (e) {
-      console.error('Failed to restore active job:', e);
-    }
-
     await refreshState();
+    await refreshStatusTab();
     startPolling();
   } catch (err) {
     errorMsg.textContent = err.message;

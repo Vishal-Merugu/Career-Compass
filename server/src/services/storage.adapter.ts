@@ -5,6 +5,7 @@ import {
   IProfileDetails,
 } from '../shared/index.js';
 import { prisma } from '../lib/prisma.js';
+import { decryptSecret, isEncrypted } from '../lib/secretBox.js';
 
 export class PrismaStorageAdapter implements IStorageAdapter {
   private userId: string;
@@ -159,15 +160,19 @@ export class PrismaStorageAdapter implements IStorageAdapter {
     }
 
     return {
-      keywords: config.keywords,
-      locations: config.locations,
       dailyLimit: config.dailyLimit,
       llmProvider: config.llmProvider,
-      llmApiKey: config.llmApiKey,
+      // Decrypted here, once, so no call site has to know the column is
+      // encrypted — and so a row written before encryption existed still
+      // works. Same treatment as `smtpPassword`.
+      llmApiKey: config.llmApiKey
+        ? isEncrypted(config.llmApiKey)
+          ? decryptSecret(config.llmApiKey)
+          : config.llmApiKey
+        : null,
       llmUrl: config.llmUrl,
       llmModel: config.llmModel,
       userContext: config.userContext,
-      targetGeoId: config.targetGeoId,
       emailFinderEnabled: config.emailFinderEnabled,
     };
   }
@@ -197,6 +202,8 @@ export class PrismaStorageAdapter implements IStorageAdapter {
     details?: any,
     profileId?: string,
     message?: string,
+    /** Which run found this person, so Results can be filtered by run. */
+    searchJobId?: string,
   ): Promise<void> {
     // Resolve profile record if profileId exists in DB
     let dbProfileId: string | undefined;
@@ -218,6 +225,7 @@ export class PrismaStorageAdapter implements IStorageAdapter {
         status,
         message,
         details: details || {},
+        searchJobId,
       },
     });
   }

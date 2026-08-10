@@ -34,7 +34,13 @@ NAT (AS680 DFN) rather than a datacenter ASN.
 `withdrawInvitation` and `checkRelationship` stay in `massConnector.js`: a write
 to someone else's account is the most restriction-prone call here, and at 15/day
 there is no throughput to gain. Do not "finish the migration" by moving them
-without deciding that deliberately.
+without deciding that deliberately. The _note_ they carry is written by the
+server (`POST /api/connections/message`); only the send is local.
+
+**The extension configures nothing.** All settings live in the dashboard — see
+`docs/adr/0008-configuration-in-the-dashboard.md`. `/api/config` stays readable
+with the extension's API key but ignores every AI field on write, and
+`storage.js` no longer pushes. The popup is two tabs: Connect and Status.
 
 ```
 server/src/services/linkedinSession.service.ts   the jar + withVoyager()
@@ -87,8 +93,93 @@ The gateway is now mostly vestigial: `FETCH_URL_BATCH` and `SCRAPE_PROFILE` are
 gone, and the extension acts on no scrape command. Heartbeat, session check and
 the mass connector's registration are what keep it alive.
 
-`server/src/shared/*` is duplicated by hand in `extension/services/*`. Change one,
-check the other.
+`server/src/shared/*` is duplicated by hand in `extension/services/*` —
+`parsers`, `rateLimiter`, `voyagerClient`, `resilience`. Change one, check the
+other. `llmClient` is **no longer** among them: the extension makes no model
+call, and the copy was deleted rather than kept in sync (ADR 0008).
+
+## The AI model, and why a run must never fail quietly
+
+**`llmProvider` defaults to `server`** — the instance's built-in model, resolved
+from `DEFAULT_LLM_URL` / `DEFAULT_LLM_MODEL`. The operator knows an address that
+works and a model that is installed; a new user does not. Under Docker the
+address must not be `localhost` — that is the container itself. Use
+`host.docker.internal` (the `extra_hosts: host-gateway` entry already exists).
+
+**An LLM failure is never a rejection.** `evaluateProfile` **throws** an
+`LlmError` carrying a `JobErrorCode`. It used to catch everything and return
+`{ ok: false, match: false }`, and on 2026-08-09 that recorded 368 profiles as
+"not a good fit" against a model that was never contacted — a full run, ~20
+minutes of real LinkedIn calls, reporting itself healthy. Do not reintroduce a
+return shape that can express failure as a verdict.
+
+- `ProfileDecision.status` is `qualified | rejected | error`. An `error` row does
+  not resolve its URL for the stop condition, and Resume deletes it and
+  re-evaluates — **no further LinkedIn calls**, since the profile is already in
+  `ScrapedProfile`.
+- **Fatal codes pause on the first occurrence** (`isRunFatal` in
+  `errors/jobErrors.ts`): unreachable, bad key, missing model, rate limit,
+  quota. Only `LLM_BAD_JSON` gets the five-in-a-row breaker.
+- **`POST /api/jobs` preflights and returns 422** with a `code`, a `message` and
+  a `fix` when a run cannot succeed. It creates no job row. `?dryRun=true` and
+  `GET /api/jobs/preflight` are how the New run form checks before the user
+  types anything.
+- **Health checks run on the server** (`POST /api/settings/ai/check`). The
+  extension's old button ran in the browser and tested the wrong machine.
+
+```
+server/src/errors/jobErrors.ts          code → message + fix, one table
+server/src/services/jobPreflight.service.ts   can this run succeed?
+server/src/services/jobControl.service.ts     the only place that pauses a run
+server/src/services/jobEvents.service.ts      the run's readable log
+```
+
+**Every user-facing failure string comes from `describeJobError`.** A raw error
+is `detail`, shown collapsed — never the headline.
+
+## The run event log
+
+`JobEvent` is the per-run record the dashboard shows, **budgeted at 20–40 rows
+for a 400-profile run** and enforced by `@@unique([jobId, stage, code])`: a
+repeat upserts and increments `count` rather than inserting. See
+`docs/adr/0009-per-run-event-log.md`.
+
+**Write only through `recordJobEvent`.** No `prisma.jobEvent.create` at a call
+site, and **no per-profile or per-rejection events** — rejections are the bulk
+of the volume and the least informative line an operator can read. Qualified
+people are listed on the run page as people.
+
+`SearchJob.failureCode` / `failureDetail` are denormalised so the Runs list can
+say _why_ without a join. A paused run must never render like a working one.
+
+## Deleting a run, or a person
+
+`server/src/services/dataDeletion.service.ts` is the **only** place that deletes
+either. Two entry points, `deleteRuns` and `deleteProfiles(userId, ids, jobId?)`,
+behind `DELETE /api/jobs`, `/api/jobs/:id`, `/api/profiles` and
+`/api/profiles/:id` — all `requireAuth`, cookie only, for the same reason the
+campaign routes are.
+
+**Deleting a `SearchJob` cascades only half of it.** The cascade covers
+`ProfileUrl` → `ScrapedProfile` → `ProfileDecision`, `JobEvent` and
+`ExtensionConnection`. `OutreachLog.searchJobId` is a plain column on purpose,
+so without an explicit delete the run's people stay on Results attached to a run
+that no longer exists.
+
+- **The orphan test is "no `OutreachLog` rows remain at all."** Not "we just
+  deleted one" — a person two runs found survives losing one, and one user's
+  delete never touches another user's copy.
+- **A run that is working is refused, not stopped** (`ACTIVE_STATUSES`, 409
+  `WORKFLOW_RUNNING`). Pause or cancel first. A selection containing one working
+  run is refused whole.
+- **Pending `CampaignContact`s are deleted and the campaign total decremented;
+  sent ones are kept** with `profileId` nulled. A sent row is the only record
+  that mail left the user's Gmail.
+- **Mapping a person back to their run goes through
+  `ScrapedProfile.rawData->>'publicIdentifier'`**, never slug-to-slug —
+  `ProfileUrl.url` holds the Voyager urn and `Profile.profileId` holds the vanity
+  slug. See `tasks/lessons.md`.
+- `qualifiedCount` is **recomputed**, not decremented.
 
 ## Email finding
 
@@ -120,9 +211,11 @@ relaying a token minted in the extension. The token is single-use and expires
 in minutes, so a relay still requires a live browser per lookup. Use a provider
 that sells API access instead; that is what layer 1 is for.
 
-**Outbound port 25 decides whether anything gets verified.** Blocked on most
-hosts; if blocked, every result is a `pattern_guess` rather than a verified
-address. Check before trusting verdicts:
+**Outbound port 25 is BLOCKED on the VM. Measured 2026-08-09**
+(`connect EHOSTUNREACH 142.251.127.27:25`), and permanently so unless the
+university opens it. Every server-side lookup there ends as a `pattern_guess`,
+which makes the extension's Mailmeteor driver the only free path to a verified
+address. Re-measure only if the host changes:
 
 ```bash
 npx tsx src/scratch-emailfinder-probe.ts --smtp-only
@@ -197,7 +290,8 @@ client/src/
   components/        DashboardLayout (Mantine AppShell)
 ```
 
-Screens: Runs, Results, Campaigns, Campaign detail, Settings.
+Screens: Runs, Run detail (`/runs/:id`), Results, Campaigns, Campaign detail,
+Settings (four tabs), Setup checklist (`/setup`, where registration lands).
 
 **Runs is polled, not streamed** (3s while a job is active, 10s for the list).
 Job progress is driven by the extension over WebSocket, so there is no
@@ -354,10 +448,10 @@ Things that will waste your time otherwise:
 - **Registration is closed once any user exists.** On an empty database the
   first sign-up is free; otherwise start the server with `REGISTRATION_TOKEN=…`
   and enter it as the invite code.
-- **`TELEGRAM_BOT_TOKEN` collides with the deployed VM instance.** Both poll the
-  same token, Telegram allows one poller, and the log fills with 409 Conflict
-  errors. Comment it out of `server/.env` while working locally — it is optional
-  in `env.ts`.
+- **`TELEGRAM_BOT_TOKEN` collides with the deployed VM instance.** Telegram
+  allows one poller per token. Set `ENABLE_TELEGRAM=false` locally rather than
+  editing the token out. The poller now gives up after five 409s with a single
+  warning, but the notifications from whichever process loses are simply off.
 - **Redis must be running** or the server exits at boot (see Outreach).
 - **The Results screen needs data.** `GET /api/profiles` only returns profiles
   linked to your user through `OutreachLog`, so a fresh account sees the empty

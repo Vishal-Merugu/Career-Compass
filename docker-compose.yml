@@ -41,6 +41,9 @@ services:
       NODE_ENV: production
       JWT_SECRET: ${JWT_SECRET:-generate_a_random_32_character_long_secret_key}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      # One poller per token. Set false on any instance that should not own
+      # the bot — two pollers produce a 409 every few seconds, forever.
+      ENABLE_TELEGRAM: ${ENABLE_TELEGRAM:-true}
       # Every variable the server reads must be named here. Compose substitutes
       # ${...} from the .env in the project directory, but a variable that is
       # not listed simply never reaches the container — setting it in
@@ -53,6 +56,13 @@ services:
       # fall through to patterns + SMTP. 100 free credits on signup; billed
       # per valid email found. https://anymailfinder.com/email-finder-api
       ANYMAILFINDER_API_KEY: ${ANYMAILFINDER_API_KEY}
+      # What `llmProvider: 'server'` — the default for new accounts — resolves
+      # to. `host.docker.internal` pairs with the `extra_hosts` entry below and
+      # is how this container reaches an Ollama running on the Docker host;
+      # `localhost` would be the container itself. The model must be one the
+      # host has actually pulled (`ollama list`).
+      DEFAULT_LLM_URL: ${DEFAULT_LLM_URL:-http://host.docker.internal:11434}
+      DEFAULT_LLM_MODEL: ${DEFAULT_LLM_MODEL:-mistral-small:24b}
       # Identity used in the SMTP RCPT probe. A real domain you control makes
       # the probe look like an ordinary sender rather than a forged one; some
       # mail servers reject a MAIL FROM whose domain does not resolve.

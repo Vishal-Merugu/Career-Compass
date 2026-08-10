@@ -11,6 +11,7 @@ import {
   Loader,
   Modal,
   Progress,
+  Radio,
   Select,
   SimpleGrid,
   Skeleton,
@@ -28,8 +29,10 @@ import {
   IconMail,
   IconMailPlus,
   IconMailSearch,
+  IconRadar,
   IconRefresh,
   IconSearch,
+  IconTrash,
   IconUsers,
 } from '@tabler/icons-react';
 import {
@@ -38,15 +41,19 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import type {
   AddContactsResponse,
   Campaign,
   CampaignsResponse,
+  DeleteResponse,
+  JobsResponse,
   Profile,
   ProfilesResponse,
 } from '../api/types';
+import { DeleteConfirmModal } from '../components/DeleteConfirmModal';
+import { ProfileDrawer } from '../components/ProfileDrawer';
 import { EmptyState } from '../components/EmptyState';
 import { StatTile } from '../components/StatTile';
 import { useEmailLookups } from '../hooks/useEmailLookups';
@@ -282,6 +289,27 @@ export function ResultsPage() {
   const [filter, setFilter] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
+  const [detail, setDetail] = useState<Profile | null>(null);
+  /** The profiles the open confirmation is about — a row, or the selection. */
+  const [deleting, setDeleting] = useState<string[]>([]);
+  /**
+   * Whether a scoped delete removes the person from this run or from the
+   * account. Only asked while the view is filtered to one run, because that is
+   * the only time the two differ — and they differ enough to be worth a
+   * question rather than a guess.
+   */
+  const [scope, setScope] = useState<'run' | 'everywhere'>('run');
+  const queryClient = useQueryClient();
+
+  // The run filter lives in the URL so a run's detail page can link straight
+  // at "the people this run found", and so the scoped view survives a refresh.
+  const [params, setParams] = useSearchParams();
+  const jobId = params.get('jobId');
+
+  const { data: runs } = useQuery({
+    queryKey: ['jobs'],
+    queryFn: () => api.get<JobsResponse>('/api/jobs'),
+  });
   const {
     stats: lookupStats,
     lookups,
@@ -308,11 +336,13 @@ export function ResultsPage() {
     hasNextPage,
     isFetchingNextPage,
   } = useInfiniteQuery({
-    queryKey: ['profiles'],
+    queryKey: ['profiles', jobId],
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>
       api.get<ProfilesResponse>(
-        `/api/profiles?skip=${pageParam}&take=${PAGE_SIZE}`,
+        `/api/profiles?skip=${pageParam}&take=${PAGE_SIZE}${
+          jobId ? `&jobId=${encodeURIComponent(jobId)}` : ''
+        }`,
       ),
     getNextPageParam: (last) => {
       const loaded = last.skip + last.profiles.length;
@@ -415,25 +445,53 @@ export function ResultsPage() {
       ? `${Math.round((stats.withEmail / stats.total) * 100)}% of all profiles`
       : undefined;
 
+  const runOptions = (runs?.jobs ?? []).map((job) => {
+    const company =
+      /\/company\/([^/?#]+)/.exec(job.searchParams.companyUrl ?? '')?.[1] ??
+      'run';
+    return {
+      value: job.id,
+      label: `${company} · ${new Date(job.createdAt).toLocaleDateString()}`,
+    };
+  });
+
   return (
     <Stack gap="xl">
       <Group justify="space-between" align="flex-end" wrap="wrap" gap="md">
         <Box>
           <Title order={2}>Results</Title>
           <Text c="dimmed" fz={14} mt={4}>
-            Every profile scraped and qualified for your account.
+            {jobId
+              ? 'Profiles qualified by one run.'
+              : 'Every profile scraped and qualified for your account.'}
           </Text>
         </Box>
-        <Button
-          variant="default"
-          leftSection={<IconRefresh size={15} />}
-          // `isFetching` is also true while a next page loads; that has its own
-          // spinner in the footer and should not spin this button too.
-          loading={isFetching && !isPending && !isFetchingNextPage}
-          onClick={() => void refetch()}
-        >
-          Refresh
-        </Button>
+        <Group gap="sm">
+          {/* Results is cross-run by design — it is what campaigns select from
+              — so this scopes the view rather than replacing it. */}
+          <Select
+            size="sm"
+            w={260}
+            placeholder="All runs"
+            clearable
+            value={jobId}
+            data={runOptions}
+            onChange={(value) =>
+              setParams(value ? { jobId: value } : {}, { replace: true })
+            }
+            leftSection={<IconRadar size={15} />}
+          />
+          <Button
+            variant="default"
+            leftSection={<IconRefresh size={15} />}
+            // `isFetching` is also true while a next page loads; that has its own
+            // spinner in the footer and should not spin this button too.
+            loading={isFetching && !isPending && !isFetchingNextPage}
+            onClick={() => void refetch()}
+          >
+            Refresh
+          </Button>
+        </Group>
       </Group>
 
       <SimpleGrid cols={{ base: 1, xs: 3 }} spacing="md">
@@ -608,6 +666,17 @@ export function ResultsPage() {
                   Add {mailableIds.length} to campaign
                 </Button>
               </Tooltip>
+              <Tooltip label="Delete these profiles and everything behind them">
+                <Button
+                  size="sm"
+                  variant="light"
+                  color="red"
+                  leftSection={<IconTrash size={15} />}
+                  onClick={() => setDeleting(lookupIds)}
+                >
+                  Delete ({lookupIds.length})
+                </Button>
+              </Tooltip>
               <Button
                 size="sm"
                 variant="subtle"
@@ -695,8 +764,10 @@ export function ResultsPage() {
                   <Table.Tr
                     key={p.id}
                     data-selected={selected.has(p.id) || undefined}
+                    className={classes.clickableRow}
+                    onClick={() => setDetail(p)}
                   >
-                    <Table.Td>
+                    <Table.Td onClick={(e) => e.stopPropagation()}>
                       <Checkbox
                         size="xs"
                         aria-label={`Select ${fullName(p)}`}
@@ -877,6 +948,75 @@ export function ResultsPage() {
           setSelected(new Set());
         }}
       />
+
+      <ProfileDrawer
+        profile={detail}
+        onClose={() => setDetail(null)}
+        onDelete={(p) => setDeleting([p.id])}
+      />
+
+      <DeleteConfirmModal
+        opened={deleting.length > 0}
+        onClose={() => setDeleting([])}
+        title={
+          deleting.length === 1
+            ? 'Delete this profile?'
+            : `Delete ${deleting.length} profiles?`
+        }
+        confirmLabel={
+          deleting.length === 1 ? 'Delete profile' : `Delete ${deleting.length}`
+        }
+        mutationFn={() =>
+          api.del<DeleteResponse>('/api/profiles', {
+            profileIds: deleting,
+            // No jobId means "everywhere", which is also the only sane meaning
+            // of a delete pressed on the unfiltered table.
+            ...(jobId && scope === 'run' ? { jobId } : {}),
+          })
+        }
+        onDeleted={() => {
+          setSelected(new Set());
+          setDetail(null);
+          void queryClient.invalidateQueries({ queryKey: ['profiles'] });
+          // Deleting people changes a run's qualified count.
+          void queryClient.invalidateQueries({ queryKey: ['jobs'] });
+          void queryClient.invalidateQueries({ queryKey: ['job-status'] });
+        }}
+      >
+        <Stack gap="sm">
+          {jobId ? (
+            <Radio.Group
+              value={scope}
+              onChange={(value) => setScope(value as 'run' | 'everywhere')}
+              label="How far should this go?"
+            >
+              <Stack gap={8} mt={8}>
+                <Radio
+                  value="run"
+                  label="Remove from this run only"
+                  description="They stay on Results if another run also found them. This run's copy of the scrape and the decision are deleted."
+                />
+                <Radio
+                  value="everywhere"
+                  label="Delete from every run"
+                  description="Removed from Results entirely, along with every scrape and decision any run holds for them."
+                />
+              </Stack>
+            </Radio.Group>
+          ) : (
+            <Text fz={13.5}>
+              Removed from Results, along with every scrape and decision any run
+              holds for them. Runs that found them are otherwise untouched.
+            </Text>
+          )}
+
+          <Text fz={13.5} c="dimmed">
+            Emails already sent stay on their campaign as a record. Anything
+            still queued to {deleting.length === 1 ? 'them' : 'these people'} is
+            cancelled.
+          </Text>
+        </Stack>
+      </DeleteConfirmModal>
     </Stack>
   );
 }

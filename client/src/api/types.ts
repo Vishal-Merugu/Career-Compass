@@ -128,7 +128,138 @@ export interface LookupProgress {
   stats?: LookupStats;
 }
 
+// ─── Settings ────────────────────────────────────────────────────
+
+/** Mirrors `JobErrorCode` in `server/src/errors/jobErrors.ts`. */
+export type JobErrorCode =
+  | 'LLM_UNREACHABLE'
+  | 'LLM_MODEL_NOT_FOUND'
+  | 'LLM_AUTH'
+  | 'LLM_RATE_LIMIT'
+  | 'LLM_QUOTA'
+  | 'LLM_BAD_JSON'
+  | 'SESSION_MISSING'
+  | 'SESSION_EXPIRED'
+  | 'LINKEDIN_RATE_LIMIT'
+  | 'COMPANY_NOT_FOUND'
+  | 'NO_RESULTS'
+  | 'SMTP_BLOCKED'
+  | 'UNKNOWN';
+
+export type LlmProvider = 'server' | 'ollama' | 'gemini' | 'openrouter';
+
+/** `GET/PUT /api/settings/ai`. The key itself is never sent. */
+export interface AiSettings {
+  llmProvider: LlmProvider;
+  llmUrl: string;
+  llmModel: string;
+  llmApiKeySet: boolean;
+  builtIn: { url: string; model: string };
+}
+
+export interface AiSettingsResponse {
+  ok: true;
+  settings: AiSettings;
+}
+
+/** `POST /api/settings/ai/check` — always performed by the server. */
+export interface AiCheckResponse {
+  ok: true;
+  checkedFrom: 'server';
+  reachable: boolean;
+  url?: string;
+  models: string[];
+  check: PreflightCheck;
+}
+
+export interface FinderSettings {
+  searchPrompt: string;
+  usingDefaultPrompt: boolean;
+  dailyLimit: number;
+  emailFinderEnabled: boolean;
+  userContext: string | null;
+}
+
+export interface FinderSettingsResponse {
+  ok: true;
+  settings: FinderSettings;
+}
+
+/** One gate, from `preflightJob` on the server. */
+export interface PreflightCheck {
+  ok: boolean;
+  code?: JobErrorCode;
+  message?: string;
+  fix?: string;
+  detail?: string;
+}
+
+export interface SetupStatusResponse {
+  ok: true;
+  setup: {
+    aiModel: PreflightCheck;
+    linkedinSession: PreflightCheck;
+    outreachEmail: PreflightCheck & { optional: true };
+    readyToRun: boolean;
+  };
+}
+
+/** `GET /api/settings/telegram`. */
+export interface TelegramStatusResponse {
+  ok: true;
+  telegram: { linked: boolean; botConfigured: boolean };
+}
+
+/** `POST /api/settings/telegram/code` — single use, short lived. */
+export interface TelegramCodeResponse {
+  ok: true;
+  code: string;
+  expiresInSeconds: number;
+}
+
+/** `GET /api/profiles/:id` — the fields the list payload deliberately omits. */
+export interface ProfileDetailResponse {
+  ok: true;
+  profile: Profile & {
+    about: string | null;
+    qualificationReason: string | null;
+    searchJobId: string | null;
+  };
+}
+
+/** `GET /api/session`. Cookie values are never included. */
+export interface LinkedInSessionState {
+  present: boolean;
+  isValid: boolean;
+  invalidReason: string | null;
+  importedAt: string | null;
+  lastChecked: string | null;
+  missingCritical: string[];
+}
+
+export interface SessionResponse {
+  ok: true;
+  session: LinkedInSessionState;
+}
+
+export interface PreflightResponse {
+  ok: true;
+  preflight: {
+    ok: boolean;
+    checks: { linkedinSession: PreflightCheck; aiModel: PreflightCheck };
+    code?: JobErrorCode;
+    message?: string;
+    fix?: string;
+  };
+}
+
 // ─── Search jobs ─────────────────────────────────────────────────
+
+/** What the server says went wrong, already written for a human. */
+export interface JobFailure {
+  message: string;
+  fix: string;
+}
 
 /** `GET /api/jobs`. */
 export interface SearchJob {
@@ -140,11 +271,67 @@ export interface SearchJob {
   createdAt: string;
   searchParams: { companyUrl?: string; prompt?: string; batchSize?: number };
   totalUrls: number;
+  failureCode: JobErrorCode | null;
+  failureDetail: string | null;
+  failure: JobFailure | null;
+  configSnapshot: {
+    llmProvider?: string;
+    llmModel?: string;
+    companyUrl?: string;
+    limitRequested?: number;
+    batchSize?: number;
+  } | null;
+}
+
+/** `GET /api/jobs/:id/events`. */
+export interface JobEvent {
+  id: string;
+  jobId: string;
+  at: string;
+  level: 'info' | 'warn' | 'error';
+  stage: 'run' | 'collect' | 'scrape' | 'qualify' | 'publish' | 'email';
+  code: string;
+  message: string;
+  detail: string | null;
+  count: number;
+  profileRef: string | null;
+}
+
+export interface JobEventsResponse {
+  ok: true;
+  events: JobEvent[];
 }
 
 export interface JobsResponse {
   ok: true;
   jobs: SearchJob[];
+}
+
+/**
+ * What a delete actually removed.
+ *
+ * Mirrors `DeletionSummary` in `server/src/services/dataDeletion.service.ts`.
+ * Shown rather than swallowed: a destructive action that reports only
+ * "deleted" looks identical to one that quietly did nothing, and the whole
+ * point of this feature is that nothing is left behind.
+ */
+export interface DeletionSummary {
+  runs: number;
+  collectedUrls: number;
+  scrapedProfiles: number;
+  decisions: number;
+  events: number;
+  outreachLogs: number;
+  profiles: number;
+  emailLookups: number;
+  companies: number;
+  campaignContactsRemoved: number;
+  campaignContactsKept: number;
+}
+
+export interface DeleteResponse {
+  ok: true;
+  deleted: DeletionSummary;
 }
 
 /** `GET /api/jobs/:id/status`. */
@@ -157,12 +344,21 @@ export interface JobStatusResponse {
     qualifiedCount: number;
     currentBatchNumber: number;
     createdAt: string;
+    searchParams?: { companyUrl?: string; prompt?: string };
+    failureCode: JobErrorCode | null;
+    failureDetail: string | null;
+    failure: JobFailure | null;
+    configSnapshot: SearchJob['configSnapshot'];
   };
   stats: {
     collectedCount: number;
     scrapedCount: number;
     remainingCount: number;
     failedCount: number;
+    /** The model answered "no". A result. */
+    rejectedCount: number;
+    /** The model never answered. Not a result — retryable on resume. */
+    erroredCount: number;
     inFlightCount: number;
   };
   decisions: Array<{

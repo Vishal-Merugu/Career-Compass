@@ -6,15 +6,36 @@ import { ConnectionRegistry } from '../ws-gateway/connectionRegistry.js';
 import { getIo } from '../ws-gateway/index.js';
 import { ServerCommands } from '../ws-gateway/events.js';
 import { dispatchNext } from '../orchestrator/dispatchNext.js';
+import { consumeLinkCode } from './linkCodes.js';
+
+/**
+ * Consecutive 409s before polling gives up.
+ *
+ * Telegram allows exactly one poller per token. When a second process starts —
+ * which happens every time someone runs the server locally while the VM is up —
+ * both get `409 Conflict` forever, every few seconds, at error level.
+ *
+ * That is not a hypothetical. On 2026-08-09 it filled `docker logs cc-server`
+ * so completely that a run failing on all 368 of its profiles left no visible
+ * trace, and the failure was found by querying the database instead. A log
+ * nobody can read is worse than no log, because it looks like diligence.
+ */
+const POLLING_CONFLICT_LIMIT = 5;
 
 class TelegramBotService {
   private bot: TelegramBot | null = null;
   private userStates: Map<number, string> = new Map();
+  private consecutiveConflicts = 0;
 
   /**
    * Initialize and trigger polling for the Telegram bot
    */
   public async initialize(): Promise<void> {
+    if (!env.ENABLE_TELEGRAM) {
+      logger.info('Telegram bot disabled by ENABLE_TELEGRAM=false.');
+      return;
+    }
+
     if (!env.TELEGRAM_BOT_TOKEN) {
       logger.warn(
         'TELEGRAM_BOT_TOKEN is not configured. Telegram bot features will be offline.',
@@ -26,18 +47,49 @@ class TelegramBotService {
     try {
       this.bot = new TelegramBot(env.TELEGRAM_BOT_TOKEN, { polling: true });
 
-      this.bot.on('polling_error', (error: any) => {
-        logger.error(
-          { code: error.code, message: error.message },
-          'Telegram Bot polling error',
-        );
-        if (error.message && error.message.includes('401')) {
-          logger.warn(
-            '⚠️ Telegram Bot Token appears to be invalid (401 Unauthorized). Stopping polling...',
+      this.bot.on(
+        'polling_error',
+        (error: { code?: string; message?: string }) => {
+          const message = error.message ?? '';
+
+          if (message.includes('401')) {
+            logger.warn(
+              '⚠️ Telegram Bot Token appears to be invalid (401 Unauthorized). Stopping polling...',
+            );
+            this.bot?.stopPolling();
+            return;
+          }
+
+          // Another process holds this token. Say so once, then stop — retrying
+          // cannot win, and the attempt is what drowns the log.
+          if (message.includes('409')) {
+            this.consecutiveConflicts += 1;
+
+            if (this.consecutiveConflicts === 1) {
+              logger.warn(
+                'Telegram: another instance is already polling this token. ' +
+                  'Giving it a few seconds before giving up.',
+              );
+            }
+
+            if (this.consecutiveConflicts >= POLLING_CONFLICT_LIMIT) {
+              logger.warn(
+                `Telegram: stopped polling after ${POLLING_CONFLICT_LIMIT} conflicts. ` +
+                  'Only one process may poll a bot token — set ENABLE_TELEGRAM=false here, ' +
+                  'or stop the other instance. Notifications from this process are off.',
+              );
+              this.bot?.stopPolling();
+            }
+            return;
+          }
+
+          this.consecutiveConflicts = 0;
+          logger.error(
+            { code: error.code, message },
+            'Telegram Bot polling error',
           );
-          this.bot?.stopPolling();
-        }
-      });
+        },
+      );
 
       this.registerListeners();
       logger.info(
@@ -116,33 +168,45 @@ class TelegramBotService {
           { parse_mode: 'Markdown' },
         );
       } else {
+        // Points at the dashboard, not the extension. The extension's config
+        // page was deleted when settings moved (ADR 0008), so the old wording
+        // told people to look somewhere that no longer exists.
         await this.sendMessage(
           chatId,
-          `👋 Welcome to *CareerCompass*!\n\nTo control your campaigns from your phone, link your account by running:\n\n\`/link <your_api_key>\`\n\nRetrieve your API key from your browser extension configuration settings page.`,
+          `👋 Welcome to *CareerCompass*!\n\nTo control your runs from your phone, open the dashboard, go to *Settings → Telegram*, and press *Generate code*. Then send it here:\n\n\`/link ABCD2345\``,
           { parse_mode: 'Markdown' },
         );
       }
     });
 
-    // Linking command /link <api_key>
+    // Linking command /link <code>
     this.bot.onText(/\/link (.+)/, async (msg, match) => {
       const chatId = msg.chat.id;
-      const apiKey = match?.[1]?.trim();
+      const secret = match?.[1]?.trim();
 
-      if (!apiKey) {
+      if (!secret) {
         await this.sendMessage(
           chatId,
-          '❌ Please specify your API key: `/link <api_key>`',
+          '❌ Please include your code: `/link ABCD2345`',
         );
         return;
       }
 
       try {
-        const user = await prisma.user.findUnique({ where: { apiKey } });
+        // A short-lived code from Settings → Telegram. The API key is still
+        // accepted so anyone mid-flow with the old instructions is not stranded,
+        // but it is not what we tell people to send: it never expires, and a
+        // chat message is a permanent record on someone else's servers.
+        const userId = consumeLinkCode(secret);
+
+        const user = userId
+          ? await prisma.user.findUnique({ where: { id: userId } })
+          : await prisma.user.findUnique({ where: { apiKey: secret } });
+
         if (!user) {
           await this.sendMessage(
             chatId,
-            '❌ Invalid API key. Verify key matches extension settings.',
+            '❌ That code is wrong or has expired. Generate a new one in the dashboard under Settings → Telegram.',
           );
           return;
         }
@@ -173,7 +237,7 @@ class TelegramBotService {
       if (!user) {
         await this.sendMessage(
           chatId,
-          '🔒 Please link your account first using `/link <api_key>`',
+          '🔒 Link your account first. Generate a code in the dashboard under Settings → Telegram, then send `/link <code>`.',
         );
         return;
       }
@@ -211,7 +275,7 @@ class TelegramBotService {
       if (!user) {
         await this.sendMessage(
           chatId,
-          '🔒 Please link your account first using `/link <api_key>`',
+          '🔒 Link your account first. Generate a code in the dashboard under Settings → Telegram, then send `/link <code>`.',
         );
         return;
       }
@@ -251,7 +315,7 @@ class TelegramBotService {
       if (!user) {
         await this.sendMessage(
           chatId,
-          '🔒 Please link your account first using `/link <api_key>`',
+          '🔒 Link your account first. Generate a code in the dashboard under Settings → Telegram, then send `/link <code>`.',
         );
         return;
       }
@@ -796,12 +860,11 @@ class TelegramBotService {
 
       const configText =
         `*CareerCompass Configurations* ⚙️\n\n` +
-        `- Keywords: \`${user.config?.keywords || 'None'}\`\n` +
-        `- Locations: \`${user.config?.locations || 'None'}\`\n` +
         `- Daily Connection Limit: \`${user.config?.dailyLimit || 15}\`\n` +
         `- Email Finder Enabled: \`${user.config?.emailFinderEnabled ? 'Yes' : 'No'}\`\n` +
-        `- LLM Provider: \`${user.config?.llmProvider || 'ollama'}\`\n` +
-        `- LLM Model: \`${user.config?.llmModel || 'qwen2.5:1.5b'}\``;
+        `- AI Provider: \`${user.config?.llmProvider || 'server'}\`\n` +
+        `- AI Model: \`${user.config?.llmModel || 'the instance default'}\`\n\n` +
+        `Change these in the dashboard under Settings.`;
 
       await this.sendMessage(chatId, configText, { parse_mode: 'Markdown' });
     });
