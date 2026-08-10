@@ -29,6 +29,7 @@ import {
 } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
+import { toast } from '../../lib/toast';
 import type {
   AiCheckResponse,
   AiSettings,
@@ -114,6 +115,7 @@ export function AiModelSection() {
         ...(apiKey ? { llmApiKey: apiKey } : {}),
       }),
     onSuccess: (res) => {
+      toast.success('AI model settings saved.');
       queryClient.setQueryData<AiSettingsResponse>(AI_KEY, res);
       setApiKey('');
       // The banner and the New run form both read this.

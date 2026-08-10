@@ -75,6 +75,11 @@ export function DeleteConfirmModal({
 
   const remove = useMutation({
     mutationFn,
+    // Both halves of this dialog are deliberately not toasts. The failure is
+    // rendered above the buttons so the user can retry from the same place,
+    // and the receipt below is the proof that the delete removed what it
+    // claimed to — it stays until dismissed, which a toast cannot do.
+    meta: { silenceErrorToast: true },
     onSuccess: (res) => {
       setSummary(res.deleted);
       onDeleted?.(res.deleted);

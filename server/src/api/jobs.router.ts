@@ -27,6 +27,28 @@ const createJobSchema = z.object({
 });
 
 /**
+ * `skip`/`take` for the Runs list.
+ *
+ * Capped at 100 because every row the dashboard renders opens its own
+ * `/jobs/:id/status` poll — an unbounded list turned one screen into N
+ * concurrent pollers every 3 s. The cap bounds the fan-out, not just the
+ * payload.
+ */
+const paginationSchema = z.object({
+  skip: z.coerce.number().int().min(0).default(0),
+  take: z.coerce.number().int().min(1).max(100).default(25),
+});
+
+/** Mirrors `ACTIVE_STATUSES` in `client/src/lib/runStatus.ts`. */
+const ACTIVE_JOB_STATUSES = ['initializing', 'collecting_urls', 'scraping'];
+
+/**
+ * Mirrors `RESUMABLE_STATUSES` / `needsAttention` in the same file: runs that
+ * will not progress until someone does something.
+ */
+const STUCK_JOB_STATUSES = ['paused_error', 'paused_session'];
+
+/**
  * Start a new Search Job
  */
 /**
@@ -118,28 +140,56 @@ router.get('/jobs', requireAuthOrApiKey, async (req, res, next) => {
   try {
     const userId = req.user!.id;
 
-    const jobs = await prisma.searchJob.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' },
-      select: {
-        id: true,
-        status: true,
-        limitRequested: true,
-        qualifiedCount: true,
-        currentBatchNumber: true,
-        createdAt: true,
-        searchParams: true,
-        failureCode: true,
-        failureDetail: true,
-        configSnapshot: true,
-        _count: {
-          select: { profileUrls: true },
+    const parsed = paginationSchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid pagination parameters', {
+        issues: parsed.error.errors,
+      });
+    }
+    const { skip, take } = parsed.data;
+    const where = { userId };
+
+    // The three headline tiles, counted over EVERY run rather than the page.
+    // "Needs attention" is the one number on that screen meant to prompt an
+    // action, so a paused run on page 2 not being counted would defeat the
+    // whole tile — and a "Runs: 25" that means "25 per page" is just wrong.
+    const [jobs, total, activeCount, stuckCount] = await Promise.all([
+      prisma.searchJob.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take,
+        select: {
+          id: true,
+          status: true,
+          limitRequested: true,
+          qualifiedCount: true,
+          currentBatchNumber: true,
+          createdAt: true,
+          searchParams: true,
+          failureCode: true,
+          failureDetail: true,
+          configSnapshot: true,
+          _count: {
+            select: { profileUrls: true },
+          },
         },
-      },
-    });
+      }),
+      prisma.searchJob.count({ where }),
+      prisma.searchJob.count({
+        where: { ...where, status: { in: ACTIVE_JOB_STATUSES } },
+      }),
+      prisma.searchJob.count({
+        where: { ...where, status: { in: STUCK_JOB_STATUSES } },
+      }),
+    ]);
 
     res.status(200).json({
       ok: true,
+      skip,
+      take,
+      total,
+      stats: { total, active: activeCount, needsAttention: stuckCount },
       jobs: jobs.map((job) => ({
         id: job.id,
         status: job.status,
@@ -198,19 +248,15 @@ router.get('/jobs/:id/status', requireAuthOrApiKey, async (req, res, next) => {
       },
     });
 
-    // Fetch decisions summary (only qualified ones for the UI)
-    const decisions = await prisma.profileDecision.findMany({
-      where: {
-        profile: {
-          profileUrl: {
-            jobId,
-          },
-        },
-        isQualified: true,
-      },
-      include: {
-        profile: true,
-      },
+    // A count, not the rows. This used to `findMany` every qualified decision
+    // with `include: { profile: true }` — which ships each profile's `rawData`
+    // — purely to fall back to `decisions.length` and to fill a `decisions`
+    // array no screen ever read. The Runs list polls this endpoint once per
+    // row every 3 s, so a 400-profile run was re-serialising megabytes of
+    // scraped JSON per tick. The people this run found are on Results, which
+    // is paginated and field-selected precisely for that.
+    const qualifiedDecisionCount = await prisma.profileDecision.count({
+      where: { profile: { profileUrl: { jobId } }, isQualified: true },
     });
 
     // Profiles the model was asked about but never answered on. Reported apart
@@ -225,7 +271,7 @@ router.get('/jobs/:id/status', requireAuthOrApiKey, async (req, res, next) => {
       }),
     ]);
 
-    const qualifiedCount = job.qualifiedCount || decisions.length;
+    const qualifiedCount = job.qualifiedCount || qualifiedDecisionCount;
 
     res.status(200).json({
       ok: true,
@@ -254,17 +300,6 @@ router.get('/jobs/:id/status', requireAuthOrApiKey, async (req, res, next) => {
         inFlightCount:
           collectedCount - scrapedCount - remainingCount - failedCount,
       },
-      decisions: decisions.map((d) => {
-        const raw = d.profile.rawData as any;
-        return {
-          name: d.profile.name,
-          headline: d.profile.headline,
-          title: d.profile.headline,
-          about: raw?.about || '',
-          isQualified: d.isQualified,
-          email: d.email,
-        };
-      }),
     });
   } catch (err) {
     next(err);

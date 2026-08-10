@@ -57,6 +57,7 @@ import { ProfileDrawer } from '../components/ProfileDrawer';
 import { EmptyState } from '../components/EmptyState';
 import { StatTile } from '../components/StatTile';
 import { useEmailLookups } from '../hooks/useEmailLookups';
+import { toast } from '../lib/toast';
 import { CampaignForm } from './CampaignsPage';
 import classes from './ResultsPage.module.css';
 
@@ -198,7 +199,31 @@ function AddToCampaignModal({
       api.post<AddContactsResponse>(`/api/campaigns/${campaignId}/contacts`, {
         profileIds,
       }),
-    onSuccess: (_res, campaignId) => {
+    // `add.error` is rendered at the top of this modal.
+    meta: { silenceErrorToast: true },
+    onSuccess: (res, campaignId) => {
+      // The modal promised "you will be told how many" are skipped, and then
+      // navigated away without telling anyone. A duplicate is the common case
+      // — adding the same person to a campaign twice is an easy mistake and
+      // the server silently drops it.
+      const skipped = res.skippedNoEmail + res.skippedDuplicate;
+      const detail = [
+        res.skippedDuplicate > 0 && `${res.skippedDuplicate} already there`,
+        res.skippedNoEmail > 0 && `${res.skippedNoEmail} with no address`,
+      ]
+        .filter(Boolean)
+        .join(', ');
+
+      if (res.added === 0) {
+        toast.warning(`Nothing added — ${detail || 'all were skipped'}.`);
+      } else if (skipped > 0) {
+        toast.success(`${res.added} added, ${skipped} skipped (${detail}).`);
+      } else {
+        toast.success(
+          `${res.added} ${res.added === 1 ? 'contact' : 'contacts'} added.`,
+        );
+      }
+
       void queryClient.invalidateQueries({ queryKey: ['campaigns'] });
       onDone();
       navigate(`/campaigns/${campaignId}`);
@@ -306,9 +331,14 @@ export function ResultsPage() {
   const [params, setParams] = useSearchParams();
   const jobId = params.get('jobId');
 
+  // Feeds the "All runs" filter below, so it wants as many runs as the server
+  // will give it in one go rather than the paginated default the Runs screen
+  // uses — a run missing from this dropdown cannot be filtered to at all.
+  // 100 is the server's cap; past that the Select needs a search endpoint, not
+  // a bigger number.
   const { data: runs } = useQuery({
-    queryKey: ['jobs'],
-    queryFn: () => api.get<JobsResponse>('/api/jobs'),
+    queryKey: ['jobs', 'filter-options'],
+    queryFn: () => api.get<JobsResponse>('/api/jobs?take=100'),
   });
   const {
     stats: lookupStats,

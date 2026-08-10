@@ -7,9 +7,9 @@
 
 .tableWrap {
   composes: tableWrap from '../styles/dataPanel.module.css';
-  /* No toolbar and no pagination footer here, so there is more room than
-     Results gets. */
-  --table-max-height: min(calc(100vh - 300px), 760px);
+  /* A pagination footer below but no toolbar above, so this sits between
+     Results and the campaign screens. */
+  --table-max-height: min(calc(100vh - 340px), 720px);
 }
 
 .table {

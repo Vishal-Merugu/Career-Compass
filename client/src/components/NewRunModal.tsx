@@ -31,6 +31,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { api, ApiError } from '../api/client';
+import { toast } from '../lib/toast';
 import type { FinderSettingsResponse, PreflightResponse } from '../api/types';
 
 interface CreatedJob {
@@ -102,7 +103,17 @@ export function NewRunModal({
           batchSize,
         },
       }),
+    // A 422 from `POST /api/jobs` carries a `code`, a `message` and a `fix`,
+    // and this modal renders all three. That is instruction, not confirmation
+    // — it belongs in a box the user can read at their own pace, not in
+    // something that disappears while they are still reading it.
+    meta: { silenceErrorToast: true },
     onSuccess: () => {
+      // The modal closes onto the Runs list, where the new row takes up to
+      // 10 s to poll in. Without this the screen looks unchanged.
+      toast.success(
+        'Run started. It will appear in the list and update as it works.',
+      );
       void queryClient.invalidateQueries({ queryKey: ['jobs'] });
       onClose();
       setCompanyUrl('');

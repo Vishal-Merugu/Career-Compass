@@ -58,14 +58,32 @@ import { DeleteConfirmModal } from '../components/DeleteConfirmModal';
 import { EmptyState } from '../components/EmptyState';
 import { NewRunModal } from '../components/NewRunModal';
 import { StatTile } from '../components/StatTile';
+import { TablePager } from '../components/TablePager';
 import {
   ACTIVE_STATUSES,
   RESUMABLE_STATUSES,
-  needsAttention,
   statusColor,
   statusLabel,
 } from '../lib/runStatus';
+import { toast } from '../lib/toast';
 import classes from './RunsPage.module.css';
+
+/**
+ * Matches the server's default in `server/src/api/jobs.router.ts`.
+ *
+ * Small for a table, and that is the point: every row on this screen opens its
+ * own `/jobs/:id/status` poll, so the page size is also the concurrent-poller
+ * count.
+ */
+const PAGE_SIZE = 25;
+
+/** What each control says once it has actually happened. */
+const CONTROL_DONE: Record<'pause' | 'resume' | 'cancel', string> = {
+  pause:
+    'Run paused. Nothing further is fetched from LinkedIn until you resume.',
+  resume: 'Run resumed.',
+  cancel: 'Run cancelled. Every queued profile was skipped.',
+};
 
 function companyFromUrl(job: SearchJob): string {
   const url = job.searchParams.companyUrl;
@@ -97,10 +115,16 @@ function JobRow({
     refetchInterval: active ? 3_000 : false,
   });
 
+  // These three had no success feedback and no error feedback whatsoever. The
+  // row does eventually re-render from the next poll, but up to 3 s later —
+  // long enough to read as a dead button and get pressed again. Errors now go
+  // through the global handler in `main.tsx`.
   const control = useMutation({
     mutationFn: (action: 'pause' | 'resume' | 'cancel') =>
       api.post(`/api/jobs/${job.id}/${action}`),
-    onSuccess: () => {
+    meta: { errorTitle: `Could not change the ${companyFromUrl(job)} run` },
+    onSuccess: (_res, action) => {
+      toast.success(CONTROL_DONE[action], { id: `run-control-${job.id}` });
       void queryClient.invalidateQueries({ queryKey: ['jobs'] });
       void queryClient.invalidateQueries({ queryKey: ['job-status', job.id] });
     },
@@ -261,17 +285,25 @@ export function RunsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   /** The runs the open confirmation is about — one row, or the selection. */
   const [deleting, setDeleting] = useState<string[]>([]);
+  const [skip, setSkip] = useState(0);
   const queryClient = useQueryClient();
 
   const { data, isPending, error, refetch, isFetching } = useQuery({
-    queryKey: ['jobs'],
-    queryFn: () => api.get<JobsResponse>('/api/jobs'),
+    queryKey: ['jobs', skip],
+    queryFn: () =>
+      api.get<JobsResponse>(`/api/jobs?skip=${skip}&take=${PAGE_SIZE}`),
     refetchInterval: 10_000,
+    // Without this the table empties to a skeleton on every page change, which
+    // for a 10 s-polled list reads as the data having gone away.
+    placeholderData: (prev) => prev,
   });
 
   const jobs = data?.jobs ?? [];
-  const active = jobs.filter((j) => ACTIVE_STATUSES.has(j.status));
-  const stuck = jobs.filter((j) => needsAttention(j.status));
+  const total = data?.total ?? 0;
+  // From the server, over every run — NOT derived from `jobs`, which is one
+  // page. Deriving them would make "Needs attention" mean "needs attention on
+  // this page", which is the one reading that makes the tile useless.
+  const stats = data?.stats ?? { total: 0, active: 0, needsAttention: 0 };
   const allIds = jobs.map((j) => j.id);
 
   const toggle = (id: string) =>
@@ -358,17 +390,13 @@ export function RunsPage() {
       </Group>
 
       <SimpleGrid cols={{ base: 1, xs: 3 }} spacing="md">
-        <StatTile label="Runs" value={jobs.length} loading={isPending} />
-        <StatTile
-          label="Active now"
-          value={active.length}
-          loading={isPending}
-        />
+        <StatTile label="Runs" value={stats.total} loading={isPending} />
+        <StatTile label="Active now" value={stats.active} loading={isPending} />
         {/* Replaces a total-qualified tile. Only one number here should ever
             prompt an action, and this is it. */}
         <StatTile
           label="Needs attention"
-          value={stuck.length}
+          value={stats.needsAttention}
           loading={isPending}
         />
       </SimpleGrid>
@@ -396,9 +424,15 @@ export function RunsPage() {
               <Table.Thead>
                 <Table.Tr>
                   <Table.Th w="40px">
+                    {/* Scoped to this page — `allIds` is the page, not the
+                        account. A selection made on page 1 survives paging
+                        away and is still what Delete acts on, which is why
+                        the header count above says how many are selected
+                        rather than leaving it to be inferred from the rows
+                        on screen. */}
                     <Checkbox
                       size="xs"
-                      aria-label="Select all runs"
+                      aria-label="Select every run on this page"
                       checked={
                         allIds.length > 0 &&
                         allIds.every((id) => selected.has(id))
@@ -433,6 +467,25 @@ export function RunsPage() {
               </Table.Tbody>
             </Table>
           </div>
+        )}
+
+        {!isPending && (
+          <TablePager
+            skip={data?.skip ?? 0}
+            take={data?.take ?? PAGE_SIZE}
+            total={total}
+            loaded={jobs.length}
+            noun={['run', 'runs']}
+            // Changing page clears the selection deliberately. `doomed` is
+            // resolved from the loaded page, so a selection spanning pages
+            // would produce a confirmation dialog that names three runs and
+            // deletes five — and this dialog's whole job is saying exactly
+            // what is about to go.
+            onChange={(next) => {
+              setSkip(next);
+              setSelected(new Set());
+            }}
+          />
         )}
       </div>
 

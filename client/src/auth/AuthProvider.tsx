@@ -53,6 +53,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loginMutation = useMutation({
     mutationFn: (vars: { email: string; password: string }) =>
       api.post<LoginResponse>('/api/auth/login', vars),
+    // The sign-in form renders the failure itself, under the fields it is
+    // about — "wrong password" belongs next to the password box, and a toast
+    // in the corner of an otherwise-empty login screen is the wrong place for
+    // the only thing on it that matters.
+    meta: { silenceErrorToast: true },
     onSuccess: (res) => {
       // The response also carries `token`; ignored on purpose — the cookie the
       // server just set is the session. See ADR 0004.
@@ -76,6 +81,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       password: string;
       registrationToken?: string;
     }) => api.post<LoginResponse>('/api/auth/register', vars),
+    // Same reasoning as login — an invite-code rejection has to stay next to
+    // the invite-code field.
+    meta: { silenceErrorToast: true },
     onSuccess: (res) => {
       // Register signs you straight in — the server sets the same session
       // cookie it sets on login, so there is no second round trip.

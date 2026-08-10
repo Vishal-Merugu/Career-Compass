@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import {
+  MutationCache,
   QueryCache,
   QueryClient,
   QueryClientProvider,
@@ -48,7 +49,28 @@ import './theme/global.css';
 import { App } from './App';
 import { AuthProvider, ME_QUERY_KEY } from './auth/AuthProvider';
 import { ApiError } from './api/client';
+import { toast, errorMessage } from './lib/toast';
 import { theme, cssVariablesResolver } from './theme/theme';
+
+/**
+ * Typed `meta` for mutations, so the opt-out below is a checked field rather
+ * than a string key nobody can find later.
+ */
+declare module '@tanstack/react-query' {
+  interface Register {
+    mutationMeta: {
+      /**
+       * Set when the screen already renders this failure itself — a form's
+       * inline `Alert`, `NewRunModal`'s 422 with its `fix`, or
+       * `DeleteConfirmModal`'s own error state. Without it the user is told
+       * twice, once in a box they can act on and once in a toast that leaves.
+       */
+      silenceErrorToast?: boolean;
+      /** Shown instead of the server's wording, when the action needs naming. */
+      errorTitle?: string;
+    };
+  }
+}
 
 const queryClient = new QueryClient({
   // A 401 from ANY query means the session is gone — a cookie expiring while
@@ -66,6 +88,25 @@ const queryClient = new QueryClient({
       }
     },
   }),
+
+  // Every mutation failure surfaces somewhere, without each call site having
+  // to remember. Before this, an action whose only error handling was an
+  // `Alert` the page happened to render — and several rendered none at all —
+  // failed silently: pause, resume, cancel, stop, and save-draft all swallowed
+  // their errors, so a 409 or an expired session looked exactly like a button
+  // that did nothing.
+  //
+  // A 401 is deliberately excluded. The `QueryCache` handler above already
+  // routes it to /login, and "Unauthorized" is not news to someone who is
+  // being redirected to a sign-in screen.
+  mutationCache: new MutationCache({
+    onError: (error, _vars, _ctx, mutation) => {
+      if (mutation.meta?.silenceErrorToast) return;
+      if (error instanceof ApiError && error.isUnauthorized) return;
+      toast.error(errorMessage(error), { title: mutation.meta?.errorTitle });
+    },
+  }),
+
   defaultOptions: {
     queries: {
       // A 401 means the session is gone; retrying cannot fix it and only

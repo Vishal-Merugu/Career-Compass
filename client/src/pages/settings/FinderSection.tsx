@@ -20,6 +20,7 @@ import {
 import { IconCheck } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
+import { toast } from '../../lib/toast';
 import type { FinderSettingsResponse } from '../../api/types';
 
 const FINDER_KEY = ['settings', 'finder'];
@@ -54,7 +55,10 @@ export function FinderSection() {
         dailyLimit,
         emailFinderEnabled,
       }),
-    onSuccess: (res) => queryClient.setQueryData(FINDER_KEY, res),
+    onSuccess: (res) => {
+      toast.success('Finder settings saved. They apply to the next run.');
+      queryClient.setQueryData(FINDER_KEY, res);
+    },
   });
 
   return (
