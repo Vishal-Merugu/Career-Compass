@@ -83,3 +83,33 @@ volumes:
   postgres_data:
   redis_data:
   server_uploads:
+
+# ─── MTU ─────────────────────────────────────────────────────────
+#
+# The VM's `ens3` is **1442**, not 1500 — it sits behind a tunnel. Docker
+# defaults its bridge to 1500 regardless, so containers emitted frames the host
+# link could not carry. Small packets got through and the first large one was
+# silently dropped, which is not a failure mode that looks like a network
+# problem from inside the app:
+#
+#   * the TCP handshake completes, so a port check says the host is reachable
+#   * SMTP's plaintext greeting on 587 arrives, ~80 bytes
+#   * the TLS certificate does not — `nodemailer` sat until its 2 min
+#     connection timeout and reported "Connection timeout", which reads like a
+#     blocked port or a bad credential
+#
+# Measured 2026-08-10: from a 1500-MTU container, TLS to smtp.gmail.com:465
+# timed out; from an otherwise identical 1400-MTU container it completed.
+# `ping -M do` puts the path MTU to Gmail at ~1440.
+#
+# This is also why `ipinfo.io` was unreachable from `cc-server` while LinkedIn
+# was fine (see tasks/lessons.md) — not a blocked provider, just a response
+# whose TLS handshake did not fit.
+#
+# 1442 matches the host interface. If the VM is ever rehomed, re-measure with
+# `cat /sys/class/net/ens3/mtu` rather than assuming this number.
+networks:
+  default:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: 1442
