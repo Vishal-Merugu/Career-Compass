@@ -209,7 +209,11 @@ const addBulk = vi.hoisted(() =>
 const getJobs = vi.hoisted(() =>
   vi.fn<() => Promise<{ data: ICampaignJob }[]>>(() => Promise.resolve([])),
 );
-vi.mock('../queue/campaignQueue.js', () => ({
+// Only the queue itself is stubbed. `campaignJobId` is kept real — it encodes
+// a BullMQ constraint, and a stubbed copy would assert the format the test
+// itself invented rather than the one that gets enqueued.
+vi.mock('../queue/campaignQueue.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../queue/campaignQueue.js')>()),
   getCampaignQueue: () => ({ addBulk, getJobs }),
   removeCampaignJobs: () => Promise.resolve(0),
 }));
@@ -623,7 +627,11 @@ describe('startCampaign', () => {
   it('gives each job a stable id, so a re-start cannot duplicate a send', async () => {
     await startCampaign('camp-1', USER);
     const jobs = addBulk.mock.calls[0][0];
-    expect(jobs[0].opts.jobId).toBe('camp-1:contact-1');
+    expect(jobs[0].opts.jobId).toBe('camp-1__contact-1');
+    // The separator is load-bearing: BullMQ rejects a custom id containing a
+    // colon, and it does so inside addBulk — after the SMTP credential check
+    // has passed, so the whole campaign 500s with nothing queued.
+    expect(jobs[0].opts.jobId).not.toContain(':');
   });
 
   it('skips contacts already sent', async () => {
