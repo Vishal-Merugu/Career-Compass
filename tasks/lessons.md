@@ -105,6 +105,11 @@ ifconfig.co, geojs.io — on different networks on purpose, each with a 6 s
 budget, and prints every failure reason when all four fail. Check a network
 with `npm run probe:linkedin -- --egress-only` _before_ starting a long run.
 
+**Correction, 2026-08-10:** "ipinfo.io is hosted on GCP and unreachable from the
+container" was the wrong diagnosis. The real cause was the container MTU — see
+"A container MTU above the host's silently eats large packets" below. The
+provider was never blocked; its TLS handshake just did not fit.
+
 **Two runs from different places are not comparable.** The laptop leaves via a
 consumer ISP (AS8881); the VM — the university server, reached over the VPN, and
 the only deployment target — leaves via the university NAT gateway (AS680 DFN).
@@ -118,6 +123,41 @@ ipinfo.io.
 
 Deliberately no IPs here: this file is versioned and the repo is public, which
 is the same reason `probe-report.json` is gitignored.
+
+### A container MTU above the host's silently eats large packets
+
+The VM's `ens3` is **1442**. Docker defaults its bridge to 1500, so
+`docker-compose.yml` now pins `networks.default.driver_opts` to 1442.
+
+**Why:** on 2026-08-10 "Start sending" failed with `Could not sign in to the
+mail server: Connection timeout` after spinning for two minutes. It read as a
+blocked port or a wrong app password. It was neither — the app password was
+fine and outbound 465 was open. The container was emitting frames the host link
+could not carry, so anything small arrived and the first large packet vanished:
+
+| Test                                       | Result    | What it wrongly suggested |
+| ------------------------------------------ | --------- | ------------------------- |
+| `nc -vz smtp.gmail.com 465` from the host  | succeeded | the network is fine       |
+| TCP connect to 465 from the container      | succeeded | the network is fine       |
+| plaintext SMTP greeting on 587 (~80 bytes) | arrived   | the network is fine       |
+| TLS handshake on 465 (certificate)         | timed out | the port is blocked       |
+
+Every cheap check passes, because every cheap check sends small packets. The
+proof was a control: an identical container on a 1400-MTU network completed the
+same TLS handshake. `ping -M do` put the path MTU to Gmail at ~1440.
+
+This had been misdiagnosed once already as "ipinfo.io is GCP-hosted and
+blocked", and it is why LinkedIn worked while Gmail did not — LinkedIn's
+handshake happened to fit.
+
+**Apply:** when a connection establishes but then hangs, suspect MTU before
+firewalls, and compare `cat /sys/class/net/<iface>/mtu` on the host against the
+container's. Never conclude "port blocked" from a TCP-connect test alone — use
+`openssl s_client` or a real TLS connect, which sends a big packet. Changing a
+compose network's MTU **requires `--force-recreate`**: a plain `up -d` replaced
+the network but left containers on the old one, and the server crash-looped on
+`P1001: Can't reach database server at db:5432` until every container was
+recreated together.
 
 ---
 
@@ -782,3 +822,27 @@ model.
 **Apply:** write the failing case first and confirm it fails. Add tolerance only
 for a variation you have actually seen, and only as narrowly as it needs to be
 (`name` vs `name:latest`, and nothing more).
+
+### A `:id` route above its literal sibling answers 404, not "no route"
+
+`GET /profiles/:id` was registered directly under `GET /profiles`, above the
+`find-emails` routes 170 lines below it. So `GET /api/profiles/find-emails`
+matched the pattern with `id: 'find-emails'`, found no such profile, and
+returned **404 `Profile not found`** — for the whole life of the endpoint. The
+dashboard's lookup panel therefore never read queue state, and the response was
+indistinguishable from a route that was never deployed. Found 2026-08-10 from a
+network tab; the first instinct was a stale image on the VM, which was wrong.
+
+**Why:** Express matches in registration order, and a shadowing 404 is a
+_plausible_ answer from the _wrong_ handler. Nothing errors, nothing logs. The
+doc comment on the route even claimed it was registered last — comments do not
+enforce order. POST and DELETE were fine only by accident: `:id` is declared for
+GET and DELETE, and `DELETE /profiles/:id` already sat below its literal
+sibling.
+
+**Apply:** register every literal `/profiles/...` path before any `:id` form,
+per method. Pinned by `src/api/profiles.router.test.ts`, which walks
+`router.stack` and fails if a literal path appears after the pattern — no
+server, no database. When an `/api` route 404s, check ordering _before_
+suspecting the deploy: `curl` it unauthenticated, and a 401 means the request
+reached a handler.
