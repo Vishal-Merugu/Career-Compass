@@ -28,6 +28,7 @@ import {
   IconMail,
   IconMailPlus,
   IconMailSearch,
+  IconRadar,
   IconRefresh,
   IconSearch,
   IconUsers,
@@ -38,15 +39,17 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import type {
   AddContactsResponse,
   Campaign,
   CampaignsResponse,
+  JobsResponse,
   Profile,
   ProfilesResponse,
 } from '../api/types';
+import { ProfileDrawer } from '../components/ProfileDrawer';
 import { EmptyState } from '../components/EmptyState';
 import { StatTile } from '../components/StatTile';
 import { useEmailLookups } from '../hooks/useEmailLookups';
@@ -282,6 +285,17 @@ export function ResultsPage() {
   const [filter, setFilter] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
+  const [detail, setDetail] = useState<Profile | null>(null);
+
+  // The run filter lives in the URL so a run's detail page can link straight
+  // at "the people this run found", and so the scoped view survives a refresh.
+  const [params, setParams] = useSearchParams();
+  const jobId = params.get('jobId');
+
+  const { data: runs } = useQuery({
+    queryKey: ['jobs'],
+    queryFn: () => api.get<JobsResponse>('/api/jobs'),
+  });
   const {
     stats: lookupStats,
     lookups,
@@ -308,11 +322,13 @@ export function ResultsPage() {
     hasNextPage,
     isFetchingNextPage,
   } = useInfiniteQuery({
-    queryKey: ['profiles'],
+    queryKey: ['profiles', jobId],
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>
       api.get<ProfilesResponse>(
-        `/api/profiles?skip=${pageParam}&take=${PAGE_SIZE}`,
+        `/api/profiles?skip=${pageParam}&take=${PAGE_SIZE}${
+          jobId ? `&jobId=${encodeURIComponent(jobId)}` : ''
+        }`,
       ),
     getNextPageParam: (last) => {
       const loaded = last.skip + last.profiles.length;
@@ -415,25 +431,53 @@ export function ResultsPage() {
       ? `${Math.round((stats.withEmail / stats.total) * 100)}% of all profiles`
       : undefined;
 
+  const runOptions = (runs?.jobs ?? []).map((job) => {
+    const company =
+      /\/company\/([^/?#]+)/.exec(job.searchParams.companyUrl ?? '')?.[1] ??
+      'run';
+    return {
+      value: job.id,
+      label: `${company} · ${new Date(job.createdAt).toLocaleDateString()}`,
+    };
+  });
+
   return (
     <Stack gap="xl">
       <Group justify="space-between" align="flex-end" wrap="wrap" gap="md">
         <Box>
           <Title order={2}>Results</Title>
           <Text c="dimmed" fz={14} mt={4}>
-            Every profile scraped and qualified for your account.
+            {jobId
+              ? 'Profiles qualified by one run.'
+              : 'Every profile scraped and qualified for your account.'}
           </Text>
         </Box>
-        <Button
-          variant="default"
-          leftSection={<IconRefresh size={15} />}
-          // `isFetching` is also true while a next page loads; that has its own
-          // spinner in the footer and should not spin this button too.
-          loading={isFetching && !isPending && !isFetchingNextPage}
-          onClick={() => void refetch()}
-        >
-          Refresh
-        </Button>
+        <Group gap="sm">
+          {/* Results is cross-run by design — it is what campaigns select from
+              — so this scopes the view rather than replacing it. */}
+          <Select
+            size="sm"
+            w={260}
+            placeholder="All runs"
+            clearable
+            value={jobId}
+            data={runOptions}
+            onChange={(value) =>
+              setParams(value ? { jobId: value } : {}, { replace: true })
+            }
+            leftSection={<IconRadar size={15} />}
+          />
+          <Button
+            variant="default"
+            leftSection={<IconRefresh size={15} />}
+            // `isFetching` is also true while a next page loads; that has its own
+            // spinner in the footer and should not spin this button too.
+            loading={isFetching && !isPending && !isFetchingNextPage}
+            onClick={() => void refetch()}
+          >
+            Refresh
+          </Button>
+        </Group>
       </Group>
 
       <SimpleGrid cols={{ base: 1, xs: 3 }} spacing="md">
@@ -695,8 +739,10 @@ export function ResultsPage() {
                   <Table.Tr
                     key={p.id}
                     data-selected={selected.has(p.id) || undefined}
+                    className={classes.clickableRow}
+                    onClick={() => setDetail(p)}
                   >
-                    <Table.Td>
+                    <Table.Td onClick={(e) => e.stopPropagation()}>
                       <Checkbox
                         size="xs"
                         aria-label={`Select ${fullName(p)}`}
@@ -877,6 +923,8 @@ export function ResultsPage() {
           setSelected(new Set());
         }}
       />
+
+      <ProfileDrawer profile={detail} onClose={() => setDetail(null)} />
     </Stack>
   );
 }

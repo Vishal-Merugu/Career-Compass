@@ -1,18 +1,23 @@
 /**
  * Live view of the finder.
  *
- * `GET /api/jobs` and `/api/jobs/:id/status` have existed since the scraping
- * pipeline was built and nothing consumed them, so a run in progress was
- * invisible from the dashboard — the only way to watch one was the Telegram bot
- * or the server log. This is that missing screen.
+ * Two things changed after a run scraped 368 profiles, qualified none, and
+ * looked healthy the whole time:
  *
- * Polled rather than streamed: job progress is driven by the extension over
- * WebSocket, so there is no server-side event emitter to subscribe to the way
- * campaigns have one. A three-second poll while a job is active is cheap — the
- * status endpoint is five counts — and it stops entirely once nothing is
- * running.
+ * 1. **The bar measures the goal.** It used to fill toward "profiles scraped
+ *    out of profiles collected so far" — a denominator that moves, counting a
+ *    thing nobody asked for. `0 / 50 qualified` was the real story and it was
+ *    the smallest number on the row.
+ * 2. **A stopped run says so, in the row.** `failureCode` is denormalised onto
+ *    the job precisely so this list can explain itself without a join, because
+ *    a paused run rendering identically to a working one is how twenty minutes
+ *    went by unnoticed.
+ *
+ * Still polled rather than streamed: progress is written by workers, so there
+ * is no server-side emitter to subscribe to the way campaigns have one.
  */
 
+import { useState } from 'react';
 import {
   Alert,
   Badge,
@@ -30,39 +35,29 @@ import {
 } from '@mantine/core';
 import {
   IconAlertCircle,
+  IconAlertTriangle,
+  IconChevronRight,
   IconPlayerPause,
   IconPlayerPlay,
+  IconPlus,
   IconRefresh,
   IconX,
 } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import type { JobStatusResponse, JobsResponse, SearchJob } from '../api/types';
 import { EmptyState } from '../components/EmptyState';
+import { NewRunModal } from '../components/NewRunModal';
 import { StatTile } from '../components/StatTile';
+import {
+  ACTIVE_STATUSES,
+  RESUMABLE_STATUSES,
+  needsAttention,
+  statusColor,
+  statusLabel,
+} from '../lib/runStatus';
 import classes from './RunsPage.module.css';
-
-/** Statuses where work is still expected to move. */
-const ACTIVE = new Set(['initializing', 'collecting_urls', 'scraping']);
-
-const STATUS_COLOR: Record<string, string> = {
-  initializing: 'gray',
-  collecting_urls: 'blue',
-  scraping: 'brand',
-  completed: 'teal',
-  paused_error: 'orange',
-  // Distinct from paused_error: this one resumes by itself once the extension
-  // pushes a fresh LinkedIn session.
-  paused_session: 'yellow',
-};
-
-/** Statuses the user can resume by hand. */
-const RESUMABLE = new Set(['paused_error', 'paused_session']);
-
-function statusLabel(status: string): string {
-  if (status === 'paused_session') return 'waiting for LinkedIn session';
-  return status.replace(/_/g, ' ');
-}
 
 function companyFromUrl(job: SearchJob): string {
   const url = job.searchParams.companyUrl;
@@ -74,7 +69,8 @@ function companyFromUrl(job: SearchJob): string {
 
 function JobRow({ job }: { job: SearchJob }) {
   const queryClient = useQueryClient();
-  const active = ACTIVE.has(job.status);
+  const navigate = useNavigate();
+  const active = ACTIVE_STATUSES.has(job.status);
 
   const { data } = useQuery({
     queryKey: ['job-status', job.id],
@@ -95,9 +91,13 @@ function JobRow({ job }: { job: SearchJob }) {
   const stats = data?.stats;
   const collected = stats?.collectedCount ?? job.totalUrls;
   const scraped = stats?.scrapedCount ?? 0;
+  const goal = job.limitRequested || 1;
+  const goalPct = Math.min(100, (job.qualifiedCount / goal) * 100);
+
+  const open = () => navigate(`/runs/${job.id}`);
 
   return (
-    <Table.Tr>
+    <Table.Tr className={classes.row} onClick={open}>
       <Table.Td>
         <Text fz={13.5} fw={550} lineClamp={1}>
           {companyFromUrl(job)}
@@ -108,11 +108,7 @@ function JobRow({ job }: { job: SearchJob }) {
       </Table.Td>
 
       <Table.Td>
-        <Badge
-          size="sm"
-          variant="light"
-          color={STATUS_COLOR[job.status] ?? 'gray'}
-        >
+        <Badge size="sm" variant="light" color={statusColor(job.status)}>
           {statusLabel(job.status)}
         </Badge>
       </Table.Td>
@@ -120,30 +116,41 @@ function JobRow({ job }: { job: SearchJob }) {
       <Table.Td>
         <Stack gap={5}>
           <Progress
-            value={collected > 0 ? (scraped / collected) * 100 : 0}
-            color={active ? 'brand' : 'teal'}
+            value={goalPct}
+            color={job.status === 'completed' ? 'teal' : 'brand'}
             size="sm"
             radius="xl"
           />
           <Text fz={12} c="dimmed">
-            {scraped} of {collected} scraped
-            {stats && stats.failedCount > 0 && ` · ${stats.failedCount} failed`}
-            {stats &&
-              stats.inFlightCount > 0 &&
-              ` · ${stats.inFlightCount} in flight`}
+            {job.qualifiedCount} of {job.limitRequested} qualified
+            {collected > 0 && ` · ${scraped}/${collected} read`}
+            {stats && stats.erroredCount > 0 && (
+              <Text span c="orange" inherit>
+                {' '}
+                · {stats.erroredCount} not judged
+              </Text>
+            )}
           </Text>
+
+          {/* The reason, in the row. Not behind a click. */}
+          {job.failure && (
+            <Group gap={5} wrap="nowrap" align="flex-start">
+              <IconAlertTriangle
+                size={13}
+                style={{ flexShrink: 0, marginTop: 2 }}
+                color="var(--mantine-color-orange-6)"
+              />
+              <Text fz={12} c="orange" lineClamp={2}>
+                {job.failure.message} {job.failure.fix}
+              </Text>
+            </Group>
+          )}
         </Stack>
       </Table.Td>
 
-      <Table.Td>
-        <Text fz={13}>
-          {job.qualifiedCount} / {job.limitRequested}
-        </Text>
-      </Table.Td>
-
-      <Table.Td>
+      <Table.Td onClick={(e) => e.stopPropagation()}>
         <Group gap={4} wrap="nowrap" justify="flex-end">
-          {active && (
+          {ACTIVE_STATUSES.has(job.status) && (
             <Tooltip label="Pause">
               <Button
                 size="compact-xs"
@@ -156,12 +163,12 @@ function JobRow({ job }: { job: SearchJob }) {
               </Button>
             </Tooltip>
           )}
-          {RESUMABLE.has(job.status) && (
+          {RESUMABLE_STATUSES.has(job.status) && (
             <Tooltip
               label={
                 job.status === 'paused_session'
                   ? 'Resume. This also happens automatically when the extension pushes a fresh LinkedIn session.'
-                  : 'Resume'
+                  : 'Resume. Profiles that were never judged are retried without re-fetching them.'
               }
             >
               <Button
@@ -187,6 +194,7 @@ function JobRow({ job }: { job: SearchJob }) {
               </Button>
             </Tooltip>
           )}
+          <IconChevronRight size={14} opacity={0.35} />
         </Group>
       </Table.Td>
     </Table.Tr>
@@ -194,17 +202,17 @@ function JobRow({ job }: { job: SearchJob }) {
 }
 
 export function RunsPage() {
+  const [newRunOpen, setNewRunOpen] = useState(false);
+
   const { data, isPending, error, refetch, isFetching } = useQuery({
     queryKey: ['jobs'],
     queryFn: () => api.get<JobsResponse>('/api/jobs'),
-    // Cheap, and it is how a job started from the extension appears here
-    // without the user reloading.
     refetchInterval: 10_000,
   });
 
   const jobs = data?.jobs ?? [];
-  const active = jobs.filter((j) => ACTIVE.has(j.status));
-  const qualified = jobs.reduce((sum, j) => sum + j.qualifiedCount, 0);
+  const active = jobs.filter((j) => ACTIVE_STATUSES.has(j.status));
+  const stuck = jobs.filter((j) => needsAttention(j.status));
 
   if (error) {
     return (
@@ -239,26 +247,32 @@ export function RunsPage() {
             Every finder job, and what it is doing right now.
           </Text>
         </Box>
-        <Button
-          variant="default"
-          leftSection={<IconRefresh size={15} />}
-          loading={isFetching && !isPending}
-          onClick={() => void refetch()}
-        >
-          Refresh
-        </Button>
+        <Group gap="sm">
+          <Button
+            variant="default"
+            leftSection={<IconRefresh size={15} />}
+            loading={isFetching && !isPending}
+            onClick={() => void refetch()}
+          >
+            Refresh
+          </Button>
+          <Button
+            leftSection={<IconPlus size={16} />}
+            onClick={() => setNewRunOpen(true)}
+          >
+            New run
+          </Button>
+        </Group>
       </Group>
 
       <SimpleGrid cols={{ base: 1, xs: 3 }} spacing="md">
         <StatTile label="Runs" value={jobs.length} loading={isPending} />
+        <StatTile label="Active now" value={active.length} loading={isPending} />
+        {/* Replaces a total-qualified tile. Only one number here should ever
+            prompt an action, and this is it. */}
         <StatTile
-          label="Active now"
-          value={active.length}
-          loading={isPending}
-        />
-        <StatTile
-          label="Profiles qualified"
-          value={qualified}
+          label="Needs attention"
+          value={stuck.length}
           loading={isPending}
         />
       </SimpleGrid>
@@ -272,8 +286,8 @@ export function RunsPage() {
           </Stack>
         ) : jobs.length === 0 ? (
           <EmptyState title="No runs yet">
-            Start a run from the Chrome extension. It will appear here while it
-            works, and the profiles it qualifies land on Results.
+            Press <strong>New run</strong>, paste a LinkedIn company URL, and say
+            who counts as a match. The profiles it qualifies land on Results.
           </EmptyState>
         ) : (
           <div className={classes.tableWrap}>
@@ -285,10 +299,9 @@ export function RunsPage() {
               <Table.Thead>
                 <Table.Tr>
                   <Table.Th w="26%">Company</Table.Th>
-                  <Table.Th w="15%">Status</Table.Th>
-                  <Table.Th w="32%">Progress</Table.Th>
-                  <Table.Th w="14%">Qualified</Table.Th>
-                  <Table.Th w="13%" />
+                  <Table.Th w="17%">Status</Table.Th>
+                  <Table.Th w="43%">Progress</Table.Th>
+                  <Table.Th w="14%" />
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -300,6 +313,8 @@ export function RunsPage() {
           </div>
         )}
       </div>
+
+      <NewRunModal opened={newRunOpen} onClose={() => setNewRunOpen(false)} />
     </Stack>
   );
 }

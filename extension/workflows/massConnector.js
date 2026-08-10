@@ -153,12 +153,20 @@ class MassConnectorWorkflow extends BaseWorkflow {
           total,
           `Generating note for: ${profile.firstName}...`,
         );
-        const llmRes = await generateConnectionMessage(
-          profile,
+        // Written on the server. This used to run through the extension's own
+        // copy of llmClient.js, which meant two LLM callers with one shared
+        // `llmUrl` setting — a browser reaching localhost and a server
+        // reaching host.docker.internal cannot both be right. Sending the
+        // request is still done here; only the writing moved.
+        const llmRes = await generateConnectionNote({
+          firstName: profile.firstName,
+          lastName: profile.lastName,
+          headline: profile.headline,
+          about: profile.about,
           companyName,
+          currentTitle: profile.experiences?.[0]?.title || '',
           prompt,
-          config,
-        );
+        });
 
         if (!llmRes.ok) {
           this.addResult({

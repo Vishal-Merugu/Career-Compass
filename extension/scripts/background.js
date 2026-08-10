@@ -9,8 +9,6 @@ importScripts(
   '../services/resilience.js',
   '../services/rateLimiter.js',
   '../services/voyagerClient.js',
-  '../services/llmClient.js',
-  '../services/csvExporter.js',
   '../services/sessionSync.js',
   // emailFinder must load before emailLookupDrainer — the drainer calls into it.
   '../services/emailFinder.js',
@@ -77,7 +75,7 @@ async function handleMessage(message, sendResponse) {
       }
 
       case 'saveConfig': {
-        await setConfig(message.config, message.pushToServer !== false);
+        await setConfig(message.config);
         // Linking to a backend for the first time happens here, and the server
         // has no jar until one is pushed.
         syncSessionToServer().catch(() => {});
@@ -101,13 +99,6 @@ async function handleMessage(message, sendResponse) {
       case 'getHistory': {
         const log = await getOutreachLog();
         sendResponse({ ok: true, log });
-        break;
-      }
-
-      case 'llmHealthCheck': {
-        const config = message.config || (await getConfig());
-        const health = await llmHealthCheck(config);
-        sendResponse(health);
         break;
       }
 

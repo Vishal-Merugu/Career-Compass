@@ -4,9 +4,21 @@ import { sendStopLimitReached } from '../ws-gateway/commands/sendStopLimitReache
 import { collectNextBatch } from './jobRunner.js';
 import { dispatchNext } from './dispatchNext.js';
 import { telegramBotService } from '../telegram/bot.js';
+import { recordJobEvent } from '../services/jobEvents.service.js';
+import { pauseJobWithFailure } from '../services/jobControl.service.js';
+import type { JobErrorCode } from '../errors/jobErrors.js';
+
+/** No work of any kind should be scheduled for a job in one of these. */
+const TERMINAL_OR_PAUSED = new Set([
+  'completed',
+  'paused_error',
+  // Was missing, and its absence meant a run parked waiting for a fresh cookie
+  // jar carried on dispatching profiles that could only fail the same way.
+  'paused_session',
+]);
 
 export async function checkJobStopCondition(jobId: string): Promise<boolean> {
-  logger.info(`[Orchestrator] Checking stop condition for Job ${jobId}`);
+  logger.debug(`[Orchestrator] Checking stop condition for Job ${jobId}`);
 
   // 1. Fetch current job state
   const job = await prisma.searchJob.findUnique({
@@ -20,8 +32,7 @@ export async function checkJobStopCondition(jobId: string): Promise<boolean> {
     return true;
   }
 
-  // If already completed or paused, do nothing
-  if (job.status === 'completed' || job.status === 'paused_error') {
+  if (TERMINAL_OR_PAUSED.has(job.status)) {
     return true;
   }
 
@@ -49,6 +60,12 @@ export async function checkJobStopCondition(jobId: string): Promise<boolean> {
       include: { user: true },
     });
 
+    await recordJobEvent(jobId, {
+      stage: 'run',
+      code: 'RUN_COMPLETED',
+      message: `Finished — ${updatedJob.qualifiedCount} of ${updatedJob.limitRequested} profiles qualified.`,
+    });
+
     if (updatedJob.user?.telegramId) {
       const company =
         updatedJob.searchParams &&
@@ -72,7 +89,8 @@ export async function checkJobStopCondition(jobId: string): Promise<boolean> {
     return true;
   }
 
-  const unresolvedUrlsCount = await prisma.profileUrl.count({
+  // Work that can still move on its own.
+  const pendingUrlsCount = await prisma.profileUrl.count({
     where: {
       jobId,
       OR: [
@@ -88,7 +106,37 @@ export async function checkJobStopCondition(jobId: string): Promise<boolean> {
     },
   });
 
-  if (unresolvedUrlsCount === 0) {
+  // Scraped profiles whose only decision is an evaluation failure. These are
+  // neither done nor movable: retrying them needs whatever broke to be fixed
+  // first. They must not be counted as decided, or a run whose model died would
+  // declare its batch exhausted and cheerfully collect another hundred people
+  // to fail on — which is exactly what happened on 2026-08-09.
+  const erroredCount = await prisma.profileUrl.count({
+    where: {
+      jobId,
+      status: 'scraped',
+      profile: {
+        decisions: { some: { status: 'error' }, none: { status: 'qualified' } },
+      },
+    },
+  });
+
+  if (pendingUrlsCount === 0 && erroredCount > 0) {
+    // Nothing left to try and some profiles never got a verdict. Park the run
+    // rather than completing it — completing would claim a result the model
+    // never produced — and let Resume retry them without re-scraping.
+    logger.warn(
+      `[Orchestrator] Job ${jobId} has ${erroredCount} unevaluated profile(s) and nothing pending; pausing`,
+    );
+    await pauseJobWithFailure(jobId, {
+      stage: 'qualify',
+      code: (job.failureCode as JobErrorCode | null) ?? 'LLM_BAD_JSON',
+      detail: `${erroredCount} profile(s) were scraped but never evaluated. Resume to retry them — no LinkedIn calls are needed.`,
+    });
+    return true;
+  }
+
+  if (pendingUrlsCount === 0) {
     // Current batch is exhausted. Request next batch if search parameters allow it.
     const nextBatchNumber = job.currentBatchNumber + 1;
 
@@ -99,6 +147,12 @@ export async function checkJobStopCondition(jobId: string): Promise<boolean> {
     logger.info(
       `[Orchestrator] Job ${jobId} batch ${job.currentBatchNumber} exhausted. Requesting batch ${nextBatchNumber} (size: ${batchSize}).`,
     );
+
+    await recordJobEvent(jobId, {
+      stage: 'collect',
+      code: 'COLLECT_PROGRESS',
+      message: `Batch ${job.currentBatchNumber} used up. Looking for more people (batch ${nextBatchNumber}).`,
+    });
 
     // Update job status back to collecting_urls
     await prisma.searchJob.update({

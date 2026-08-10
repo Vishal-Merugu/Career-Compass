@@ -628,3 +628,56 @@ estimate.
 
 **Apply:** reach for `migrate resolve` first. Verify emptiness before any drop,
 and confirm the backup exists even when you expect not to need it.
+
+### A fallible call that returns a neutral value will be read as an answer
+
+`evaluateProfile` caught every failure and returned
+`{ ok: false, match: false, reason: 'LLM Error: …' }`. The caller read `.match`
+and never `.ok`. On 2026-08-09 that turned an unreachable model into **368
+profiles rejected** — a full run, ~20 minutes of real LinkedIn calls against the
+user's own session, reporting itself healthy the whole way.
+
+**Why:** `match: false` is a perfectly plausible verdict. Nothing downstream
+could tell "the model said no" from "we never asked", so the run kept going,
+kept collecting fresh batches to fail on, and the dashboard kept rendering
+`scraping`. The `try/catch` wrapped around the call site was dead code, because
+nothing ever threw.
+
+**Apply:** a function that can fail should throw, not return a value that is
+indistinguishable from a real result. If a caller must be able to ignore the
+failure, make ignoring it explicit — do not make it the default by returning a
+falsy-but-valid answer. When fixing one of these, **delete the `ok` field from
+the return type**: the type is what stops the next caller repeating it.
+Corollary: an infrastructure failure must be stored differently from a business
+outcome (`ProfileDecision.status = 'error'`, not `isQualified: false`).
+
+### Test the process that does the work, not a convenient one
+
+The extension's "Test AI" button ran the health check in its own service worker,
+which reaches the _user's laptop_. The model is called by the _server_. The
+button could go green while the server could not resolve the address at all —
+which is exactly the state the VM was in.
+
+**Why:** the check and the real call ran in different processes on different
+networks. `localhost:11434` means two different machines depending on who is
+asking, and inside Docker it means the container itself.
+
+**Apply:** a connectivity check belongs in the process that owns the connection,
+and its result should say where it ran (`checkedFrom: 'server'`). When something
+"works locally but not in production", check whether the test and the work were
+ever on the same host.
+
+### An exact-match check that is too lenient is not a check
+
+The model-installed preflight first matched on family name, so a config asking
+for `qwen2.5:1.5b` was considered satisfied by an installed `qwen2.5:14b` — the
+**exact** mismatch the check existed to catch. It passed a hand test that should
+have failed, and was only noticed because the test was actually run.
+
+**Why:** the leniency was added speculatively, for tag variations nobody had
+observed, and it swallowed the one real case. For Ollama the size tag _is_ the
+model.
+
+**Apply:** write the failing case first and confirm it fails. Add tolerance only
+for a variation you have actually seen, and only as narrowly as it needs to be
+(`name` vs `name:latest`, and nothing more).

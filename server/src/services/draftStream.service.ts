@@ -1,6 +1,12 @@
 import { AppError } from '../errors/AppError.js';
 import { logger } from '../lib/logger.js';
-import { getBaseUrl, getHeaders } from '../shared/llmClient.js';
+import {
+  getBaseUrl,
+  getHeaders,
+  normalizeProvider,
+  resolveModel,
+  usesOllamaDialect,
+} from '../shared/llmClient.js';
 import { IUserConfig } from '../shared/types.js';
 
 /**
@@ -96,11 +102,13 @@ export async function* streamChatCompletion(
   temperature: number,
   signal: AbortSignal,
 ): AsyncGenerator<string> {
-  const provider = (config.llmProvider || 'ollama').toLowerCase();
-  const isOllama = provider === 'ollama';
+  const provider = normalizeProvider(config);
+  // The built-in provider speaks Ollama's dialect too — miss this and a new
+  // account, which defaults to it, streams OpenAI-shaped frames at `/api/chat`.
+  const isOllama = usesOllamaDialect(provider);
   const baseUrl = getBaseUrl(config);
   const headers = getHeaders(config);
-  const model = config.llmModel || 'qwen2.5:1.5b';
+  const model = resolveModel(config);
 
   const messages = [
     { role: 'system', content: systemPrompt },

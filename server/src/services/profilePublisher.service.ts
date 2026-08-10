@@ -33,6 +33,8 @@ export interface PublishableProfile {
   emailSource: string | null;
   emailValidation: string | null;
   qualificationReason: string;
+  /** The run that found them. Null for the backfill, which cannot know. */
+  searchJobId?: string | null;
 }
 
 /**
@@ -100,6 +102,7 @@ export async function publishQualifiedProfile(
           { source: 'searchJob', emailSource: data.emailSource },
           profileId,
           data.qualificationReason,
+          data.searchJobId ?? undefined,
         );
       }
     }

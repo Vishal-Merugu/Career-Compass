@@ -10,6 +10,10 @@ import { ServerCommands } from '../ws-gateway/events.js';
 import { dispatchNext } from '../orchestrator/dispatchNext.js';
 import { checkJobStopCondition } from '../orchestrator/stopCondition.js';
 import { startJob } from '../orchestrator/jobRunner.js';
+import { preflightJob } from '../services/jobPreflight.service.js';
+import { recordJobEvent } from '../services/jobEvents.service.js';
+import { clearJobFailure } from '../services/jobControl.service.js';
+import { describeJobError, type JobErrorCode } from '../errors/jobErrors.js';
 const router = Router();
 
 const createJobSchema = z.object({
@@ -24,10 +28,52 @@ const createJobSchema = z.object({
 /**
  * Start a new Search Job
  */
+/**
+ * Is this account able to run a job at all?
+ *
+ * Split out so the dashboard can show the answer *before* the user fills in a
+ * form and presses Start, rather than after.
+ */
+router.get('/jobs/preflight', requireAuthOrApiKey, async (req, res, next) => {
+  try {
+    res
+      .status(200)
+      .json({ ok: true, preflight: await preflightJob(req.user!.id) });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post('/jobs', requireAuthOrApiKey, async (req, res, next) => {
   try {
     const userId = req.user!.id;
     const body = createJobSchema.parse(req.body);
+
+    // Refuse rather than fail slowly. Both of these are knowable in under a
+    // second and both are fatal for every profile in the run: without a
+    // LinkedIn session nothing can be fetched, and without a reachable model
+    // nothing can be judged. The alternative — which is what used to happen —
+    // is twenty minutes of real LinkedIn calls and zero results.
+    const preflight = await preflightJob(userId);
+
+    if (!preflight.ok) {
+      logger.warn(
+        { userId, code: preflight.code },
+        '[JobsRouter] Refusing to start a run that cannot succeed',
+      );
+      return res.status(422).json({
+        ok: false,
+        code: preflight.code,
+        message: preflight.message,
+        fix: preflight.fix,
+        preflight,
+      });
+    }
+
+    // `dryRun` is how the New run form checks without creating anything.
+    if (req.query.dryRun === 'true') {
+      return res.status(200).json({ ok: true, preflight, dryRun: true });
+    }
 
     logger.info({ userId, body }, `[JobsRouter] Creating new scraping job`);
 
@@ -82,6 +128,9 @@ router.get('/jobs', requireAuthOrApiKey, async (req, res, next) => {
         currentBatchNumber: true,
         createdAt: true,
         searchParams: true,
+        failureCode: true,
+        failureDetail: true,
+        configSnapshot: true,
         _count: {
           select: { profileUrls: true },
         },
@@ -99,6 +148,14 @@ router.get('/jobs', requireAuthOrApiKey, async (req, res, next) => {
         createdAt: job.createdAt,
         searchParams: job.searchParams,
         totalUrls: job._count.profileUrls,
+        // Denormalised so the list can say *why* a run stopped without a join.
+        // A paused run must never be indistinguishable from a running one.
+        failureCode: job.failureCode,
+        failureDetail: job.failureDetail,
+        configSnapshot: job.configSnapshot,
+        failure: job.failureCode
+          ? describeJobError(job.failureCode as JobErrorCode, {})
+          : null,
       })),
     });
   } catch (err) {
@@ -155,6 +212,18 @@ router.get('/jobs/:id/status', requireAuthOrApiKey, async (req, res, next) => {
       },
     });
 
+    // Profiles the model was asked about but never answered on. Reported apart
+    // from rejections deliberately: "300 rejected" and "300 we could not
+    // evaluate" mean opposite things, and only one of them is a result.
+    const [rejectedCount, erroredCount] = await Promise.all([
+      prisma.profileDecision.count({
+        where: { profile: { profileUrl: { jobId } }, status: 'rejected' },
+      }),
+      prisma.profileDecision.count({
+        where: { profile: { profileUrl: { jobId } }, status: 'error' },
+      }),
+    ]);
+
     const qualifiedCount = job.qualifiedCount || decisions.length;
 
     res.status(200).json({
@@ -166,12 +235,21 @@ router.get('/jobs/:id/status', requireAuthOrApiKey, async (req, res, next) => {
         qualifiedCount,
         currentBatchNumber: job.currentBatchNumber,
         createdAt: job.createdAt,
+        searchParams: job.searchParams,
+        failureCode: job.failureCode,
+        failureDetail: job.failureDetail,
+        configSnapshot: job.configSnapshot,
+        failure: job.failureCode
+          ? describeJobError(job.failureCode as JobErrorCode, {})
+          : null,
       },
       stats: {
         collectedCount,
         scrapedCount,
         remainingCount,
         failedCount,
+        rejectedCount,
+        erroredCount,
         inFlightCount:
           collectedCount - scrapedCount - remainingCount - failedCount,
       },
@@ -187,6 +265,38 @@ router.get('/jobs/:id/status', requireAuthOrApiKey, async (req, res, next) => {
         };
       }),
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * The run's own log, in the words of whoever has to read it.
+ *
+ * Deliberately small — see services/jobEvents.service.ts for why a 400-profile
+ * run produces tens of rows rather than thousands.
+ */
+router.get('/jobs/:id/events', requireAuthOrApiKey, async (req, res, next) => {
+  try {
+    const userId = req.user!.id;
+    const jobId = req.params.id;
+
+    const job = await prisma.searchJob.findFirst({
+      where: { id: jobId, userId },
+      select: { id: true },
+    });
+
+    if (!job) {
+      return res.status(404).json({ ok: false, error: 'Job not found' });
+    }
+
+    const events = await prisma.jobEvent.findMany({
+      where: { jobId },
+      orderBy: { at: 'desc' },
+      take: 200,
+    });
+
+    res.status(200).json({ ok: true, events });
   } catch (err) {
     next(err);
   }
@@ -218,6 +328,13 @@ router.post('/jobs/:id/cancel', requireAuthOrApiKey, async (req, res, next) => {
     const updatedJob = await prisma.searchJob.update({
       where: { id: jobId },
       data: { status: 'completed' },
+    });
+
+    await recordJobEvent(jobId, {
+      stage: 'run',
+      code: 'RUN_CANCELLED',
+      level: 'warn',
+      message: 'Cancelled. Any profiles still queued were skipped.',
     });
 
     // Disconnect extension socket by emitting stop limit reached
@@ -252,6 +369,13 @@ router.post('/jobs/:id/pause', requireAuthOrApiKey, async (req, res, next) => {
     const updatedJob = await prisma.searchJob.update({
       where: { id: jobId },
       data: { status: 'paused_error' },
+    });
+
+    await recordJobEvent(jobId, {
+      stage: 'run',
+      code: 'RUN_PAUSED',
+      level: 'warn',
+      message: 'Paused by you.',
     });
 
     // Notify extension socket to pause
@@ -295,10 +419,50 @@ router.post('/jobs/:id/resume', requireAuthOrApiKey, async (req, res, next) => {
       },
     });
 
+    // Throw away decisions the model never actually made, so the profiles
+    // behind them get evaluated again.
+    //
+    // **This costs no LinkedIn calls.** The profiles were already scraped and
+    // their raw data is still in `ScrapedProfile`; only the verdict is missing.
+    // Deleting the placeholder is what makes them orphans again, which is
+    // precisely what `sweepOrphanedProfiles` picks up. Fixing an unreachable
+    // model and pressing Resume therefore re-judges hundreds of people in
+    // minutes instead of re-scraping them over hours.
+    const requalified = await prisma.profileDecision.deleteMany({
+      where: { status: 'error', profile: { profileUrl: { jobId } } },
+    });
+
+    if (requalified.count > 0) {
+      logger.info(
+        `[JobsRouter] Job ${jobId}: re-evaluating ${requalified.count} profile(s) that were never judged`,
+      );
+    }
+
+    await clearJobFailure(jobId);
+
     const updatedJob = await prisma.searchJob.update({
       where: { id: jobId },
       data: { status: 'scraping' },
     });
+
+    await recordJobEvent(jobId, {
+      stage: 'run',
+      code: 'RUN_RESUMED',
+      message:
+        requalified.count > 0
+          ? `Resumed. Re-judging ${requalified.count} profile(s) already read from LinkedIn.`
+          : 'Resumed.',
+    });
+
+    if (requalified.count > 0) {
+      const { QualificationWorker } =
+        await import('../workers/qualificationWorker.js');
+      void QualificationWorker.getInstance()
+        .sweepOrphanedProfiles()
+        .catch((err) =>
+          logger.error(err, `[JobsRouter] Re-qualification sweep failed`),
+        );
+    }
 
     // Notify extension socket to resume
     const socketId = ConnectionRegistry.getInstance().getSocketId(jobId);

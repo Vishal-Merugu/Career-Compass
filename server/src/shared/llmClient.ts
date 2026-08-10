@@ -1,29 +1,66 @@
 import { IUserConfig } from './types.js';
 import { IParsedProfile } from './parsers.js';
 import { logger } from '../lib/logger.js';
+import { env } from '../config/env.js';
+import { LlmError } from '../errors/AppError.js';
+import type { JobErrorCode } from '../errors/jobErrors.js';
+
+/**
+ * `server` — the instance's built-in model, and the default for new accounts.
+ *
+ * The operator knows an address that works and a model that is installed; the
+ * user does not. The old default was a bare `http://localhost:11434` in the
+ * schema, which inside the container is the container — so every fresh account
+ * pointed at nothing and every profile it evaluated failed. See
+ * `DEFAULT_LLM_URL` in config/env.ts.
+ */
+export const SERVER_PROVIDER = 'server';
+
+export function normalizeProvider(config: IUserConfig): string {
+  return (config.llmProvider || SERVER_PROVIDER).toLowerCase();
+}
+
+/** Ollama's native `/api/chat`, as opposed to the OpenAI-compatible shape. */
+export function usesOllamaDialect(provider: string): boolean {
+  return provider === 'ollama' || provider === SERVER_PROVIDER;
+}
+
+/**
+ * Which model to ask for.
+ *
+ * Never falls back to a hardcoded name for a hosted provider — a wrong model
+ * id is a 404 the user cannot explain. For the built-in provider the operator's
+ * `DEFAULT_LLM_MODEL` is authoritative and the user's field is ignored.
+ */
+export function resolveModel(config: IUserConfig): string {
+  const provider = normalizeProvider(config);
+  if (provider === SERVER_PROVIDER) return env.DEFAULT_LLM_MODEL;
+  return config.llmModel || '';
+}
 
 /**
  * Get Base URL based on provider
  */
 export function getBaseUrl(config: IUserConfig): string {
-  const provider = (config.llmProvider || 'ollama').toLowerCase();
+  const provider = normalizeProvider(config);
   const llmUrl = config.llmUrl || '';
 
-  logger.info(`[llmClient V2.1] getBaseUrl for provider: ${provider}`);
+  const stripSlash = (url: string) =>
+    url.endsWith('/') ? url.slice(0, -1) : url;
 
   switch (provider) {
     case 'gemini':
       return 'https://generativelanguage.googleapis.com/v1beta/openai';
     case 'openrouter':
       return 'https://openrouter.ai/api/v1';
+    case SERVER_PROVIDER:
+      return stripSlash(env.DEFAULT_LLM_URL);
     case 'ollama':
-    default: {
-      let url = llmUrl || 'http://localhost:11434';
-      if (url.endsWith('/')) {
-        url = url.slice(0, -1);
-      }
-      return url;
-    }
+    default:
+      // No `localhost` fallback. An empty URL is a configuration mistake worth
+      // surfacing, not one to paper over with an address that is wrong in every
+      // containerised deployment.
+      return stripSlash(llmUrl);
   }
 }
 
@@ -31,7 +68,7 @@ export function getBaseUrl(config: IUserConfig): string {
  * Get Auth Headers based on provider
  */
 export function getHeaders(config: IUserConfig): Record<string, string> {
-  const provider = (config.llmProvider || 'ollama').toLowerCase();
+  const provider = normalizeProvider(config);
   const llmApiKey = config.llmApiKey || '';
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -53,24 +90,142 @@ export function getHeaders(config: IUserConfig): Record<string, string> {
   return headers;
 }
 
+/** What to call the provider when talking to the user. */
+export function providerLabel(provider: string): string {
+  switch (provider) {
+    case 'gemini':
+      return 'Gemini';
+    case 'openrouter':
+      return 'OpenRouter';
+    case 'ollama':
+      return 'Ollama';
+    case SERVER_PROVIDER:
+      return 'The built-in model';
+    default:
+      return provider;
+  }
+}
+
+/**
+ * A failure that never reached the provider — DNS, refused connection,
+ * unroutable host, timeout.
+ *
+ * This is the one that produced `LLM Error: fetch failed` 368 times: Node's
+ * `fetch` reports every transport problem with that same opaque string, so the
+ * cause has to be dug out of `err.cause`.
+ */
+export function classifyTransportFailure(
+  err: unknown,
+  ctx: { provider: string; model: string; url: string },
+): LlmError {
+  const error = err as { message?: string; name?: string; cause?: unknown };
+  const cause = error?.cause as { code?: string; message?: string } | undefined;
+  const detailParts = [error?.message, cause?.code, cause?.message].filter(
+    (part): part is string => typeof part === 'string' && part.length > 0,
+  );
+  const detail = `${detailParts.join(' — ')} (tried ${ctx.url})`;
+
+  return new LlmError('LLM_UNREACHABLE', 'The AI model could not be reached.', {
+    detail,
+    model: ctx.model,
+    provider: providerLabel(ctx.provider),
+  });
+}
+
+/** A response that arrived and said no. */
+export function classifyHttpFailure(
+  status: number,
+  bodyText: string,
+  headers: Headers | null,
+  ctx: { provider: string; model: string; url: string },
+): LlmError {
+  const body = bodyText.slice(0, 400);
+  const lower = body.toLowerCase();
+  const label = providerLabel(ctx.provider);
+  const mentionsQuota = /quota|credit|billing|payment|insufficient/.test(lower);
+  const mentionsModel = /model/.test(lower);
+
+  const retryAfterRaw = headers?.get('retry-after');
+  const retryAfterSeconds = retryAfterRaw
+    ? Number.parseInt(retryAfterRaw, 10)
+    : undefined;
+
+  let code: JobErrorCode = 'UNKNOWN';
+  let message = `${label} returned an unexpected error (HTTP ${status}).`;
+
+  if (status === 401 || status === 403) {
+    code = 'LLM_AUTH';
+    message = `${label} rejected the API key.`;
+  } else if (status === 402 || (status === 429 && mentionsQuota)) {
+    code = 'LLM_QUOTA';
+    message = `The ${label} quota or credit is exhausted.`;
+  } else if (status === 429) {
+    code = 'LLM_RATE_LIMIT';
+    message = `${label} is rate-limiting these requests.`;
+  } else if ((status === 404 || status === 400) && mentionsModel) {
+    // Ollama answers a missing model with 404 `model "x" not found`; the
+    // OpenAI-compatible providers use 400 or 404 with the model named in the
+    // body. A 404 that does *not* mention a model is a wrong base URL.
+    code = 'LLM_MODEL_NOT_FOUND';
+    message = ctx.model
+      ? `The AI model "${ctx.model}" is not installed.`
+      : 'The configured AI model is not installed.';
+  } else if (status === 404) {
+    code = 'LLM_UNREACHABLE';
+    message = 'The AI model could not be reached.';
+  }
+
+  return new LlmError(code, message, {
+    detail: `HTTP ${status} from ${ctx.url}: ${body}`,
+    model: ctx.model,
+    provider: label,
+    retryAfterSeconds:
+      Number.isFinite(retryAfterSeconds) && retryAfterSeconds
+        ? retryAfterSeconds
+        : undefined,
+  });
+}
+
 export interface ILlmHealthResponse {
   ok: boolean;
   models?: string[];
   error?: string;
+  code?: JobErrorCode;
+  /** What the check actually contacted, so a wrong address is visible. */
+  url?: string;
+  /** The model the config resolves to, whether or not it is in `models`. */
+  model?: string;
 }
 
 /**
- * Health check — fetch models
+ * Health check — fetch the provider's model list.
+ *
+ * **Runs on the server.** The equivalent button in the extension ran this in
+ * the extension's own service worker, which reaches the user's laptop, not the
+ * host that makes the real calls — so it could report a healthy model while the
+ * server could not resolve the address at all. That is exactly what happened on
+ * the VM.
  */
 export async function llmHealthCheck(
   config: IUserConfig,
 ): Promise<ILlmHealthResponse> {
-  const provider = (config.llmProvider || 'ollama').toLowerCase();
+  const provider = normalizeProvider(config);
   const baseUrl = getBaseUrl(config);
   const headers = getHeaders(config);
+  const model = resolveModel(config);
 
-  const modelsUrl =
-    provider === 'ollama' ? `${baseUrl}/api/tags` : `${baseUrl}/models`;
+  if (!baseUrl) {
+    return {
+      ok: false,
+      code: 'LLM_UNREACHABLE',
+      error: 'No base URL is configured for this provider.',
+      model,
+    };
+  }
+
+  const modelsUrl = usesOllamaDialect(provider)
+    ? `${baseUrl}/api/tags`
+    : `${baseUrl}/models`;
 
   try {
     const res = await fetch(modelsUrl, {
@@ -80,21 +235,51 @@ export async function llmHealthCheck(
     });
 
     if (!res.ok) {
-      return { ok: false, error: `HTTP ${res.status}` };
+      const body = await res.text().catch(() => '');
+      const failure = classifyHttpFailure(res.status, body, res.headers, {
+        provider,
+        model,
+        url: modelsUrl,
+      });
+      return {
+        ok: false,
+        code: failure.code,
+        error: failure.message,
+        url: modelsUrl,
+        model,
+      };
     }
 
-    const data = (await res.json()) as any;
+    const data = (await res.json()) as {
+      models?: Array<{ name?: string }>;
+      data?: Array<{ id?: string }>;
+    };
 
     let models: string[] = [];
-    if (provider === 'ollama' && data.models) {
-      models = data.models.map((m: any) => m.name);
-    } else if (data.data && Array.isArray(data.data)) {
-      models = data.data.map((m: any) => m.id);
+    if (usesOllamaDialect(provider) && Array.isArray(data.models)) {
+      models = data.models
+        .map((m) => m.name)
+        .filter((name): name is string => Boolean(name));
+    } else if (Array.isArray(data.data)) {
+      models = data.data
+        .map((m) => m.id)
+        .filter((id): id is string => Boolean(id));
     }
 
-    return { ok: true, models };
-  } catch (err: any) {
-    return { ok: false, error: err.message };
+    return { ok: true, models, url: modelsUrl, model };
+  } catch (err) {
+    const failure = classifyTransportFailure(err, {
+      provider,
+      model,
+      url: modelsUrl,
+    });
+    return {
+      ok: false,
+      code: failure.code,
+      error: failure.detail ?? failure.message,
+      url: modelsUrl,
+      model,
+    };
   }
 }
 
@@ -109,15 +294,27 @@ export async function sendChatCompletion(
   maxTokens: number,
   temperature: number,
 ): Promise<string> {
-  const provider = (config.llmProvider || 'ollama').toLowerCase();
+  const provider = normalizeProvider(config);
   const baseUrl = getBaseUrl(config);
   const headers = getHeaders(config);
-  const model = config.llmModel || 'qwen2.5:1.5b';
+  const model = resolveModel(config);
+
+  if (!baseUrl) {
+    throw new LlmError(
+      'LLM_UNREACHABLE',
+      'The AI model could not be reached.',
+      {
+        detail: `No base URL is configured for provider "${provider}".`,
+        provider: providerLabel(provider),
+        model,
+      },
+    );
+  }
 
   let endpoint = '';
   let body = '';
 
-  if (provider === 'ollama') {
+  if (usesOllamaDialect(provider)) {
     endpoint = `${baseUrl}/api/chat`;
     body = JSON.stringify({
       model,
@@ -145,8 +342,14 @@ export async function sendChatCompletion(
     });
   }
 
-  let lastError: any;
+  const ctx = { provider, model, url: endpoint };
+
+  // Retries are for a slow model, not a wrong address. A refused connection or
+  // a rejected key fails identically on every attempt, so retrying it three
+  // times only delays the message the user needs by three times as long.
   for (let attempt = 1; attempt <= 4; attempt++) {
+    let res: Response;
+
     try {
       if (attempt > 1) {
         logger.info(
@@ -155,44 +358,52 @@ export async function sendChatCompletion(
         await new Promise((r) => setTimeout(r, 1000));
       }
 
-      const res = await fetch(endpoint, {
+      res = await fetch(endpoint, {
         method: 'POST',
         headers,
         body,
-        // signal: AbortSignal.timeout(120000), // 120 seconds for slow local LLMs
+        // No timeout: a large local model can legitimately think for minutes.
       });
-
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`LLM Error ${res.status}: ${text.slice(0, 150)}`);
-      }
-
-      const data = (await res.json()) as any;
-      let content = '';
-
-      if (provider === 'ollama') {
-        content = data.message?.content?.trim() || '';
-      } else {
-        content = data.choices?.[0]?.message?.content?.trim() || '';
-      }
-
-      return content;
-    } catch (err: any) {
+    } catch (err) {
+      const error = err as { name?: string; message?: string };
       const isTimeout =
-        err.name === 'AbortError' ||
-        err.message?.toLowerCase().includes('timeout') ||
-        err.message?.toLowerCase().includes('timed out');
+        error.name === 'AbortError' ||
+        (error.message ?? '').toLowerCase().includes('timeout') ||
+        (error.message ?? '').toLowerCase().includes('timed out');
+
       if (isTimeout && attempt < 4) {
         logger.warn(
-          `[LLM] sendChatCompletion timeout on attempt ${attempt}/4: ${err.message}. Retrying...`,
+          `[LLM] sendChatCompletion timeout on attempt ${attempt}/4. Retrying...`,
         );
-        lastError = err;
         continue;
       }
-      throw err;
+
+      throw classifyTransportFailure(err, ctx);
     }
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw classifyHttpFailure(res.status, text, res.headers, ctx);
+    }
+
+    const data = (await res.json()) as {
+      message?: { content?: string };
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+
+    const content = usesOllamaDialect(provider)
+      ? (data.message?.content?.trim() ?? '')
+      : (data.choices?.[0]?.message?.content?.trim() ?? '');
+
+    return content;
   }
-  throw lastError;
+
+  // Every attempt timed out.
+  throw new LlmError('LLM_UNREACHABLE', 'The AI model could not be reached.', {
+    detail: `No response from ${endpoint} after 4 attempts.`,
+    provider: providerLabel(provider),
+    model,
+  });
 }
 
 export interface IConnectionMessageResult {
@@ -305,15 +516,26 @@ ${userContext ? `About me (the sender): ${userContext}` : ''}`;
   }
 }
 
+/**
+ * A verdict from the model, and nothing else.
+ *
+ * **There is deliberately no `ok` field.** There used to be, and it is what let
+ * 368 profiles be rejected by a model that was never contacted: on any failure
+ * this returned `{ ok: false, match: false, reason: 'LLM Error: …' }`, the
+ * caller read `.match`, and an unreachable host became indistinguishable from
+ * an unsuitable candidate. Failure is now a thrown `LlmError` — a shape that
+ * cannot be mistaken for a verdict.
+ */
 export interface IEvaluateProfileResult {
-  ok: boolean;
   match: boolean;
   reason: string;
-  error?: string;
 }
 
 /**
- * Evaluate if a profile matches a given prompt
+ * Evaluate if a profile matches a given prompt.
+ *
+ * @throws {LlmError} if the model could not be reached, refused, or answered
+ * with something that is not the requested JSON.
  */
 export async function evaluateProfile(
   profileData: IParsedProfile,
@@ -321,8 +543,8 @@ export async function evaluateProfile(
   config: IUserConfig,
   targetCompanyName = '',
 ): Promise<IEvaluateProfileResult> {
-  if ((globalThis as any).MOCK_LLM) {
-    return { ok: true, match: true, reason: 'Mocked profile evaluation' };
+  if ((globalThis as Record<string, unknown>).MOCK_LLM) {
+    return { match: true, reason: 'Mocked profile evaluation' };
   }
 
   const systemPrompt = `You are a professional job search assistant evaluating LinkedIn profiles to find high-value connections.
@@ -397,38 +619,42 @@ INSTRUCTIONS:
 2. Assign a TIER (1, 2, 3, or NONE) based on their role, seniority, and overall career history.
 3. Return a JSON response in the exact format: {"match": true/false, "reason": "a very brief 1-sentence explanation mentioning their Tier and why they were accepted/rejected"}`;
 
+  // Not wrapped in a try/catch. An `LlmError` from `sendChatCompletion` must
+  // reach `qualificationWorker`, which is the only layer that knows whether to
+  // pause the run — swallowing it here is what made the failure invisible.
+  const raw = await sendChatCompletion(
+    config,
+    systemPrompt,
+    userPrompt,
+    10000,
+    0.1,
+  );
+
+  const content = raw
+    .replace(/```json/g, '')
+    .replace(/```/g, '')
+    .trim();
+
+  let parsed: { match?: unknown; reason?: unknown };
   try {
-    let content = await sendChatCompletion(
-      config,
-      systemPrompt,
-      userPrompt,
-      10000,
-      0.1,
+    parsed = JSON.parse(content) as { match?: unknown; reason?: unknown };
+  } catch {
+    logger.error(
+      `[LLM] JSON parse failed. Raw LLM output: ${raw.slice(0, 500)}`,
     );
-
-    let originalContent = content;
-
-    content = content
-      .replace(/```json/g, '')
-      .replace(/```/g, '')
-      .trim();
-
-    try {
-      const parsed = JSON.parse(content);
-      return { ok: true, match: !!parsed.match, reason: parsed.reason || '' };
-    } catch (parseErr) {
-      logger.error(
-        `[LLM] JSON parse failed. Raw LLM output: ${originalContent}`,
-      );
-      throw parseErr;
-    }
-  } catch (err: any) {
-    logger.error(`[LLM] Evaluation failed: ${err.message}`);
-    return {
-      ok: false,
-      error: err.message,
-      match: false,
-      reason: `LLM Error: ${err.message}`,
-    };
+    throw new LlmError(
+      'LLM_BAD_JSON',
+      'The AI model returned something unreadable.',
+      {
+        detail: `Expected JSON, got: ${raw.slice(0, 300)}`,
+        provider: providerLabel(normalizeProvider(config)),
+        model: resolveModel(config),
+      },
+    );
   }
+
+  return {
+    match: Boolean(parsed.match),
+    reason: typeof parsed.reason === 'string' ? parsed.reason : '',
+  };
 }

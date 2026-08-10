@@ -88,3 +88,9 @@
   border-top: 1px solid var(--app-border);
   background-color: var(--app-surface-sunken);
 }
+
+/* The row opens a detail drawer. The checkbox cell and the name link stop
+   propagation so selecting or opening LinkedIn does not also open the drawer. */
+.clickableRow {
+  cursor: pointer;
+}

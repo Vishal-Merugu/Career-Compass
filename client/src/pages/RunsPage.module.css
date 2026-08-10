@@ -16,3 +16,16 @@
   composes: table from '../styles/dataPanel.module.css';
   --table-min-width: 820px;
 }
+
+/* The whole row opens the run. The control buttons stop propagation, so
+   pausing does not also navigate. */
+.row {
+  cursor: pointer;
+}
+
+.row:hover {
+  background: light-dark(
+    var(--mantine-color-gray-0),
+    var(--mantine-color-dark-6)
+  );
+}

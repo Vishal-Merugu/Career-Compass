@@ -78,7 +78,20 @@ router.get('/profiles', requireAuthOrApiKey, async (req, res, next) => {
   try {
     const userId = req.user!.id;
     const { skip, take } = parsePagination(req.query);
-    const where = { outreachLogs: { some: { userId } } };
+
+    // `?jobId=` scopes the table to one run. The link lives on `OutreachLog`,
+    // which is already the row that scopes a profile to a user, so this is the
+    // same `some` clause with one more condition rather than a new join.
+    const jobId =
+      typeof req.query.jobId === 'string' && req.query.jobId
+        ? req.query.jobId
+        : undefined;
+
+    const where = {
+      outreachLogs: {
+        some: { userId, ...(jobId ? { searchJobId: jobId } : {}) },
+      },
+    };
 
     const [profiles, total, withEmail, companies] = await Promise.all([
       prisma.profile.findMany({
@@ -104,6 +117,60 @@ router.get('/profiles', requireAuthOrApiKey, async (req, res, next) => {
       take,
       total,
       stats: { total, withEmail, companies: companies.length },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * One profile, in full — including the fields the list deliberately omits.
+ *
+ * `about` is excluded from `GET /api/profiles` because shipping it for every
+ * row took that response from 98 KB to 1.14 MB on a 250-row set. It is exactly
+ * the sort of thing a person wants when looking at *one* profile, though, so it
+ * is served here, one row at a time.
+ *
+ * The qualification reason comes from the `OutreachLog` row that scopes the
+ * profile to the user. It has been written at decision time since the pipeline
+ * was built and displayed nowhere, which made every qualification look
+ * arbitrary.
+ *
+ * Registered after the literal `/profiles/...` routes above so `find-emails`
+ * is never captured as an `:id`.
+ */
+router.get('/profiles/:id', requireAuth, async (req, res, next) => {
+  try {
+    const userId = req.user!.id;
+
+    const profile = await prisma.profile.findFirst({
+      where: { id: req.params.id, outreachLogs: { some: { userId } } },
+      select: {
+        ...PROFILE_FIELDS,
+        about: true,
+        outreachLogs: {
+          where: { userId, action: 'qualified' },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: { message: true, searchJobId: true, createdAt: true },
+        },
+      },
+    });
+
+    if (!profile) {
+      return res.status(404).json({ ok: false, error: 'Profile not found' });
+    }
+
+    const log = profile.outreachLogs[0];
+    const { outreachLogs: _logs, ...rest } = profile;
+
+    res.status(200).json({
+      ok: true,
+      profile: {
+        ...rest,
+        qualificationReason: log?.message ?? null,
+        searchJobId: log?.searchJobId ?? null,
+      },
     });
   } catch (err) {
     next(err);

@@ -14,6 +14,7 @@ import {
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import {
+  IconChecklist,
   IconChevronDown,
   IconLogout,
   IconMail,
@@ -26,6 +27,7 @@ import {
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthProvider';
 import { Wordmark } from './Logo';
+import { ReadinessBanner } from './ReadinessBanner';
 import classes from './DashboardLayout.module.css';
 
 const NAV_SECTIONS = [
@@ -39,8 +41,12 @@ const NAV_SECTIONS = [
   },
   {
     label: 'Outreach',
+    items: [{ to: '/campaigns', label: 'Campaigns', icon: IconMail }],
+  },
+  {
+    label: 'Setup',
     items: [
-      { to: '/campaigns', label: 'Campaigns', icon: IconMail },
+      { to: '/setup', label: 'Get set up', icon: IconChecklist },
       { to: '/settings', label: 'Settings', icon: IconSettings },
     ],
   },
@@ -191,6 +197,7 @@ export function DashboardLayout() {
 
       <AppShell.Main className={classes.main}>
         <Box p={{ base: 'md', sm: 'xl' }} maw={1400} mx="auto">
+          <ReadinessBanner />
           <Outlet />
         </Box>
       </AppShell.Main>

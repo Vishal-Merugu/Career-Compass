@@ -2,17 +2,17 @@
 // Typed wrappers around chrome.storage.local for essential config,
 // and backend API syncing for all data (stats, logs, companies).
 
+// Only what the extension itself still uses.
+//
+// The AI settings, the search prompt and the geo id are gone: they are read
+// and written in the dashboard, and the extension no longer talks to a model
+// at all. `dailyLimit` and `emailFinderEnabled` stay because the mass
+// connector reads them; both arrive from the server and are never written back
+// from here.
 const DEFAULT_CONFIG = {
-  keywords: 'Werkstudent, Internship, Praktikum',
-  locations: 'Erlangen, Nuremberg, Munich',
   dailyLimit: 15,
-  llmProvider: 'ollama', // 'ollama' | 'gemini' | 'openrouter' | 'custom'
-  llmApiKey: '',
-  llmUrl: 'http://localhost:11434',
-  llmModel: 'qwen2.5:1.5b',
-  userContext: '',
-  targetGeoId: '101282230',
   emailFinderEnabled: true,
+  userContext: '',
   backendUrl: 'http://localhost:3000',
   apiKey: '', // Empty by default so user is prompted to login
 };
@@ -37,36 +37,22 @@ async function storageSet(key, value) {
 
 async function getConfig() {
   const config = (await storageGet('config')) || {};
-  const finalConfig = { ...DEFAULT_CONFIG, ...config };
-
-  // Migration: Clear old hardcoded IP
-  if (finalConfig.llmUrl && finalConfig.llmUrl.includes('192.168.31.217')) {
-    finalConfig.llmUrl = 'http://localhost:11434';
-  }
-
-  return finalConfig;
+  return { ...DEFAULT_CONFIG, ...config };
 }
 
-async function setConfig(config, pushToServer = true) {
+/**
+ * Save local wiring only.
+ *
+ * **This no longer pushes anything to the server.** It used to send the whole
+ * local config to `/api/config` on every save while `syncConfigFromServer`
+ * pulled and merged the server's copy on load — two writers on one row, last
+ * write wins. Settings live in the dashboard now; the extension reads them.
+ *
+ * `apiKey` and `backendUrl` are how this extension reaches the server. They
+ * are local wiring and are the only things it still owns.
+ */
+async function setConfig(config) {
   await storageSet('config', config);
-
-  if (pushToServer && config.apiKey && config.backendUrl) {
-    // apiKey and backendUrl are how this extension reaches the server; they are
-    // local wiring, not settings the server should store back.
-    const { apiKey, backendUrl, ...remoteConfig } = config;
-    try {
-      await fetch(`${config.backendUrl}/api/config`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': config.apiKey,
-        },
-        body: JSON.stringify(remoteConfig),
-      });
-    } catch (e) {
-      console.error('[Storage] Failed to push config to server:', e);
-    }
-  }
 }
 
 async function syncConfigFromServer() {
@@ -122,6 +108,27 @@ async function apiSync(path, method = 'GET', body = null) {
     console.error(`[Storage Sync API Error] ${method} ${path}:`, err);
     return null;
   }
+}
+
+// ─── Connection notes ────────────────────────────────────────────
+
+/**
+ * Ask the server to write a connection note.
+ *
+ * The model runs server-side now. Sending the invitation is still done here —
+ * a write to someone else's account is the most restriction-prone call in this
+ * product, and at 15 a day there is no throughput to gain by moving it.
+ */
+async function generateConnectionNote(profile) {
+  const res = await apiSync('/api/connections/message', 'POST', profile);
+
+  if (!res) {
+    return { ok: false, error: 'Could not reach the CareerCompass server' };
+  }
+  if (!res.ok) {
+    return { ok: false, error: res.error || 'The AI model failed' };
+  }
+  return { ok: true, message: res.message };
 }
 
 // ─── Processed Companies (dedup) ─────────────────────────────────
@@ -232,6 +239,7 @@ if (typeof globalThis !== 'undefined') {
     setConfig,
     syncConfigFromServer,
     apiSync,
+    generateConnectionNote,
     getProcessedCompanies,
     addProcessedCompany,
     isCompanyProcessed,
