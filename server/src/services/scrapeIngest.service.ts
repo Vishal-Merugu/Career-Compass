@@ -31,6 +31,8 @@ export interface ScrapedRawData {
     title?: string;
     company?: string;
     companyName?: string;
+    /** "Work Study", "Internship", … — absent on rows scraped before 2026-08-10. */
+    employmentType?: string;
     startDate?: unknown;
     endDate?: unknown;
     timePeriod?: unknown;

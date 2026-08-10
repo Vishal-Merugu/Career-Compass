@@ -233,6 +233,8 @@ export interface IProfileExperience {
   title: string;
   companyName: string;
   description?: string;
+  /** "Full-time", "Internship", "Work Study", … — see `employmentTypeOf`. */
+  employmentType?: string;
   timePeriod: {
     startDate: {
       year: string | number;
@@ -249,6 +251,57 @@ export interface IProfileEducation {
   school: string;
   degree: string;
   fieldOfStudy: string;
+  /**
+   * Years only — LinkedIn rarely carries a month here, and the year is what
+   * decides the question being asked of it: is this degree finished?
+   */
+  timePeriod?: {
+    startDate: { year: string | number };
+    endDate: { year: string | number };
+  };
+}
+
+/**
+ * A position's employment type — "Full-time", "Internship", "Work Study".
+ *
+ * Worth the three-branch lookup because this is the field that separates a
+ * Werkstudent from a full-time engineer, and dropping it made every student job
+ * read to the model as a professional tenure. LinkedIn writes it as a plain
+ * string, as a `{ localizedName }` object on the older Position schema, or as
+ * nothing but `urn:li:fsd_employmentType:WORK_STUDY` on the dash one.
+ */
+export function employmentTypeOf(position: unknown): string {
+  if (!position || typeof position !== 'object') return '';
+
+  const item = position as {
+    employmentType?: unknown;
+    employmentTypeUrn?: unknown;
+    '*employmentType'?: unknown;
+  };
+
+  const direct = item.employmentType;
+
+  if (typeof direct === 'string' && direct) return direct;
+
+  if (direct && typeof direct === 'object') {
+    const named = direct as { localizedName?: unknown; name?: unknown };
+    const label = named.localizedName ?? named.name ?? getText(direct);
+    if (typeof label === 'string' && label) return label;
+  }
+
+  const urn = item.employmentTypeUrn ?? item['*employmentType'];
+
+  if (typeof urn === 'string' && urn.includes(':')) {
+    const key = urn.split(':').pop() ?? '';
+    return key
+      .toLowerCase()
+      .split('_')
+      .filter(Boolean)
+      .map((word) => word[0].toUpperCase() + word.slice(1))
+      .join(' ');
+  }
+
+  return '';
 }
 
 export interface IParsedProfile {
@@ -305,6 +358,7 @@ export function parseFullProfile(response: any): IParsedProfile {
         title: getText(item.title || item.titleV2),
         companyName: getText(item.companyName),
         description: getText(item.description || item.descriptionV2),
+        employmentType: employmentTypeOf(item),
         timePeriod: {
           startDate: {
             year: startDate.year || '',
@@ -318,10 +372,20 @@ export function parseFullProfile(response: any): IParsedProfile {
       });
     }
     if (type.includes('Education') && item.schoolName) {
+      // Same shape juggling as Position: `dateRange` on the dash schema,
+      // `timePeriod` on the older one.
+      const period = item.dateRange || item.timePeriod || {};
+      const eduStart = period.start || period.startDate || {};
+      const eduEnd = period.end || period.endDate || {};
+
       profile.education.push({
         school: getText(item.schoolName),
         degree: getText(item.degreeName),
         fieldOfStudy: getText(item.fieldOfStudy),
+        timePeriod: {
+          startDate: { year: eduStart.year || '' },
+          endDate: { year: eduEnd.year || '' },
+        },
       });
     }
     if (type.includes('Skill') && item.name) {

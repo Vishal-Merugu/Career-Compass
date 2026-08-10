@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
+import { companySlugFromUrl } from '../lib/companyName.js';
 import { sendStopLimitReached } from '../ws-gateway/commands/sendStopLimitReached.js';
 import { collectNextBatch } from './jobRunner.js';
 import { dispatchNext } from './dispatchNext.js';
@@ -67,12 +68,10 @@ export async function checkJobStopCondition(jobId: string): Promise<boolean> {
     });
 
     if (updatedJob.user?.telegramId) {
-      const company =
-        updatedJob.searchParams &&
-        typeof updatedJob.searchParams === 'object' &&
-        'companyUrl' in (updatedJob.searchParams as any)
-          ? ` for ${(updatedJob.searchParams as any).companyUrl.split('/').filter(Boolean).pop()?.toUpperCase()}`
-          : '';
+      const slug = companySlugFromUrl(
+        (updatedJob.searchParams as { companyUrl?: string } | null)?.companyUrl,
+      );
+      const company = slug ? ` for ${slug.toUpperCase()}` : '';
       telegramBotService
         .sendMessage(
           updatedJob.user!.telegramId!,

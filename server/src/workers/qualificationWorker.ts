@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
+import { companyNameFromUrl } from '../lib/companyName.js';
 import { evaluateProfile } from '../shared/llmClient.js';
 import { IParsedProfile } from '../shared/parsers.js';
 import { PrismaStorageAdapter } from '../services/storage.adapter.js';
@@ -222,6 +223,7 @@ export class QualificationWorker {
         title: exp.title || '',
         companyName: exp.company || exp.companyName || '',
         description: exp.description || '',
+        employmentType: exp.employmentType || '',
         timePeriod: {
           startDate: {
             year: exp.startDate?.year || '',
@@ -237,6 +239,10 @@ export class QualificationWorker {
         school: edu.school || '',
         degree: edu.degree || '',
         fieldOfStudy: edu.fieldOfStudy || '',
+        timePeriod: {
+          startDate: { year: edu.timePeriod?.startDate?.year || '' },
+          endDate: { year: edu.timePeriod?.endDate?.year || '' },
+        },
       })),
       skills: raw.skills || [],
       location: profile.location || '',
@@ -246,7 +252,22 @@ export class QualificationWorker {
         '',
     };
 
-    const targetCompany = parsedProfile.experiences[0]?.companyName || '';
+    // The company the *run* searched for, not the one this person happens to
+    // work at. Reading it off the profile made the prompt's "is this person at
+    // the target company?" step circular — it asked the model to confirm a fact
+    // it had just been handed — so nobody could ever fail it.
+    const searchedCompany = companyNameFromUrl(
+      (job.searchParams as { companyUrl?: string } | null)?.companyUrl,
+    );
+
+    // Falls back to the old behaviour for a job with no parseable company URL,
+    // so an odd search URL degrades to a weaker check rather than an empty one.
+    const targetCompany =
+      searchedCompany || parsedProfile.experiences[0]?.companyName || '';
+
+    // What Results and the campaign show. Still the person's own current
+    // employer — the searched company is the filter, not their job.
+    const currentCompany = parsedProfile.experiences[0]?.companyName || '';
 
     // Mailmeteor expects a clean vanity URL, not an internal Voyager ID
     const slug =
@@ -353,7 +374,7 @@ export class QualificationWorker {
         headline: profile.headline,
         about: parsedProfile.about,
         location: profile.location,
-        companyName: targetCompany,
+        companyName: currentCompany,
         rawProfileJson: profile.rawData,
         email: null,
         emailSource: null,
