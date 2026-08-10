@@ -125,6 +125,60 @@ router.get('/profiles', requireAuthOrApiKey, async (req, res, next) => {
 });
 
 /**
+ * One profile, in full — including the fields the list deliberately omits.
+ *
+ * `about` is excluded from `GET /api/profiles` because shipping it for every
+ * row took that response from 98 KB to 1.14 MB on a 250-row set. It is exactly
+ * the sort of thing a person wants when looking at *one* profile, though, so it
+ * is served here, one row at a time.
+ *
+ * The qualification reason comes from the `OutreachLog` row that scopes the
+ * profile to the user. It has been written at decision time since the pipeline
+ * was built and displayed nowhere, which made every qualification look
+ * arbitrary.
+ *
+ * Registered after the literal `/profiles/...` routes above so `find-emails`
+ * is never captured as an `:id`.
+ */
+router.get('/profiles/:id', requireAuth, async (req, res, next) => {
+  try {
+    const userId = req.user!.id;
+
+    const profile = await prisma.profile.findFirst({
+      where: { id: req.params.id, outreachLogs: { some: { userId } } },
+      select: {
+        ...PROFILE_FIELDS,
+        about: true,
+        outreachLogs: {
+          where: { userId, action: 'qualified' },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: { message: true, searchJobId: true, createdAt: true },
+        },
+      },
+    });
+
+    if (!profile) {
+      return res.status(404).json({ ok: false, error: 'Profile not found' });
+    }
+
+    const log = profile.outreachLogs[0];
+    const { outreachLogs: _logs, ...rest } = profile;
+
+    res.status(200).json({
+      ok: true,
+      profile: {
+        ...rest,
+        qualificationReason: log?.message ?? null,
+        searchJobId: log?.searchJobId ?? null,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
  * Companies resolved from the user's scraped jobs.
  */
 router.get('/companies', requireAuthOrApiKey, async (req, res, next) => {
@@ -401,66 +455,6 @@ router.delete('/profiles/:id', requireAuth, async (req, res, next) => {
 
     const deleted = await deleteProfiles(req.user!.id, [req.params.id], jobId);
     res.status(200).json({ ok: true, deleted });
-  } catch (err) {
-    next(err);
-  }
-});
-
-/**
- * One profile, in full — including the fields the list deliberately omits.
- *
- * `about` is excluded from `GET /api/profiles` because shipping it for every
- * row took that response from 98 KB to 1.14 MB on a 250-row set. It is exactly
- * the sort of thing a person wants when looking at *one* profile, though, so it
- * is served here, one row at a time.
- *
- * The qualification reason comes from the `OutreachLog` row that scopes the
- * profile to the user. It has been written at decision time since the pipeline
- * was built and displayed nowhere, which made every qualification look
- * arbitrary.
- *
- * Registered after every literal `/profiles/...` route so `find-emails` is
- * never captured as an `:id`. It sat directly under `GET /profiles` until
- * 2026-08-10, above the `find-emails` routes, so `GET
- * /api/profiles/find-emails` matched here with `id: 'find-emails'` and always
- * answered 404 "Profile not found" — the dashboard's lookup panel could never
- * read queue state. The POST and DELETE forms were unaffected: `:id` is
- * declared for GET and DELETE only, and `DELETE /profiles/:id` was already
- * below its literal sibling.
- */
-router.get('/profiles/:id', requireAuth, async (req, res, next) => {
-  try {
-    const userId = req.user!.id;
-
-    const profile = await prisma.profile.findFirst({
-      where: { id: req.params.id, outreachLogs: { some: { userId } } },
-      select: {
-        ...PROFILE_FIELDS,
-        about: true,
-        outreachLogs: {
-          where: { userId, action: 'qualified' },
-          orderBy: { createdAt: 'desc' },
-          take: 1,
-          select: { message: true, searchJobId: true, createdAt: true },
-        },
-      },
-    });
-
-    if (!profile) {
-      return res.status(404).json({ ok: false, error: 'Profile not found' });
-    }
-
-    const log = profile.outreachLogs[0];
-    const { outreachLogs: _logs, ...rest } = profile;
-
-    res.status(200).json({
-      ok: true,
-      profile: {
-        ...rest,
-        qualificationReason: log?.message ?? null,
-        searchJobId: log?.searchJobId ?? null,
-      },
-    });
   } catch (err) {
     next(err);
   }
