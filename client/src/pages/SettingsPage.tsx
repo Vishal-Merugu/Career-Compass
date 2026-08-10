@@ -56,7 +56,11 @@ export function SettingsPage() {
       >
         <Tabs.List mb="xl">
           {TABS.map(({ value, label, icon: Icon }) => (
-            <Tabs.Tab key={value} value={value} leftSection={<Icon size={15} />}>
+            <Tabs.Tab
+              key={value}
+              value={value}
+              leftSection={<Icon size={15} />}
+            >
               {label}
             </Tabs.Tab>
           ))}

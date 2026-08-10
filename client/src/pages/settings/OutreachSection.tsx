@@ -204,7 +204,9 @@ export function OutreachSection() {
                 : '16 characters, shown once by Google when you create it.'
             }
             placeholder={
-              settings?.smtpConfigured ? '••••••••••••••••' : 'abcd efgh ijkl mnop'
+              settings?.smtpConfigured
+                ? '••••••••••••••••'
+                : 'abcd efgh ijkl mnop'
             }
             value={password}
             onChange={(e) => setPassword(e.currentTarget.value)}

@@ -13,15 +13,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import {
-  Alert,
-  Button,
-  Group,
-  List,
-  Modal,
-  Stack,
-  Text,
-} from '@mantine/core';
+import { Alert, Button, Group, List, Modal, Stack, Text } from '@mantine/core';
 import { IconAlertTriangle, IconCheck, IconTrash } from '@tabler/icons-react';
 import { useMutation } from '@tanstack/react-query';
 import type { DeleteResponse, DeletionSummary } from '../api/types';

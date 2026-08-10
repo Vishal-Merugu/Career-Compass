@@ -22,7 +22,11 @@ import {
   Text,
   TextInput,
 } from '@mantine/core';
-import { IconAlertCircle, IconCheck, IconPlugConnected } from '@tabler/icons-react';
+import {
+  IconAlertCircle,
+  IconCheck,
+  IconPlugConnected,
+} from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
 import type {
@@ -147,7 +151,8 @@ export function AiModelSection() {
             <Code>{settings.builtIn.url}</Code>.
           </Text>
           <Text fz={12.5} c="dimmed" mt={4}>
-            Set by whoever runs this server. Test it below to confirm it answers.
+            Set by whoever runs this server. Test it below to confirm it
+            answers.
           </Text>
         </Alert>
       )}
@@ -238,7 +243,12 @@ export function AiModelSection() {
           >
             <Text fz={13}>{result.fix}</Text>
             {result.detail && (
-              <Text fz={12} c="dimmed" mt={6} style={{ wordBreak: 'break-word' }}>
+              <Text
+                fz={12}
+                c="dimmed"
+                mt={6}
+                style={{ wordBreak: 'break-word' }}
+              >
                 {result.detail}
               </Text>
             )}

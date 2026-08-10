@@ -64,7 +64,11 @@ function EventRow({ event }: { event: JobEvent }) {
           <Group gap={8} wrap="nowrap" align="baseline">
             <Text
               fz={13.5}
-              c={LEVEL_COLOR[event.level] === 'dimmed' ? undefined : LEVEL_COLOR[event.level]}
+              c={
+                LEVEL_COLOR[event.level] === 'dimmed'
+                  ? undefined
+                  : LEVEL_COLOR[event.level]
+              }
               style={{ flex: 1 }}
             >
               {event.message}
@@ -98,9 +102,7 @@ function EventRow({ event }: { event: JobEvent }) {
                       transition: 'transform 120ms',
                     }}
                   />
-                  <Text fz={12}>
-                    {open ? 'Hide' : 'Show'} technical detail
-                  </Text>
+                  <Text fz={12}>{open ? 'Hide' : 'Show'} technical detail</Text>
                 </Group>
               </UnstyledButton>
               {open && <Text className={classes.detail}>{event.detail}</Text>}

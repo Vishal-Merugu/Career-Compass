@@ -106,7 +106,11 @@ export function RunDetailPage() {
     queryKey: ['job-events', id],
     queryFn: () => api.get<JobEventsResponse>(`/api/jobs/${id}/events`),
     refetchInterval: (query) =>
-      ACTIVE.has(data?.job.status ?? '') ? 3_000 : (query.state.data ? false : 5_000),
+      ACTIVE.has(data?.job.status ?? '')
+        ? 3_000
+        : query.state.data
+          ? false
+          : 5_000,
   });
 
   const control = useMutation({
@@ -121,7 +125,12 @@ export function RunDetailPage() {
 
   if (error) {
     return (
-      <Alert color="red" variant="light" radius="lg" title="Could not load this run">
+      <Alert
+        color="red"
+        variant="light"
+        radius="lg"
+        title="Could not load this run"
+      >
         {error.message}
       </Alert>
     );
@@ -158,7 +167,13 @@ export function RunDetailPage() {
           <IconArrowLeft size={13} /> All runs
         </Anchor>
 
-        <Group justify="space-between" align="flex-end" mt={6} wrap="wrap" gap="md">
+        <Group
+          justify="space-between"
+          align="flex-end"
+          mt={6}
+          wrap="wrap"
+          gap="md"
+        >
           <Box>
             <Group gap="sm">
               <Title order={2}>{companyName}</Title>
@@ -247,8 +262,8 @@ export function RunDetailPage() {
             {stats.erroredCount > 0 && (
               <Text fz={13}>
                 {stats.erroredCount} profile
-                {stats.erroredCount === 1 ? '' : 's'} already read from LinkedIn
-                {' '}but never judged. Resuming re-judges them without fetching
+                {stats.erroredCount === 1 ? '' : 's'} already read from LinkedIn{' '}
+                but never judged. Resuming re-judges them without fetching
                 anything again.
               </Text>
             )}
@@ -279,7 +294,8 @@ export function RunDetailPage() {
         <Text fz={12.5} c="dimmed" mt={8}>
           {stats.scrapedCount} of {stats.collectedCount} collected profiles read
           from LinkedIn
-          {stats.remainingCount > 0 && ` · ${stats.remainingCount} still queued`}
+          {stats.remainingCount > 0 &&
+            ` · ${stats.remainingCount} still queued`}
         </Text>
       </Paper>
 
@@ -313,7 +329,9 @@ export function RunDetailPage() {
             size="compact-xs"
             leftSection={<IconRefresh size={13} />}
             onClick={() =>
-              void queryClient.invalidateQueries({ queryKey: ['job-events', id] })
+              void queryClient.invalidateQueries({
+                queryKey: ['job-events', id],
+              })
             }
           >
             Refresh

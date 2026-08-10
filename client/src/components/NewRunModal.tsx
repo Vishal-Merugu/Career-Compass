@@ -23,14 +23,15 @@ import {
   Textarea,
   TextInput,
 } from '@mantine/core';
-import { IconAlertCircle, IconArrowRight, IconCheck } from '@tabler/icons-react';
+import {
+  IconAlertCircle,
+  IconArrowRight,
+  IconCheck,
+} from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { api, ApiError } from '../api/client';
-import type {
-  FinderSettingsResponse,
-  PreflightResponse,
-} from '../api/types';
+import type { FinderSettingsResponse, PreflightResponse } from '../api/types';
 
 interface CreatedJob {
   ok: true;
@@ -46,7 +47,10 @@ function companyUrlProblem(value: string): string | null {
     if (!url.hostname.endsWith('linkedin.com')) {
       return 'That is not a linkedin.com address.';
     }
-    if (!url.pathname.includes('/company/') && !url.searchParams.get('currentCompany')) {
+    if (
+      !url.pathname.includes('/company/') &&
+      !url.searchParams.get('currentCompany')
+    ) {
       return 'Use the company page URL — linkedin.com/company/…';
     }
     return null;
@@ -150,9 +154,7 @@ export function NewRunModal({
             radius="md"
             icon={<IconCheck size={17} />}
           >
-            <Text fz={13}>
-              LinkedIn session and AI model both check out.
-            </Text>
+            <Text fz={13}>LinkedIn session and AI model both check out.</Text>
           </Alert>
         )}
 

@@ -359,7 +359,11 @@ export function RunsPage() {
 
       <SimpleGrid cols={{ base: 1, xs: 3 }} spacing="md">
         <StatTile label="Runs" value={jobs.length} loading={isPending} />
-        <StatTile label="Active now" value={active.length} loading={isPending} />
+        <StatTile
+          label="Active now"
+          value={active.length}
+          loading={isPending}
+        />
         {/* Replaces a total-qualified tile. Only one number here should ever
             prompt an action, and this is it. */}
         <StatTile
@@ -378,8 +382,9 @@ export function RunsPage() {
           </Stack>
         ) : jobs.length === 0 ? (
           <EmptyState title="No runs yet">
-            Press <strong>New run</strong>, paste a LinkedIn company URL, and say
-            who counts as a match. The profiles it qualifies land on Results.
+            Press <strong>New run</strong>, paste a LinkedIn company URL, and
+            say who counts as a match. The profiles it qualifies land on
+            Results.
           </EmptyState>
         ) : (
           <div className={classes.tableWrap}>
@@ -395,7 +400,8 @@ export function RunsPage() {
                       size="xs"
                       aria-label="Select all runs"
                       checked={
-                        allIds.length > 0 && allIds.every((id) => selected.has(id))
+                        allIds.length > 0 &&
+                        allIds.every((id) => selected.has(id))
                       }
                       indeterminate={
                         allIds.some((id) => selected.has(id)) &&
@@ -441,7 +447,9 @@ export function RunsPage() {
             : `Delete ${deleting.length} runs?`
         }
         confirmLabel={
-          deleting.length === 1 ? 'Delete run' : `Delete ${deleting.length} runs`
+          deleting.length === 1
+            ? 'Delete run'
+            : `Delete ${deleting.length} runs`
         }
         // The whole selection is refused if any one of them is working, so the
         // dialog says so up front rather than offering a button that 409s.
