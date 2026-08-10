@@ -29,6 +29,28 @@ import classes from './CampaignsPage.module.css';
 /** Matches the server's default in `server/src/api/campaigns.router.ts`. */
 const PAGE_SIZE = 25;
 
+/**
+ * What the Prompt field starts with.
+ *
+ * The operator's own background, deliberately in one constant rather than
+ * scattered through the form — this is a single-tenant instance, but the old
+ * mailer this was ported from wove one person's identity through
+ * `composeDraft` and had to be untangled. Editing the pitch means editing here
+ * and nowhere else.
+ *
+ * It is only an initial value: the field is fully editable, and each campaign
+ * stores whatever was submitted.
+ */
+const DEFAULT_COMMON_PROMPT = `I'm Vishal Merugu, a software and data engineer with 3+ years of production experience — Node.js, TypeScript, Python, AWS and Azure, Docker and Kubernetes — most recently as a Senior Software Engineer at Klenty, a B2B SaaS product serving 100,000+ users. I'm now in Erlangen doing an M.Sc. in Information and Communication Technology at FAU, and I'm looking for working-student, internship or thesis roles in backend, cloud, or data and ML engineering.
+
+Write a short email, under 130 words:
+- open with one concrete line about their team, product or the work they do — never generic flattery
+- introduce me in one or two lines, choosing whichever of these is most relevant to them: backend and cloud infrastructure, data pipelines and A/B experimentation, or LLM evaluation and agent tooling
+- say plainly what I'm looking for, and mention that my CV is attached
+- close by asking whether they would be open to a short chat
+
+Plain, direct and warm. No buzzwords, no exclamation marks, no bullet points inside the email itself. Do not claim I have used their product unless the details say so.`;
+
 export function CampaignForm({
   onCreated,
   onCancel,
@@ -38,7 +60,7 @@ export function CampaignForm({
 }) {
   const [name, setName] = useState('');
   const [emailSubject, setEmailSubject] = useState('');
-  const [commonPrompt, setCommonPrompt] = useState('');
+  const [commonPrompt, setCommonPrompt] = useState(DEFAULT_COMMON_PROMPT);
   const [minDelayMs, setMinDelayMs] = useState<number>(5000);
   const [maxDelayMs, setMaxDelayMs] = useState<number>(10000);
 
@@ -88,16 +110,35 @@ export function CampaignForm({
         onChange={(e) => setEmailSubject(e.currentTarget.value)}
         required
       />
+      {/* The field people get wrong. "Contact details are added automatically"
+          was true and useless — it said what not to write without saying what
+          to. What the server injects is now listed under the field, so the only
+          question left is what to say about yourself. */}
       <Textarea
         label="Prompt"
-        description="How to write each email. Contact details are added automatically."
-        placeholder="Write a short, specific email introducing me as a working-student candidate…"
+        description="How to write each email — who you are and what you are asking for."
+        placeholder={`I'm a computer science master's student at FAU Erlangen, looking for a working-student role in backend or ML.
+
+Write a short email, under 120 words:
+- open with one concrete line about their team or product
+- say what I'm looking for and what I bring
+- close by asking if they would be open to a short chat
+
+Plain and direct. No buzzwords, no flattery.`}
         autosize
-        minRows={4}
-        maxRows={10}
+        minRows={8}
+        maxRows={16}
         value={commonPrompt}
         onChange={(e) => setCommonPrompt(e.currentTarget.value)}
       />
+
+      <Text size="xs" c="dimmed" mt={-8}>
+        Added for you, so do not ask for them: the recipient&apos;s{' '}
+        <b>name, company and role</b>, and your <b>signature</b> and{' '}
+        <b>CV attachment</b> from Settings. Write no sign-off — one is appended.
+        The model may start with a &ldquo;Subject:&rdquo; line to override the
+        fallback subject above.
+      </Text>
 
       <Group grow align="flex-start">
         <NumberInput
