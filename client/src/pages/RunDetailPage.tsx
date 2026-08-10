@@ -12,6 +12,7 @@
  * nobody asked for scraped profiles in the first place.
  */
 
+import { useState } from 'react';
 import {
   Alert,
   Anchor,
@@ -36,12 +37,18 @@ import {
   IconPlayerPause,
   IconPlayerPlay,
   IconRefresh,
+  IconTrash,
   IconX,
 } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
-import type { JobEventsResponse, JobStatusResponse } from '../api/types';
+import type {
+  DeleteResponse,
+  JobEventsResponse,
+  JobStatusResponse,
+} from '../api/types';
+import { DeleteConfirmModal } from '../components/DeleteConfirmModal';
 import { JobEventLog } from '../components/JobEventLog';
 import { statusColor, statusLabel } from '../lib/runStatus';
 import classes from './RunDetailPage.module.css';
@@ -84,6 +91,9 @@ export function RunDetailPage() {
   const { id = '' } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [deleting, setDeleting] = useState(false);
+  /** This page is *about* the run. Once it is gone, there is nothing to show. */
+  const [deleted, setDeleted] = useState(false);
 
   const { data, isPending, error } = useQuery({
     queryKey: ['job-status', id],
@@ -211,6 +221,15 @@ export function RunDetailPage() {
                 Company
               </Button>
             )}
+            <Button
+              variant="subtle"
+              color="red"
+              size="xs"
+              leftSection={<IconTrash size={14} />}
+              onClick={() => setDeleting(true)}
+            >
+              Delete
+            </Button>
           </Group>
         </Group>
       </Box>
@@ -313,8 +332,49 @@ export function RunDetailPage() {
           >
             See the {job.qualifiedCount} profiles this run found
           </Button>
+          {/* Removing *one* person from this run happens there, on the row.
+              The filtered Results table is already the list of this run's
+              people, so a second copy of it here would be two screens that
+              have to agree. */}
+          <Text fz={12.5} c="dimmed">
+            Individual profiles can be removed from that list.
+          </Text>
         </Group>
       )}
+
+      <DeleteConfirmModal
+        opened={deleting}
+        // Closing the receipt has nowhere to go back to — this page is about a
+        // run that no longer exists, and leaving it up would poll a 404.
+        onClose={() => (deleted ? navigate('/runs') : setDeleting(false))}
+        title="Delete this run?"
+        confirmLabel="Delete run"
+        blocked={
+          active
+            ? 'This run is still working. Pause or cancel it first, then delete it.'
+            : undefined
+        }
+        mutationFn={() => api.del<DeleteResponse>(`/api/jobs/${id}`)}
+        onDeleted={() => {
+          setDeleted(true);
+          void queryClient.invalidateQueries({ queryKey: ['jobs'] });
+          void queryClient.invalidateQueries({ queryKey: ['profiles'] });
+        }}
+      >
+        <Stack gap="xs">
+          <Text fz={13.5}>
+            {stats.collectedCount} collected profile
+            {stats.collectedCount === 1 ? '' : 's'}, {stats.scrapedCount} read
+            from LinkedIn, {job.qualifiedCount} qualified and the whole run log
+            are deleted.
+          </Text>
+          <Text fz={13.5}>
+            The {job.qualifiedCount} qualified{' '}
+            {job.qualifiedCount === 1 ? 'person leaves' : 'people leave'}{' '}
+            <strong>Results</strong> too, unless another run also found them.
+          </Text>
+        </Stack>
+      </DeleteConfirmModal>
     </Stack>
   );
 }

@@ -11,6 +11,7 @@ import {
   Loader,
   Modal,
   Progress,
+  Radio,
   Select,
   SimpleGrid,
   Skeleton,
@@ -31,6 +32,7 @@ import {
   IconRadar,
   IconRefresh,
   IconSearch,
+  IconTrash,
   IconUsers,
 } from '@tabler/icons-react';
 import {
@@ -45,10 +47,12 @@ import type {
   AddContactsResponse,
   Campaign,
   CampaignsResponse,
+  DeleteResponse,
   JobsResponse,
   Profile,
   ProfilesResponse,
 } from '../api/types';
+import { DeleteConfirmModal } from '../components/DeleteConfirmModal';
 import { ProfileDrawer } from '../components/ProfileDrawer';
 import { EmptyState } from '../components/EmptyState';
 import { StatTile } from '../components/StatTile';
@@ -286,6 +290,16 @@ export function ResultsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
   const [detail, setDetail] = useState<Profile | null>(null);
+  /** The profiles the open confirmation is about — a row, or the selection. */
+  const [deleting, setDeleting] = useState<string[]>([]);
+  /**
+   * Whether a scoped delete removes the person from this run or from the
+   * account. Only asked while the view is filtered to one run, because that is
+   * the only time the two differ — and they differ enough to be worth a
+   * question rather than a guess.
+   */
+  const [scope, setScope] = useState<'run' | 'everywhere'>('run');
+  const queryClient = useQueryClient();
 
   // The run filter lives in the URL so a run's detail page can link straight
   // at "the people this run found", and so the scoped view survives a refresh.
@@ -652,6 +666,17 @@ export function ResultsPage() {
                   Add {mailableIds.length} to campaign
                 </Button>
               </Tooltip>
+              <Tooltip label="Delete these profiles and everything behind them">
+                <Button
+                  size="sm"
+                  variant="light"
+                  color="red"
+                  leftSection={<IconTrash size={15} />}
+                  onClick={() => setDeleting(lookupIds)}
+                >
+                  Delete ({lookupIds.length})
+                </Button>
+              </Tooltip>
               <Button
                 size="sm"
                 variant="subtle"
@@ -924,7 +949,74 @@ export function ResultsPage() {
         }}
       />
 
-      <ProfileDrawer profile={detail} onClose={() => setDetail(null)} />
+      <ProfileDrawer
+        profile={detail}
+        onClose={() => setDetail(null)}
+        onDelete={(p) => setDeleting([p.id])}
+      />
+
+      <DeleteConfirmModal
+        opened={deleting.length > 0}
+        onClose={() => setDeleting([])}
+        title={
+          deleting.length === 1
+            ? 'Delete this profile?'
+            : `Delete ${deleting.length} profiles?`
+        }
+        confirmLabel={
+          deleting.length === 1 ? 'Delete profile' : `Delete ${deleting.length}`
+        }
+        mutationFn={() =>
+          api.del<DeleteResponse>('/api/profiles', {
+            profileIds: deleting,
+            // No jobId means "everywhere", which is also the only sane meaning
+            // of a delete pressed on the unfiltered table.
+            ...(jobId && scope === 'run' ? { jobId } : {}),
+          })
+        }
+        onDeleted={() => {
+          setSelected(new Set());
+          setDetail(null);
+          void queryClient.invalidateQueries({ queryKey: ['profiles'] });
+          // Deleting people changes a run's qualified count.
+          void queryClient.invalidateQueries({ queryKey: ['jobs'] });
+          void queryClient.invalidateQueries({ queryKey: ['job-status'] });
+        }}
+      >
+        <Stack gap="sm">
+          {jobId ? (
+            <Radio.Group
+              value={scope}
+              onChange={(value) => setScope(value as 'run' | 'everywhere')}
+              label="How far should this go?"
+            >
+              <Stack gap={8} mt={8}>
+                <Radio
+                  value="run"
+                  label="Remove from this run only"
+                  description="They stay on Results if another run also found them. This run's copy of the scrape and the decision are deleted."
+                />
+                <Radio
+                  value="everywhere"
+                  label="Delete from every run"
+                  description="Removed from Results entirely, along with every scrape and decision any run holds for them."
+                />
+              </Stack>
+            </Radio.Group>
+          ) : (
+            <Text fz={13.5}>
+              Removed from Results, along with every scrape and decision any run
+              holds for them. Runs that found them are otherwise untouched.
+            </Text>
+          )}
+
+          <Text fz={13.5} c="dimmed">
+            Emails already sent stay on their campaign as a record. Anything
+            still queued to {deleting.length === 1 ? 'them' : 'these people'} is
+            cancelled.
+          </Text>
+        </Stack>
+      </DeleteConfirmModal>
     </Stack>
   );
 }

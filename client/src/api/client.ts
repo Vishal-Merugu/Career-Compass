@@ -142,6 +142,12 @@ export const api = {
       method: 'PUT',
       body: payload === undefined ? undefined : JSON.stringify(payload),
     }),
-  del: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
+  // A body on DELETE is unusual but correct here: deleting a *selection* has
+  // to name the selection, and a hundred ids do not belong in a query string.
+  del: <T>(path: string, payload?: unknown) =>
+    request<T>(path, {
+      method: 'DELETE',
+      body: payload === undefined ? undefined : JSON.stringify(payload),
+    }),
   upload,
 };

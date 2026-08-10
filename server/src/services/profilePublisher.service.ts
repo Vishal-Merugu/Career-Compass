@@ -118,6 +118,19 @@ export async function publishQualifiedProfile(
 }
 
 /**
+ * The vanity slug in a LinkedIn profile URL — `.../in/<slug>/…` → `<slug>`.
+ *
+ * Exported because deletion has to run it *backwards*: `Profile` is keyed by
+ * slug and `ProfileUrl` holds the raw collected URL, so mapping a person back
+ * to the pipeline rows that produced them means deriving the slug from the URL
+ * with exactly this rule. Two implementations of it would mean a delete that
+ * silently leaves the scrape behind.
+ */
+export function slugFromUrl(profileUrl: string): string {
+  return profileUrl.split('/in/')[1]?.split(/[/?#]/)[0] ?? '';
+}
+
+/**
  * Derive the vanity slug from a scraped profile.
  *
  * Prefers the `publicIdentifier` in the raw Voyager payload and falls back to
@@ -129,5 +142,5 @@ export function slugFromScraped(rawData: unknown, profileUrl: string): string {
   const fromRaw =
     raw && typeof raw.publicIdentifier === 'string' ? raw.publicIdentifier : '';
   if (fromRaw) return fromRaw;
-  return profileUrl.split('/in/')[1]?.split('/')[0] ?? '';
+  return slugFromUrl(profileUrl);
 }

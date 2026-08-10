@@ -307,6 +307,33 @@ export interface JobsResponse {
   jobs: SearchJob[];
 }
 
+/**
+ * What a delete actually removed.
+ *
+ * Mirrors `DeletionSummary` in `server/src/services/dataDeletion.service.ts`.
+ * Shown rather than swallowed: a destructive action that reports only
+ * "deleted" looks identical to one that quietly did nothing, and the whole
+ * point of this feature is that nothing is left behind.
+ */
+export interface DeletionSummary {
+  runs: number;
+  collectedUrls: number;
+  scrapedProfiles: number;
+  decisions: number;
+  events: number;
+  outreachLogs: number;
+  profiles: number;
+  emailLookups: number;
+  companies: number;
+  campaignContactsRemoved: number;
+  campaignContactsKept: number;
+}
+
+export interface DeleteResponse {
+  ok: true;
+  deleted: DeletionSummary;
+}
+
 /** `GET /api/jobs/:id/status`. */
 export interface JobStatusResponse {
   ok: true;

@@ -29,3 +29,19 @@
     var(--mantine-color-dark-6)
   );
 }
+
+/* Selection has to outrank hover, or whichever row the pointer sits near reads
+   as the selected one. Same treatment as the Results table, deliberately —
+   both are "pick rows, then act on them" and should not look like two
+   different mechanisms. */
+.row[data-selected] {
+  background-color: color-mix(in srgb, var(--app-accent) 9%, transparent);
+}
+
+.row[data-selected]:hover {
+  background-color: color-mix(in srgb, var(--app-accent) 14%, transparent);
+}
+
+.row[data-selected] td:first-of-type {
+  box-shadow: inset 2px 0 0 var(--app-accent);
+}

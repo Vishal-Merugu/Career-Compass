@@ -57,6 +57,28 @@ export class QualificationWorker {
   }
 
   /**
+   * Drop queued work for jobs that are about to be deleted.
+   *
+   * The queue is process memory, so nothing in the database can clear it. An
+   * item left behind spends a round trip discovering its `ScrapedProfile` is
+   * gone and then logs "not found in DB" — an error that reads like corruption
+   * and is really just a delete the worker was never told about.
+   */
+  public forgetJobs(jobIds: string[]): void {
+    const doomed = new Set(jobIds);
+    const before = this.queue.length;
+    this.queue = this.queue.filter((item) => !doomed.has(item.jobId));
+    for (const jobId of doomed) this.consecutiveErrors.delete(jobId);
+
+    const dropped = before - this.queue.length;
+    if (dropped > 0) {
+      logger.info(
+        `[QualificationWorker] Dropped ${dropped} queued profile(s) for ${doomed.size} deleted job(s)`,
+      );
+    }
+  }
+
+  /**
    * Sweep for orphaned scraped profiles that haven't been qualified and re-enqueue them.
    */
   public async sweepOrphanedProfiles(): Promise<void> {

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { requireAuthOrApiKey } from '../auth/middleware.js';
+import { requireAuth, requireAuthOrApiKey } from '../auth/middleware.js';
 import { prisma } from '../lib/prisma.js';
 import { ValidationError } from '../errors/AppError.js';
 import { logger } from '../lib/logger.js';
@@ -14,6 +14,7 @@ import { preflightJob } from '../services/jobPreflight.service.js';
 import { recordJobEvent } from '../services/jobEvents.service.js';
 import { clearJobFailure } from '../services/jobControl.service.js';
 import { describeJobError, type JobErrorCode } from '../errors/jobErrors.js';
+import { deleteRuns } from '../services/dataDeletion.service.js';
 const router = Router();
 
 const createJobSchema = z.object({
@@ -475,6 +476,46 @@ router.post('/jobs/:id/resume', requireAuthOrApiKey, async (req, res, next) => {
     await dispatchNext(jobId);
 
     res.status(200).json({ ok: true, job: updatedJob });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Delete runs, and everything they produced.
+ *
+ * `requireAuth`, not `requireAuthOrApiKey`: the extension's key is long-lived,
+ * works from anywhere and is handed out so a browser can report scrape results.
+ * Reporting a scrape must not confer the ability to erase one.
+ *
+ * The collection form takes ids in the body so the Runs list can delete a
+ * selection in one call; `DELETE /jobs/:id` below is the same operation for the
+ * single run a detail page knows about.
+ */
+const deleteJobsSchema = z.object({
+  jobIds: z.array(z.string().min(1)).min(1).max(100),
+});
+
+router.delete('/jobs', requireAuth, async (req, res, next) => {
+  try {
+    const parsed = deleteJobsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid run deletion payload', {
+        issues: parsed.error.errors,
+      });
+    }
+
+    const deleted = await deleteRuns(req.user!.id, parsed.data.jobIds);
+    res.status(200).json({ ok: true, deleted });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/jobs/:id', requireAuth, async (req, res, next) => {
+  try {
+    const deleted = await deleteRuns(req.user!.id, [req.params.id]);
+    res.status(200).json({ ok: true, deleted });
   } catch (err) {
     next(err);
   }

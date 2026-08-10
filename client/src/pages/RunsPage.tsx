@@ -23,6 +23,7 @@ import {
   Badge,
   Box,
   Button,
+  Checkbox,
   Group,
   Progress,
   SimpleGrid,
@@ -41,12 +42,19 @@ import {
   IconPlayerPlay,
   IconPlus,
   IconRefresh,
+  IconTrash,
   IconX,
 } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
-import type { JobStatusResponse, JobsResponse, SearchJob } from '../api/types';
+import type {
+  DeleteResponse,
+  JobStatusResponse,
+  JobsResponse,
+  SearchJob,
+} from '../api/types';
+import { DeleteConfirmModal } from '../components/DeleteConfirmModal';
 import { EmptyState } from '../components/EmptyState';
 import { NewRunModal } from '../components/NewRunModal';
 import { StatTile } from '../components/StatTile';
@@ -67,7 +75,17 @@ function companyFromUrl(job: SearchJob): string {
   return match ? match[1] : url;
 }
 
-function JobRow({ job }: { job: SearchJob }) {
+function JobRow({
+  job,
+  selected,
+  onToggle,
+  onDelete,
+}: {
+  job: SearchJob;
+  selected: boolean;
+  onToggle: () => void;
+  onDelete: () => void;
+}) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const active = ACTIVE_STATUSES.has(job.status);
@@ -97,7 +115,20 @@ function JobRow({ job }: { job: SearchJob }) {
   const open = () => navigate(`/runs/${job.id}`);
 
   return (
-    <Table.Tr className={classes.row} onClick={open}>
+    <Table.Tr
+      className={classes.row}
+      data-selected={selected || undefined}
+      onClick={open}
+    >
+      <Table.Td onClick={(e) => e.stopPropagation()}>
+        <Checkbox
+          size="xs"
+          aria-label={`Select the ${companyFromUrl(job)} run`}
+          checked={selected}
+          onChange={onToggle}
+        />
+      </Table.Td>
+
       <Table.Td>
         <Text fz={13.5} fw={550} lineClamp={1}>
           {companyFromUrl(job)}
@@ -186,7 +217,7 @@ function JobRow({ job }: { job: SearchJob }) {
               <Button
                 size="compact-xs"
                 variant="subtle"
-                color="red"
+                color="gray"
                 loading={control.isPending}
                 onClick={() => control.mutate('cancel')}
               >
@@ -194,6 +225,30 @@ function JobRow({ job }: { job: SearchJob }) {
               </Button>
             </Tooltip>
           )}
+          {/* Red is reserved for the one irreversible action on the row.
+              Cancel used to be red too, which put the recoverable action and
+              the permanent one in the same colour, side by side. */}
+          <Tooltip
+            label={
+              active
+                ? 'Pause or cancel this run before deleting it'
+                : 'Delete this run and everything it found'
+            }
+          >
+            {/* A span, so the tooltip still fires on a disabled button —
+                which is the case where the label is the whole point. */}
+            <span>
+              <Button
+                size="compact-xs"
+                variant="subtle"
+                color="red"
+                disabled={active}
+                onClick={onDelete}
+              >
+                <IconTrash size={14} />
+              </Button>
+            </span>
+          </Tooltip>
           <IconChevronRight size={14} opacity={0.35} />
         </Group>
       </Table.Td>
@@ -203,6 +258,10 @@ function JobRow({ job }: { job: SearchJob }) {
 
 export function RunsPage() {
   const [newRunOpen, setNewRunOpen] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  /** The runs the open confirmation is about — one row, or the selection. */
+  const [deleting, setDeleting] = useState<string[]>([]);
+  const queryClient = useQueryClient();
 
   const { data, isPending, error, refetch, isFetching } = useQuery({
     queryKey: ['jobs'],
@@ -213,6 +272,20 @@ export function RunsPage() {
   const jobs = data?.jobs ?? [];
   const active = jobs.filter((j) => ACTIVE_STATUSES.has(j.status));
   const stuck = jobs.filter((j) => needsAttention(j.status));
+  const allIds = jobs.map((j) => j.id);
+
+  const toggle = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  // Named from the job list rather than the ids, so the dialog can say which
+  // company's run is about to go instead of showing a uuid.
+  const doomed = jobs.filter((j) => deleting.includes(j.id));
+  const doomedActive = doomed.filter((j) => ACTIVE_STATUSES.has(j.status));
 
   if (error) {
     return (
@@ -248,6 +321,25 @@ export function RunsPage() {
           </Text>
         </Box>
         <Group gap="sm">
+          {selected.size > 0 && (
+            <>
+              <Button
+                variant="light"
+                color="red"
+                leftSection={<IconTrash size={15} />}
+                onClick={() => setDeleting([...selected])}
+              >
+                Delete {selected.size} {selected.size === 1 ? 'run' : 'runs'}
+              </Button>
+              <Button
+                variant="subtle"
+                color="gray"
+                onClick={() => setSelected(new Set())}
+              >
+                Clear
+              </Button>
+            </>
+          )}
           <Button
             variant="default"
             leftSection={<IconRefresh size={15} />}
@@ -298,15 +390,39 @@ export function RunsPage() {
             >
               <Table.Thead>
                 <Table.Tr>
-                  <Table.Th w="26%">Company</Table.Th>
-                  <Table.Th w="17%">Status</Table.Th>
-                  <Table.Th w="43%">Progress</Table.Th>
-                  <Table.Th w="14%" />
+                  <Table.Th w="40px">
+                    <Checkbox
+                      size="xs"
+                      aria-label="Select all runs"
+                      checked={
+                        allIds.length > 0 && allIds.every((id) => selected.has(id))
+                      }
+                      indeterminate={
+                        allIds.some((id) => selected.has(id)) &&
+                        !allIds.every((id) => selected.has(id))
+                      }
+                      onChange={(e) =>
+                        setSelected(
+                          e.currentTarget.checked ? new Set(allIds) : new Set(),
+                        )
+                      }
+                    />
+                  </Table.Th>
+                  <Table.Th w="24%">Company</Table.Th>
+                  <Table.Th w="15%">Status</Table.Th>
+                  <Table.Th w="40%">Progress</Table.Th>
+                  <Table.Th w="18%" />
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
                 {jobs.map((job) => (
-                  <JobRow key={job.id} job={job} />
+                  <JobRow
+                    key={job.id}
+                    job={job}
+                    selected={selected.has(job.id)}
+                    onToggle={() => toggle(job.id)}
+                    onDelete={() => setDeleting([job.id])}
+                  />
                 ))}
               </Table.Tbody>
             </Table>
@@ -315,6 +431,57 @@ export function RunsPage() {
       </div>
 
       <NewRunModal opened={newRunOpen} onClose={() => setNewRunOpen(false)} />
+
+      <DeleteConfirmModal
+        opened={deleting.length > 0}
+        onClose={() => setDeleting([])}
+        title={
+          deleting.length === 1
+            ? 'Delete this run?'
+            : `Delete ${deleting.length} runs?`
+        }
+        confirmLabel={
+          deleting.length === 1 ? 'Delete run' : `Delete ${deleting.length} runs`
+        }
+        // The whole selection is refused if any one of them is working, so the
+        // dialog says so up front rather than offering a button that 409s.
+        blocked={
+          doomedActive.length > 0
+            ? `${doomedActive.length === 1 ? 'One of these runs is' : `${doomedActive.length} of these runs are`} still working. Pause or cancel ${doomedActive.length === 1 ? 'it' : 'them'} first — ${doomedActive.map(companyFromUrl).join(', ')}.`
+            : undefined
+        }
+        mutationFn={() =>
+          api.del<DeleteResponse>('/api/jobs', { jobIds: deleting })
+        }
+        onDeleted={() => {
+          setSelected(new Set());
+          void queryClient.invalidateQueries({ queryKey: ['jobs'] });
+          // Results is scoped by run, so it is stale the moment a run goes.
+          void queryClient.invalidateQueries({ queryKey: ['profiles'] });
+        }}
+      >
+        <Stack gap="xs">
+          <Text fz={13.5}>
+            Everything these runs produced goes with them: the profiles they
+            collected, what was read from LinkedIn, every decision the model
+            made, and the run log.
+          </Text>
+          <Text fz={13.5}>
+            The people they qualified are removed from <strong>Results</strong>{' '}
+            too — unless another run also found them, in which case they stay.
+          </Text>
+          {doomed.length > 0 && doomed.length <= 8 && (
+            <Stack gap={2} mt={2}>
+              {doomed.map((job) => (
+                <Text key={job.id} fz={13} c="dimmed">
+                  · {companyFromUrl(job)} — {job.qualifiedCount} qualified,{' '}
+                  {job.totalUrls} collected
+                </Text>
+              ))}
+            </Stack>
+          )}
+        </Stack>
+      </DeleteConfirmModal>
     </Stack>
   );
 }

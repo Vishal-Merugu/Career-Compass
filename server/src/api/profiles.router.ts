@@ -4,6 +4,7 @@ import { requireAuth, requireAuthOrApiKey } from '../auth/middleware.js';
 import { prisma } from '../lib/prisma.js';
 import { ValidationError } from '../errors/AppError.js';
 import { findEmail } from '../services/emailFinder/index.js';
+import { deleteProfiles } from '../services/dataDeletion.service.js';
 import {
   cancelQueuedLookups,
   emailLookupEvents,
@@ -400,5 +401,58 @@ router.get(
     }
   },
 );
+
+// ─── Deleting people ─────────────────────────────────────────────
+//
+// Two scopes, and the difference matters enough to be a parameter rather than
+// two endpoints. With `jobId`, only that run's trace of the person goes and
+// they stay on Results if another run also found them — which is what "remove
+// this profile from this run" has to mean. Without it, every run of this
+// user's is swept, because a profile left behind in the pipeline tables is
+// republished by the next backfill and reappears.
+//
+// `requireAuth`: cookie only, like the campaign routes and for the same
+// reason. Registered after the literal `/profiles/find-emails` routes so the
+// `:id` form cannot capture them.
+
+const deleteProfilesSchema = z.object({
+  profileIds: z.array(z.string().min(1)).min(1).max(500),
+  /** Scope the delete to one run. Omit to remove the person entirely. */
+  jobId: z.string().min(1).optional(),
+});
+
+router.delete('/profiles', requireAuth, async (req, res, next) => {
+  try {
+    const parsed = deleteProfilesSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid profile deletion payload', {
+        issues: parsed.error.errors,
+      });
+    }
+
+    const deleted = await deleteProfiles(
+      req.user!.id,
+      parsed.data.profileIds,
+      parsed.data.jobId,
+    );
+    res.status(200).json({ ok: true, deleted });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/profiles/:id', requireAuth, async (req, res, next) => {
+  try {
+    const jobId =
+      typeof req.query.jobId === 'string' && req.query.jobId
+        ? req.query.jobId
+        : undefined;
+
+    const deleted = await deleteProfiles(req.user!.id, [req.params.id], jobId);
+    res.status(200).json({ ok: true, deleted });
+  } catch (err) {
+    next(err);
+  }
+});
 
 export const profilesRouter = router;

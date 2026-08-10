@@ -152,6 +152,35 @@ people are listed on the run page as people.
 `SearchJob.failureCode` / `failureDetail` are denormalised so the Runs list can
 say _why_ without a join. A paused run must never render like a working one.
 
+## Deleting a run, or a person
+
+`server/src/services/dataDeletion.service.ts` is the **only** place that deletes
+either. Two entry points, `deleteRuns` and `deleteProfiles(userId, ids, jobId?)`,
+behind `DELETE /api/jobs`, `/api/jobs/:id`, `/api/profiles` and
+`/api/profiles/:id` — all `requireAuth`, cookie only, for the same reason the
+campaign routes are.
+
+**Deleting a `SearchJob` cascades only half of it.** The cascade covers
+`ProfileUrl` → `ScrapedProfile` → `ProfileDecision`, `JobEvent` and
+`ExtensionConnection`. `OutreachLog.searchJobId` is a plain column on purpose,
+so without an explicit delete the run's people stay on Results attached to a run
+that no longer exists.
+
+- **The orphan test is "no `OutreachLog` rows remain at all."** Not "we just
+  deleted one" — a person two runs found survives losing one, and one user's
+  delete never touches another user's copy.
+- **A run that is working is refused, not stopped** (`ACTIVE_STATUSES`, 409
+  `WORKFLOW_RUNNING`). Pause or cancel first. A selection containing one working
+  run is refused whole.
+- **Pending `CampaignContact`s are deleted and the campaign total decremented;
+  sent ones are kept** with `profileId` nulled. A sent row is the only record
+  that mail left the user's Gmail.
+- **Mapping a person back to their run goes through
+  `ScrapedProfile.rawData->>'publicIdentifier'`**, never slug-to-slug —
+  `ProfileUrl.url` holds the Voyager urn and `Profile.profileId` holds the vanity
+  slug. See `tasks/lessons.md`.
+- `qualifiedCount` is **recomputed**, not decremented.
+
 ## Email finding
 
 **Lookups are never automatic.** `qualificationWorker` does _not_ find emails —

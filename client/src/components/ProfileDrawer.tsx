@@ -14,13 +14,14 @@ import {
   Anchor,
   Badge,
   Box,
+  Button,
   Divider,
   Drawer,
   Group,
   Stack,
   Text,
 } from '@mantine/core';
-import { IconExternalLink } from '@tabler/icons-react';
+import { IconExternalLink, IconTrash } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
@@ -54,9 +55,18 @@ function Field({
 export function ProfileDrawer({
   profile,
   onClose,
+  onDelete,
 }: {
   profile: Profile | null;
   onClose: () => void;
+  /**
+   * Hand the person back to the page to delete.
+   *
+   * The drawer does not own the confirmation: the same dialog serves the
+   * table's bulk action, and it is the page that knows whether the view is
+   * scoped to one run — which changes what deleting even means.
+   */
+  onDelete?: (profile: Profile) => void;
 }) {
   const source = profile?.emailSource
     ? (SOURCE_LABEL[profile.emailSource] ?? {
@@ -171,6 +181,23 @@ export function ProfileDrawer({
               </Field>
             )}
           </Group>
+
+          {onDelete && (
+            <>
+              <Divider />
+              <Group justify="flex-start">
+                <Button
+                  variant="subtle"
+                  color="red"
+                  size="xs"
+                  leftSection={<IconTrash size={14} />}
+                  onClick={() => onDelete(profile)}
+                >
+                  Delete this profile
+                </Button>
+              </Group>
+            </>
+          )}
         </Stack>
       )}
     </Drawer>
