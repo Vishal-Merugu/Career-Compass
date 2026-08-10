@@ -2,9 +2,11 @@ import {
   ActionIcon,
   AppShell,
   Avatar,
+  Badge,
   Box,
   Burger,
   Group,
+  Loader,
   Menu,
   Stack,
   Text,
@@ -18,6 +20,7 @@ import {
   IconChevronDown,
   IconLogout,
   IconMail,
+  IconMailSearch,
   IconMoon,
   IconRadar,
   IconSun,
@@ -26,6 +29,7 @@ import {
 } from '@tabler/icons-react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthProvider';
+import { useLookupQueue } from '../hooks/useEmailLookups';
 import { Wordmark } from './Logo';
 import { ReadinessBanner } from './ReadinessBanner';
 import classes from './DashboardLayout.module.css';
@@ -82,6 +86,55 @@ function ColorSchemeToggle() {
   );
 }
 
+/**
+ * "Emails are being found" from any screen.
+ *
+ * The queue is worked by the extension or by the server, so it advances while
+ * the user is on Runs or Campaigns with nothing on screen saying so. It links to
+ * Results, which is the only place to act on it.
+ *
+ * A stalled queue is the important case: every pending row waiting on a browser
+ * that never turned up must not read as work in progress, or the header spins
+ * forever after the laptop was closed.
+ */
+function LookupIndicator() {
+  const { data } = useLookupQueue();
+  const stats = data?.stats;
+
+  if (!stats || stats.pending === 0) return null;
+
+  const waiting = stats.stalled >= stats.pending;
+
+  return (
+    <Tooltip
+      label={
+        waiting
+          ? `${stats.pending} email ${stats.pending === 1 ? 'lookup is' : 'lookups are'} waiting for Chrome with the extension open. Open Results to guess them instead or cancel.`
+          : `Finding ${stats.pending} email ${stats.pending === 1 ? 'address' : 'addresses'} — ${stats.done} done so far. Progress is saved; you can leave this tab.`
+      }
+      multiline
+      w={280}
+    >
+      <Badge
+        component={Link}
+        to="/results"
+        variant="light"
+        color={waiting ? 'yellow' : 'brand'}
+        size="lg"
+        radius="sm"
+        style={{ cursor: 'pointer' }}
+        leftSection={
+          waiting ? <IconMailSearch size={13} /> : <Loader size={11} />
+        }
+      >
+        {waiting
+          ? `${stats.pending} waiting`
+          : `Finding emails · ${stats.pending}`}
+      </Badge>
+    </Tooltip>
+  );
+}
+
 export function DashboardLayout() {
   const [opened, { toggle, close }] = useDisclosure(false);
   const { user, logout } = useAuth();
@@ -111,7 +164,8 @@ export function DashboardLayout() {
             <Wordmark size={24} />
           </Group>
 
-          <Group gap={6} wrap="nowrap">
+          <Group gap={10} wrap="nowrap">
+            <LookupIndicator />
             <ColorSchemeToggle />
 
             <Menu position="bottom-end" withArrow shadow="md" width={220}>

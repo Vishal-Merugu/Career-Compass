@@ -82,6 +82,12 @@ export interface LookupStats {
   failed: number;
   /** queued + dispatched — what the UI calls "still working". */
   pending: number;
+  /**
+   * Pending rows waiting on a browser that is not there: queued past the
+   * extension's grace period with no server fallback. Rendered as "waiting",
+   * never as a spinner.
+   */
+  stalled: number;
   total: number;
 }
 
@@ -97,6 +103,10 @@ export interface EmailLookup {
   emailValidation: string | null;
   lastError: string | null;
   requestedAt: string;
+  /** When the current lease was taken. Null unless `status` is `dispatched`. */
+  dispatchedAt: string | null;
+  /** Whether an unclaimed row may fall through to the server-side finder. */
+  allowServerFallback: boolean;
   completedAt: string | null;
 }
 

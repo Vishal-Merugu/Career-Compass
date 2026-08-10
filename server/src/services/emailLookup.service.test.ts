@@ -68,18 +68,21 @@ vi.mock('../lib/logger.js', () => ({
 
 vi.mock('../lib/prisma.js', () => {
   interface LookupWhere {
-    id?: string;
+    id?: string | { in?: string[] };
     userId?: string;
     profileId?: string;
     status?: string;
-    attempts?: { lt?: number };
+    attempts?: { lt?: number; gte?: number };
     allowServerFallback?: boolean;
     requestedAt?: { lt?: Date };
     dispatchedAt?: { lt?: Date };
   }
 
   const matchLookup = (row: TestLookup, where: LookupWhere): boolean => {
-    if (where.id !== undefined && row.id !== where.id) return false;
+    if (typeof where.id === 'string' && row.id !== where.id) return false;
+    if (where.id && typeof where.id === 'object') {
+      if (!(where.id.in ?? []).includes(row.id)) return false;
+    }
     if (where.userId !== undefined && row.userId !== where.userId) return false;
     if (where.profileId !== undefined && row.profileId !== where.profileId) {
       return false;
@@ -94,6 +97,12 @@ vi.mock('../lib/prisma.js', () => {
     if (
       where.attempts?.lt !== undefined &&
       !(row.attempts < where.attempts.lt)
+    ) {
+      return false;
+    }
+    if (
+      where.attempts?.gte !== undefined &&
+      !(row.attempts >= where.attempts.gte)
     ) {
       return false;
     }
@@ -200,6 +209,10 @@ vi.mock('../lib/prisma.js', () => {
           const rows = store.lookups.filter((l) => matchLookup(l, where));
           return Promise.resolve(take ? rows.slice(0, take) : rows);
         },
+        count: ({ where }: { where: LookupWhere }) =>
+          Promise.resolve(
+            store.lookups.filter((l) => matchLookup(l, where)).length,
+          ),
         // Both reads select a nested `profile`, so the fake has to join too —
         // returning a bare row here made `completeLookup` throw on
         // `current.email` rather than fail a real assertion.
@@ -608,6 +621,21 @@ describe('sweepStaleLookups', () => {
 
     expect(store.lookups[0].status).toBe('failed');
   });
+
+  // `claimLookups` skips rows at the ceiling, so a queued one there can never be
+  // worked and never completes — it would sit in `pending` forever and the
+  // dashboard would render a lookup that nothing is running.
+  it('retires a queued row no executor is allowed to claim', async () => {
+    const profile = seedProfile();
+    await enqueueLookups(USER, [profile.id]);
+    store.lookups[0].attempts = EMAIL_LOOKUP_MAX_ATTEMPTS;
+
+    const swept = await sweepStaleLookups();
+
+    expect(swept).toBe(1);
+    expect(store.lookups[0].status).toBe('failed');
+    expect((await getLookupStats(USER)).pending).toBe(0);
+  });
 });
 
 describe('getLookupStats', () => {
@@ -623,6 +651,36 @@ describe('getLookupStats', () => {
     expect(stats.dispatched).toBe(1);
     expect(stats.pending).toBe(2);
     expect(stats.total).toBe(2);
+  });
+
+  // The number the dashboard uses to stop spinning. A row waiting on a browser
+  // that never turned up is still pending, but nothing is working it.
+  it('counts a row past the extension grace with no fallback as stalled', async () => {
+    const profile = seedProfile();
+    await enqueueLookups(USER, [profile.id]);
+    store.lookups[0].requestedAt = new Date(Date.now() - 60 * 60 * 1000);
+
+    const stats = await getLookupStats(USER);
+
+    expect(stats.pending).toBe(1);
+    expect(stats.stalled).toBe(1);
+  });
+
+  it('does not call a fresh row stalled', async () => {
+    const profile = seedProfile();
+    await enqueueLookups(USER, [profile.id]);
+
+    expect((await getLookupStats(USER)).stalled).toBe(0);
+  });
+
+  // The server picks these up on the next tick, so they are waiting on code,
+  // not on the user opening Chrome.
+  it('does not call a row stalled when the server may finish it', async () => {
+    const profile = seedProfile();
+    await enqueueLookups(USER, [profile.id], false, true);
+    store.lookups[0].requestedAt = new Date(Date.now() - 60 * 60 * 1000);
+
+    expect((await getLookupStats(USER)).stalled).toBe(0);
   });
 });
 

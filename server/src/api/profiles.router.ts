@@ -331,6 +331,11 @@ router.get('/profiles/find-emails', requireAuth, async (req, res, next) => {
           emailValidation: true,
           lastError: true,
           requestedAt: true,
+          // Both drive the row's badge: a queued row past the grace period with
+          // no fallback is waiting for a browser, not working, and a lease older
+          // than the sweep window is abandoned rather than in progress.
+          dispatchedAt: true,
+          allowServerFallback: true,
           completedAt: true,
         },
       }),

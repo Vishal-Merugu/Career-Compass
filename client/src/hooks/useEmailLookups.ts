@@ -25,18 +25,37 @@ import type {
 
 const LOOKUPS_KEY = ['email-lookups'];
 
-export function useEmailLookups() {
-  const queryClient = useQueryClient();
-
-  const query = useQuery({
+/**
+ * The queue record on its own, with no stream and no mutations.
+ *
+ * Split out for the sidebar indicator, which has to know a lookup is running
+ * from any screen. React Query dedupes it against the Results page's copy, so
+ * mounting both is one request — but only `useEmailLookups` opens the
+ * EventSource, and two of those would be two server connections.
+ */
+export function useLookupQueue() {
+  return useQuery({
     queryKey: LOOKUPS_KEY,
     queryFn: () => api.get<LookupStatusResponse>('/api/profiles/find-emails'),
     // A slow backstop only. The stream carries live updates; this catches the
     // case where the stream never connected — and stops once nothing is
     // pending, so an idle dashboard is not polling forever.
-    refetchInterval: (q) =>
-      (q.state.data?.stats.pending ?? 0) > 0 ? 15_000 : false,
+    //
+    // A fully stalled queue backs off: it is waiting on the user opening Chrome,
+    // which is not a thing that changes on a fifteen-second cadence, and it can
+    // stay that way for hours.
+    refetchInterval: (q) => {
+      const stats = q.state.data?.stats;
+      if (!stats || stats.pending === 0) return false;
+      return stats.stalled >= stats.pending ? 60_000 : 15_000;
+    },
   });
+}
+
+export function useEmailLookups() {
+  const queryClient = useQueryClient();
+
+  const query = useLookupQueue();
 
   const pending = query.data?.stats.pending ?? 0;
   // A boolean, not the count. Depending on `pending` itself re-ran this effect

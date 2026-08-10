@@ -19,20 +19,13 @@ import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
 import { findEmail } from '../services/emailFinder/index.js';
 import {
+  EMAIL_LOOKUP_EXTENSION_GRACE_MS as EXTENSION_GRACE_MS,
   claimLookups,
   completeLookup,
   sweepStaleLookups,
 } from '../services/emailLookup.service.js';
 
 const SWEEP_INTERVAL_MS = 60 * 1000;
-
-/**
- * How long the extension gets first refusal on a row.
- *
- * It drains on a one-minute alarm, so three minutes means it had several
- * chances and is genuinely not there — not that it is midway through a tab.
- */
-const EXTENSION_GRACE_MS = 3 * 60 * 1000;
 
 /** Per tick, so a large batch does not monopolise the process. */
 const FALLBACK_BATCH_SIZE = 5;
@@ -124,6 +117,10 @@ export function startEmailLookupWorker(): void {
   if (timer) return;
 
   logger.info('[EmailLookupWorker] Started');
+  // Sweep once at boot, not a minute in. A restart is one of the ways leases
+  // are abandoned in the first place, and the dashboard renders those rows as
+  // work in progress until something reclaims them.
+  void tick();
   timer = setInterval(() => void tick(), SWEEP_INTERVAL_MS);
   // Do not hold the process open on shutdown for a sweep.
   timer.unref();
