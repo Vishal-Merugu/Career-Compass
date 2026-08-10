@@ -10,6 +10,22 @@ export interface ICampaignJob {
   userId: string;
 }
 
+/**
+ * One job id per (campaign, contact), which is what makes Start idempotent:
+ * pressing it twice cannot enqueue the same contact for a second send.
+ *
+ * **The separator must not be a colon.** BullMQ namespaces its Redis keys with
+ * `:` and rejects a custom id containing one — `Error: Custom Id cannot
+ * contain :`, thrown from `addBulk` and so *after* the credential check has
+ * passed. The whole campaign failed with a 500 and nothing queued.
+ *
+ * Both halves are UUIDs, which contain hyphens but never underscores, so `__`
+ * keeps the two ids unambiguous.
+ */
+export function campaignJobId(campaignId: string, contactId: string): string {
+  return `${campaignId}__${contactId}`;
+}
+
 let queue: Queue<ICampaignJob> | null = null;
 let worker: Worker<ICampaignJob> | null = null;
 

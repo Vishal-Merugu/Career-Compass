@@ -11,6 +11,7 @@ import {
 import { decryptSecret, isEncrypted } from '../lib/secretBox.js';
 import { isQueueReady } from '../queue/connection.js';
 import {
+  campaignJobId,
   getCampaignQueue,
   removeCampaignJobs,
   type ICampaignJob,
@@ -259,7 +260,10 @@ export async function startCampaign(
           contactId: contact.id,
           userId,
         } satisfies ICampaignJob,
-        opts: { delay: cumulative, jobId: `${campaignId}:${contact.id}` },
+        opts: {
+          delay: cumulative,
+          jobId: campaignJobId(campaignId, contact.id),
+        },
       };
     }),
   );
