@@ -554,7 +554,8 @@ CRITICAL EVALUATION RULES:
 1. **Headline Priority**: A person's Headline is often the most up-to-date representation of their current role and seniority.
 2. **Career-Wide Seniority**: Evaluate seniority based on their ENTIRE career history, not just their tenure at the current company.
 3. **Flexibility**: Be EXTREMELY flexible with company name variations (e.g., "Yendou" is the same as "itsyendou", "Google" is the same as "Google LLC").
-4. **Err on the Side of Approval**: Err on the side of approval (match: true) if a candidate is close to a tier threshold or possesses significant career depth.
+4. **Students are not their job titles**: An education entry whose end year is in the future, or a position marked Internship / Work Study / Working Student / Werkstudent / Apprenticeship / Trainee, means the person is still studying. Count that tenure as study, not professional seniority, however senior the title sounds.
+5. **Err on the Side of Approval**: Err on the side of approval (match: true) if a candidate is close to a tier threshold or possesses significant career depth. This tie-breaker does NOT apply to anyone the criteria excludes outright — an exclusion is a floor, not a threshold to round up from.
 
 Respond ONLY with valid JSON in the exact format below, nothing else. Do not use markdown blocks.
 Format: {"match": true/false, "reason": "a very brief 1-sentence explanation mentioning their Tier and why they were accepted/rejected"}`;
@@ -584,16 +585,42 @@ Format: {"match": true/false, "reason": "a very brief 1-sentence explanation men
             : 'Present';
           dateStr = ` [${start} - ${end}]`;
         }
-        return `- ${e.title} at ${e.companyName}${dateStr}${e.description ? `\n  Description: ${e.description}` : ''}`;
+        // The employment type is the whole difference between a Werkstudent and
+        // a full-time engineer, and it used to be dropped before the model saw
+        // it — which is how a working student with a 2026–2027 master's was
+        // read as two years of professional tenure and shortlisted.
+        const type = e.employmentType ? ` (${e.employmentType})` : '';
+
+        return `- ${e.title} at ${e.companyName}${type}${dateStr}${e.description ? `\n  Description: ${e.description}` : ''}`;
       })
       .join('\n') || 'None';
 
   const skills = profileData.skills?.slice(0, 10).join(', ') || 'None';
 
+  // Parsed since the pipeline was built and never once sent to the model. An
+  // end year in the future is the single clearest signal that someone is still
+  // a student, and no criteria prompt mentioning graduates could act on it.
+  const education =
+    profileData.education
+      ?.map((e) => {
+        const startYear = e.timePeriod?.startDate?.year || '';
+        const endYear = e.timePeriod?.endDate?.year || '';
+
+        const dateStr = startYear
+          ? ` [${startYear} - ${endYear || 'Present'}]`
+          : '';
+        const field = e.fieldOfStudy ? `, ${e.fieldOfStudy}` : '';
+
+        return `- ${e.degree || 'Studied'}${field} at ${e.school}${dateStr}`;
+      })
+      .join('\n') || 'None';
+
   const candidateProfileString = `Name: ${profileData.firstName} ${profileData.lastName}
 Headline: ${profileData.headline}
 Experiences (History & Duration):
 ${experiences}
+Education:
+${education}
 Skills: ${skills}
 About: ${profileData.about || 'None'}`;
 
@@ -615,7 +642,7 @@ ${prompt}
 ---
 
 INSTRUCTIONS:
-1. Determine if they are currently at ${targetCompany} or closely associated.
+1. Determine whether ${targetCompany} actually appears in their experience, and whether they are there now or have left. This is a real check — the profile was found by a search that also returns former employees and, sometimes, people who never worked there at all. Set match to false if the company is absent entirely.
 2. Assign a TIER (1, 2, 3, or NONE) based on their role, seniority, and overall career history.
 3. Return a JSON response in the exact format: {"match": true/false, "reason": "a very brief 1-sentence explanation mentioning their Tier and why they were accepted/rejected"}`;
 

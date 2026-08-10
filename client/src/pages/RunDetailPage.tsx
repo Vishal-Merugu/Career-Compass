@@ -51,7 +51,17 @@ import type {
 import { DeleteConfirmModal } from '../components/DeleteConfirmModal';
 import { JobEventLog } from '../components/JobEventLog';
 import { statusColor, statusLabel } from '../lib/runStatus';
+import { toast } from '../lib/toast';
 import classes from './RunDetailPage.module.css';
+
+/** What each control says once it has actually happened. */
+const CONTROL_DONE: Record<'pause' | 'resume' | 'cancel', string> = {
+  pause:
+    'Run paused. Nothing further is fetched from LinkedIn until you resume.',
+  resume:
+    'Run resumed. Profiles that were read but never judged are retried without re-fetching them.',
+  cancel: 'Run cancelled. Every queued profile was skipped.',
+};
 
 const ACTIVE = new Set(['initializing', 'collecting_urls', 'scraping']);
 const RESUMABLE = new Set(['paused_error', 'paused_session']);
@@ -116,7 +126,9 @@ export function RunDetailPage() {
   const control = useMutation({
     mutationFn: (action: 'pause' | 'resume' | 'cancel') =>
       api.post(`/api/jobs/${id}/${action}`),
-    onSuccess: () => {
+    meta: { errorTitle: 'Could not change this run' },
+    onSuccess: (_res, action) => {
+      toast.success(CONTROL_DONE[action], { id: `run-control-${id}` });
       void queryClient.invalidateQueries({ queryKey: ['job-status', id] });
       void queryClient.invalidateQueries({ queryKey: ['job-events', id] });
       void queryClient.invalidateQueries({ queryKey: ['jobs'] });

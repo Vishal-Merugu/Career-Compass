@@ -82,6 +82,12 @@ export interface LookupStats {
   failed: number;
   /** queued + dispatched — what the UI calls "still working". */
   pending: number;
+  /**
+   * Pending rows waiting on a browser that is not there: queued past the
+   * extension's grace period with no server fallback. Rendered as "waiting",
+   * never as a spinner.
+   */
+  stalled: number;
   total: number;
 }
 
@@ -97,6 +103,10 @@ export interface EmailLookup {
   emailValidation: string | null;
   lastError: string | null;
   requestedAt: string;
+  /** When the current lease was taken. Null unless `status` is `dispatched`. */
+  dispatchedAt: string | null;
+  /** Whether an unclaimed row may fall through to the server-side finder. */
+  allowServerFallback: boolean;
   completedAt: string | null;
 }
 
@@ -302,9 +312,29 @@ export interface JobEventsResponse {
   events: JobEvent[];
 }
 
+/**
+ * `GET /api/jobs?skip&take`.
+ *
+ * Paginated because each row on the Runs screen opens its own
+ * `/jobs/:id/status` poll — the page size bounds how many pollers run at once,
+ * not just how much JSON arrives.
+ */
 export interface JobsResponse {
   ok: true;
   jobs: SearchJob[];
+  skip: number;
+  take: number;
+  total: number;
+  /**
+   * Counted over every run, not the page in `jobs` — same rule as `stats` on
+   * `GET /api/profiles`. `needsAttention` is the one number on the Runs screen
+   * meant to prompt an action, so a paused run on page 2 has to be in it.
+   */
+  stats: {
+    total: number;
+    active: number;
+    needsAttention: number;
+  };
 }
 
 /**
@@ -361,14 +391,10 @@ export interface JobStatusResponse {
     erroredCount: number;
     inFlightCount: number;
   };
-  decisions: Array<{
-    name: string;
-    headline: string | null;
-    title: string | null;
-    about: string;
-    isQualified: boolean;
-    email: string | null;
-  }>;
+  // There is deliberately no `decisions` array. It used to carry every
+  // qualified profile — `rawData` and all — and no screen ever read it, while
+  // the Runs list re-fetched it once per row every 3 s. The people a run found
+  // are on Results, filtered by `?jobId=`, which is paginated.
 }
 
 // ─── Outreach ────────────────────────────────────────────────────
@@ -422,10 +448,21 @@ export interface CampaignsResponse {
   total: number;
 }
 
+/**
+ * `GET /api/campaigns/:id?skip&take`.
+ *
+ * `contacts` is one page. The stat tiles read `campaign.totalContacts` /
+ * `sentCount` / `failedCount`, which the server maintains over the whole
+ * campaign, so they stay right no matter which page is on screen —
+ * `contactsTotal` is only there to drive the pager.
+ */
 export interface CampaignDetailResponse {
   ok: true;
   campaign: Campaign;
   contacts: CampaignContact[];
+  skip: number;
+  take: number;
+  contactsTotal: number;
 }
 
 export interface AddContactsResponse {

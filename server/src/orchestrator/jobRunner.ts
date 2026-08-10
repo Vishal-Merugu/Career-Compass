@@ -21,6 +21,7 @@ import {
   resolveModel,
 } from '../shared/llmClient.js';
 import { PrismaStorageAdapter } from '../services/storage.adapter.js';
+import { companySlugFromUrl } from '../lib/companyName.js';
 
 interface SearchParams {
   companyUrl?: string;
@@ -29,8 +30,9 @@ interface SearchParams {
 }
 
 function companyLabel(searchParams: SearchParams): string {
-  if (!searchParams.companyUrl) return '';
-  const slug = searchParams.companyUrl.split('/').filter(Boolean).pop();
+  // `split('/').pop()` said "PEOPLE" for the URL the dashboard tells people to
+  // paste (`/company/<slug>/people/`).
+  const slug = companySlugFromUrl(searchParams.companyUrl);
   return slug ? ` for ${slug.toUpperCase()}` : '';
 }
 

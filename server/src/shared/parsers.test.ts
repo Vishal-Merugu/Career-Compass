@@ -8,6 +8,7 @@ import {
   parseFullProfile,
   parseRelationship,
   parsePaginationMetadata,
+  employmentTypeOf,
 } from './parsers.js';
 
 describe('buildLinkedInProfileUrl', () => {
@@ -279,6 +280,37 @@ describe('parsePeopleSearchResults', () => {
   });
 });
 
+describe('employmentTypeOf', () => {
+  it('reads a plain string', () => {
+    expect(employmentTypeOf({ employmentType: 'Full-time' })).toBe('Full-time');
+  });
+
+  it('reads the older localizedName object', () => {
+    expect(
+      employmentTypeOf({ employmentType: { localizedName: 'Werkstudent' } }),
+    ).toBe('Werkstudent');
+  });
+
+  it('un-slugs the dash urn, which is often the only form present', () => {
+    expect(
+      employmentTypeOf({
+        employmentTypeUrn: 'urn:li:fsd_employmentType:WORK_STUDY',
+      }),
+    ).toBe('Work Study');
+    expect(
+      employmentTypeOf({
+        employmentTypeUrn: 'urn:li:fsd_employmentType:INTERNSHIP',
+      }),
+    ).toBe('Internship');
+  });
+
+  it('is empty for a position that carries no type at all', () => {
+    expect(employmentTypeOf({ title: 'Freelancer' })).toBe('');
+    expect(employmentTypeOf(null)).toBe('');
+    expect(employmentTypeOf('nonsense')).toBe('');
+  });
+});
+
 describe('parseFullProfile', () => {
   const P = 'com.linkedin.voyager.dash.identity.profile.Profile';
   const POSITION = 'com.linkedin.voyager.dash.identity.profile.Position';
@@ -302,6 +334,7 @@ describe('parseFullProfile', () => {
           schoolName: 'FAU Erlangen',
           degreeName: 'MSc',
           fieldOfStudy: 'Computer Science',
+          dateRange: { start: { year: 2024 }, end: { year: 2027 } },
         },
         { $type: SKILL, name: 'Recruiting' },
         { $type: SKILL, name: 'Sourcing' },
@@ -319,6 +352,12 @@ describe('parseFullProfile', () => {
         school: 'FAU Erlangen',
         degree: 'MSc',
         fieldOfStudy: 'Computer Science',
+        // An end year in the future is what tells the model the degree is
+        // unfinished. It was parsed away until 2026-08-10.
+        timePeriod: {
+          startDate: { year: 2024 },
+          endDate: { year: 2027 },
+        },
       },
     ]);
     expect(profile.skills).toEqual(['Recruiting', 'Sourcing']);
@@ -377,6 +416,21 @@ describe('parseFullProfile', () => {
       'September',
       'March',
     ]);
+  });
+
+  it('keeps the employment type off a position', () => {
+    const profile = parseFullProfile({
+      included: [
+        {
+          $type: POSITION,
+          title: { text: 'Software Engineer' },
+          companyName: { text: 'Siemens Healthineers' },
+          employmentTypeUrn: 'urn:li:fsd_employmentType:WORK_STUDY',
+        },
+      ],
+    });
+
+    expect(profile.experiences[0].employmentType).toBe('Work Study');
   });
 
   it('normalises a missing time period to empty strings', () => {

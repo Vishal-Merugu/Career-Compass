@@ -1,0 +1,11 @@
+/* Matches Results' `.tableFooter` deliberately — the two sit at the bottom of
+   the same panel surface on different screens and should not look like two
+   different components. */
+.footer {
+  composes: panelBar from '../styles/dataPanel.module.css';
+  justify-content: space-between;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-top: 1px solid var(--app-border);
+  background-color: var(--app-surface-sunken);
+}

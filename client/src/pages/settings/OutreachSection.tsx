@@ -31,6 +31,7 @@ import {
 } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../api/client';
+import { toast } from '../../lib/toast';
 import type {
   OutreachSettings,
   OutreachSettingsResponse,
@@ -109,15 +110,22 @@ export function OutreachSection() {
         // as "keep the existing password".
         ...(password ? { smtpPassword: password } : {}),
       }),
+    // `mutationError` below already renders save/upload/remove failures in one
+    // Alert at the top of the section.
+    meta: { silenceErrorToast: true },
     onSuccess: (res) => {
+      toast.success('Sending settings saved.');
       applySettings(res.settings);
       setPassword('');
       setVerifyResult(null);
     },
   });
 
+  // The verdict is rendered inline and stays there — it is a status the user
+  // refers back to while fixing an app password, not a passing confirmation.
   const verify = useMutation({
     mutationFn: () => api.post<VerifyResponse>('/api/settings/outreach/verify'),
+    meta: { silenceErrorToast: true },
     onSuccess: (res) => setVerifyResult(res),
   });
 
@@ -130,7 +138,11 @@ export function OutreachSection() {
         form,
       );
     },
+    meta: { silenceErrorToast: true },
     onSuccess: (res) => {
+      toast.success(
+        `Résumé uploaded${res.settings.resumeFileName ? ` — ${res.settings.resumeFileName}` : ''}.`,
+      );
       applySettings(res.settings);
       resetFileRef.current?.();
     },
@@ -139,7 +151,11 @@ export function OutreachSection() {
   const removeResume = useMutation({
     mutationFn: () =>
       api.del<OutreachSettingsResponse>('/api/settings/outreach/resume'),
-    onSuccess: (res) => applySettings(res.settings),
+    meta: { silenceErrorToast: true },
+    onSuccess: (res) => {
+      toast.success('Résumé removed. It will not be attached to new emails.');
+      applySettings(res.settings);
+    },
   });
 
   if (error) {

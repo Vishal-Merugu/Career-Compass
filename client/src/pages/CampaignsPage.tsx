@@ -22,7 +22,12 @@ import { api } from '../api/client';
 import type { Campaign, CampaignsResponse } from '../api/types';
 import { EmptyState } from '../components/EmptyState';
 import { CampaignStatusBadge } from '../components/StatusBadge';
+import { TablePager } from '../components/TablePager';
+import { toast } from '../lib/toast';
 import classes from './CampaignsPage.module.css';
+
+/** Matches the server's default in `server/src/api/campaigns.router.ts`. */
+const PAGE_SIZE = 25;
 
 export function CampaignForm({
   onCreated,
@@ -46,6 +51,9 @@ export function CampaignForm({
         minDelayMs,
         maxDelayMs,
       }),
+    // The form renders `create.error` inline, right above the fields it is
+    // about. A toast on top of that tells the user the same thing twice.
+    meta: { silenceErrorToast: true },
     onSuccess: (res) => onCreated(res.campaign),
   });
 
@@ -131,15 +139,21 @@ export function CampaignForm({
 
 export function CampaignsPage() {
   const [creating, setCreating] = useState(false);
+  const [skip, setSkip] = useState(0);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
   const { data, isPending, error, refetch, isFetching } = useQuery({
-    queryKey: ['campaigns'],
-    queryFn: () => api.get<CampaignsResponse>('/api/campaigns?take=100'),
+    queryKey: ['campaigns', skip],
+    queryFn: () =>
+      api.get<CampaignsResponse>(
+        `/api/campaigns?skip=${skip}&take=${PAGE_SIZE}`,
+      ),
+    placeholderData: (prev) => prev,
   });
 
   const campaigns = data?.campaigns ?? [];
+  const total = data?.total ?? 0;
 
   if (error) {
     return (
@@ -282,6 +296,17 @@ export function CampaignsPage() {
             </Table>
           </div>
         )}
+
+        {!isPending && (
+          <TablePager
+            skip={data?.skip ?? 0}
+            take={data?.take ?? PAGE_SIZE}
+            total={total}
+            loaded={campaigns.length}
+            noun={['campaign', 'campaigns']}
+            onChange={setSkip}
+          />
+        )}
       </div>
 
       <Modal
@@ -295,6 +320,9 @@ export function CampaignsPage() {
           onCancel={() => setCreating(false)}
           onCreated={(campaign) => {
             setCreating(false);
+            toast.success(
+              `“${campaign.name}” created. Add contacts from Results, then start sending.`,
+            );
             void queryClient.invalidateQueries({ queryKey: ['campaigns'] });
             navigate(`/campaigns/${campaign.id}`);
           }}

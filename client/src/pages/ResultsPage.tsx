@@ -57,6 +57,7 @@ import { ProfileDrawer } from '../components/ProfileDrawer';
 import { EmptyState } from '../components/EmptyState';
 import { StatTile } from '../components/StatTile';
 import { useEmailLookups } from '../hooks/useEmailLookups';
+import { toast } from '../lib/toast';
 import { CampaignForm } from './CampaignsPage';
 import classes from './ResultsPage.module.css';
 
@@ -111,6 +112,55 @@ function sourceBadge(source: string | null) {
   if (!source) return null;
   return SOURCE_LABEL[source] ?? { label: source, color: 'gray' };
 }
+
+/**
+ * What a pending row is actually doing, which `status` alone does not say.
+ *
+ * `waiting` and `reclaiming` are the states that stop a closed laptop from
+ * looking like work in progress: nothing is running, and the row will resume
+ * on its own — the server reclaims an abandoned lease, and a queued row is
+ * picked up the moment Chrome comes back.
+ */
+type LookupState = 'queued' | 'running' | 'waiting' | 'reclaiming';
+
+/**
+ * Mirrors `LEASE_TIMEOUT_MS` and `EXTENSION_GRACE_MS` in
+ * `server/src/services/emailLookup.service.ts`. Only used to label a row — the
+ * server owns the actual transitions, so a small clock skew changes wording,
+ * never behaviour.
+ */
+const LEASE_TIMEOUT_MS = 5 * 60 * 1000;
+const EXTENSION_GRACE_MS = 3 * 60 * 1000;
+
+const LOOKUP_BADGE: Record<
+  LookupState,
+  { label: string; color: string; spinner: boolean; hint: string }
+> = {
+  running: {
+    label: 'finding',
+    color: 'blue',
+    spinner: true,
+    hint: 'A lookup is running for this profile right now.',
+  },
+  queued: {
+    label: 'queued',
+    color: 'gray',
+    spinner: true,
+    hint: 'Waiting for an executor to pick this up. The extension gets first refusal for three minutes.',
+  },
+  waiting: {
+    label: 'waiting for Chrome',
+    color: 'yellow',
+    spinner: false,
+    hint: 'Nothing is running — no browser has claimed this. It resumes by itself when Chrome is open with the extension, or use "Guess the waiting instead" above.',
+  },
+  reclaiming: {
+    label: 'retrying',
+    color: 'orange',
+    spinner: false,
+    hint: 'The browser that took this never reported back. The server returns it to the queue within a minute and it picks up where it left off.',
+  },
+};
 
 function TableSkeleton() {
   return (
@@ -198,7 +248,31 @@ function AddToCampaignModal({
       api.post<AddContactsResponse>(`/api/campaigns/${campaignId}/contacts`, {
         profileIds,
       }),
-    onSuccess: (_res, campaignId) => {
+    // `add.error` is rendered at the top of this modal.
+    meta: { silenceErrorToast: true },
+    onSuccess: (res, campaignId) => {
+      // The modal promised "you will be told how many" are skipped, and then
+      // navigated away without telling anyone. A duplicate is the common case
+      // — adding the same person to a campaign twice is an easy mistake and
+      // the server silently drops it.
+      const skipped = res.skippedNoEmail + res.skippedDuplicate;
+      const detail = [
+        res.skippedDuplicate > 0 && `${res.skippedDuplicate} already there`,
+        res.skippedNoEmail > 0 && `${res.skippedNoEmail} with no address`,
+      ]
+        .filter(Boolean)
+        .join(', ');
+
+      if (res.added === 0) {
+        toast.warning(`Nothing added — ${detail || 'all were skipped'}.`);
+      } else if (skipped > 0) {
+        toast.success(`${res.added} added, ${skipped} skipped (${detail}).`);
+      } else {
+        toast.success(
+          `${res.added} ${res.added === 1 ? 'contact' : 'contacts'} added.`,
+        );
+      }
+
       void queryClient.invalidateQueries({ queryKey: ['campaigns'] });
       onDone();
       navigate(`/campaigns/${campaignId}`);
@@ -306,9 +380,14 @@ export function ResultsPage() {
   const [params, setParams] = useSearchParams();
   const jobId = params.get('jobId');
 
+  // Feeds the "All runs" filter below, so it wants as many runs as the server
+  // will give it in one go rather than the paginated default the Runs screen
+  // uses — a run missing from this dropdown cannot be filtered to at all.
+  // 100 is the server's cap; past that the Select needs a search endpoint, not
+  // a bigger number.
   const { data: runs } = useQuery({
-    queryKey: ['jobs'],
-    queryFn: () => api.get<JobsResponse>('/api/jobs'),
+    queryKey: ['jobs', 'filter-options'],
+    queryFn: () => api.get<JobsResponse>('/api/jobs?take=100'),
   });
   const {
     stats: lookupStats,
@@ -317,6 +396,11 @@ export function ResultsPage() {
     findEmails,
     cancel,
   } = useEmailLookups();
+
+  // Every pending row is waiting on a browser that is not there. The queue is
+  // intact and resumes on its own, but nothing is running — so the panel says
+  // that instead of showing a spinner that will never resolve on its own.
+  const stalled = pending > 0 && (lookupStats?.stalled ?? 0) >= pending;
 
   const toggle = (id: string) =>
     setSelected((prev) => {
@@ -390,13 +474,26 @@ export function ResultsPage() {
 
   // Which rows have a lookup in flight, so the Email column can say so instead
   // of showing an em-dash that looks like a final answer.
+  //
+  // Four states, not two: a queue that nothing is working has to look different
+  // from one that is. A row whose executor vanished (closed laptop) would
+  // otherwise spin until the user gave up on it, when in fact the server
+  // reclaims the lease within the minute and the row resumes.
   const inFlight = useMemo(() => {
-    const map = new Map<string, string>();
+    const now = Date.now();
+    const map = new Map<string, LookupState>();
+
     for (const l of lookups) {
-      if (l.status === 'queued' || l.status === 'dispatched') {
-        map.set(l.profileId, l.status);
+      if (l.status === 'dispatched') {
+        const age = now - new Date(l.dispatchedAt ?? l.requestedAt).getTime();
+        map.set(l.profileId, age > LEASE_TIMEOUT_MS ? 'reclaiming' : 'running');
+      } else if (l.status === 'queued') {
+        const age = now - new Date(l.requestedAt).getTime();
+        const abandoned = age > EXTENSION_GRACE_MS && !l.allowServerFallback;
+        map.set(l.profileId, abandoned ? 'waiting' : 'queued');
       }
     }
+
     return map;
   }, [lookups]);
 
@@ -542,14 +639,24 @@ export function ResultsPage() {
           so progress advances with nothing watching. */}
       {lookupStats && lookupStats.total > 0 && (
         <Alert
-          color={pending > 0 ? 'brand' : 'teal'}
+          color={stalled ? 'yellow' : pending > 0 ? 'brand' : 'teal'}
           variant="light"
           radius="lg"
-          icon={pending > 0 ? <Loader size={16} /> : <IconMail size={17} />}
+          icon={
+            stalled ? (
+              <IconMailSearch size={17} />
+            ) : pending > 0 ? (
+              <Loader size={16} />
+            ) : (
+              <IconMail size={17} />
+            )
+          }
           title={
-            pending > 0
-              ? `Finding emails — ${lookupStats.done + lookupStats.failed} of ${lookupStats.total} done`
-              : `Email lookups finished — ${lookupStats.done} found, ${lookupStats.failed} failed`
+            stalled
+              ? `Paused — ${pending} ${pending === 1 ? 'lookup is' : 'lookups are'} waiting for Chrome`
+              : pending > 0
+                ? `Finding emails — ${lookupStats.done + lookupStats.failed} of ${lookupStats.total} done`
+                : `Email lookups finished — ${lookupStats.done} found, ${lookupStats.failed} failed`
           }
         >
           <Stack gap="xs">
@@ -558,16 +665,19 @@ export function ResultsPage() {
                 ((lookupStats.done + lookupStats.failed) / lookupStats.total) *
                 100
               }
-              color={pending > 0 ? 'brand' : 'teal'}
+              color={stalled ? 'yellow' : pending > 0 ? 'brand' : 'teal'}
               size="sm"
               radius="xl"
             />
             {pending > 0 && (
               <Stack gap={8}>
                 <Text fz={13} c="dimmed">
-                  Keep Chrome open with the extension installed — it does these
-                  in a real browser, which is the only place the free provider
-                  lookup works. Progress is saved, so you can leave this tab.
+                  {stalled
+                    ? // Nothing is running, and saying so is the point: the queue
+                      // is intact and resumes on its own, so the user needs to
+                      // know what to do rather than watch a spinner.
+                      'Nothing is running right now — these need Chrome open with the extension installed, which is the only place the free provider lookup works. They resume by themselves when it is; nothing was lost.'
+                    : 'Keep Chrome open with the extension installed — it does these in a real browser, which is the only place the free provider lookup works. Progress is saved, so you can leave this tab.'}
                 </Text>
                 <Group gap="sm" wrap="wrap">
                   {waitingProfileIds.length > 0 && (
@@ -848,16 +958,32 @@ export function ResultsPage() {
 
                         // A row being looked up right now must not render as an
                         // em-dash — that reads as a settled answer, and the
-                        // user would press the button again.
+                        // user would press the button again. It is a badge in
+                        // the same shape as the source badge, and it only spins
+                        // when something is genuinely running.
+                        const state = searching && LOOKUP_BADGE[searching];
+                        const lookupBadge = state && (
+                          <Tooltip label={state.hint} multiline w={260}>
+                            <Badge
+                              size="xs"
+                              color={state.color}
+                              variant="light"
+                              style={{ cursor: 'help' }}
+                              leftSection={
+                                state.spinner ? (
+                                  <Loader size={8} color="gray" />
+                                ) : undefined
+                              }
+                            >
+                              {state.label}
+                            </Badge>
+                          </Tooltip>
+                        );
+
                         if (searching && !p.email) {
                           return (
                             <Group gap={7} wrap="nowrap">
-                              <Loader size={12} />
-                              <Text fz={12.5} c="dimmed">
-                                {searching === 'dispatched'
-                                  ? 'looking up…'
-                                  : 'queued'}
-                              </Text>
+                              {lookupBadge}
                             </Group>
                           );
                         }
@@ -884,6 +1010,10 @@ export function ResultsPage() {
                                   </Badge>
                                 </Tooltip>
                               )}
+                              {/* An address already here can still be a guess
+                                  being upgraded — say so, or the spinner in the
+                                  header has no visible cause on this row. */}
+                              {lookupBadge}
                             </Group>
                           );
                         }
@@ -892,13 +1022,14 @@ export function ResultsPage() {
                         if (err) {
                           return (
                             <Tooltip label={err} multiline w={260}>
-                              <Text
-                                fz={12.5}
-                                c="dimmed"
+                              <Badge
+                                size="xs"
+                                color="gray"
+                                variant="light"
                                 style={{ cursor: 'help' }}
                               >
                                 not found
-                              </Text>
+                              </Badge>
                             </Tooltip>
                           );
                         }

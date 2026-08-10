@@ -30,6 +30,13 @@ export interface LookupStats {
   failed: number;
   /** queued + dispatched — what the dashboard shows as "still working". */
   pending: number;
+  /**
+   * Pending rows that nothing is coming for: queued past the extension's grace
+   * period with no server fallback. They are not broken — waiting for a browser
+   * is the design — but the dashboard must not render them as a spinner, or a
+   * user who closed Chrome sees "finding emails" forever with nothing running.
+   */
+  stalled: number;
   total: number;
 }
 
@@ -89,6 +96,15 @@ const LEASE_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** After this many failed attempts the row stops coming back. */
 const MAX_ATTEMPTS = 3;
+
+/**
+ * How long the extension gets first refusal on a queued row.
+ *
+ * Lives here rather than in the worker because `getLookupStats` uses the same
+ * boundary to call a row `stalled` — the number the dashboard renders and the
+ * number the fallback acts on have to be the same number.
+ */
+const EXTENSION_GRACE_MS = 3 * 60 * 1000;
 
 /**
  * Queue lookups for profiles the user selected.
@@ -358,11 +374,24 @@ export async function completeLookup(
 }
 
 export async function getLookupStats(userId: string): Promise<LookupStats> {
-  const grouped = await prisma.emailLookup.groupBy({
-    by: ['status'],
-    where: { userId },
-    _count: { status: true },
-  });
+  const [grouped, stalled] = await Promise.all([
+    prisma.emailLookup.groupBy({
+      by: ['status'],
+      where: { userId },
+      _count: { status: true },
+    }),
+    // Waited out the extension's turn and cannot fall through to the server, so
+    // no executor will ever pick it up unless the user opens Chrome or asks for
+    // a guess. Counted separately so the UI can say that instead of spinning.
+    prisma.emailLookup.count({
+      where: {
+        userId,
+        status: 'queued',
+        allowServerFallback: false,
+        requestedAt: { lt: new Date(Date.now() - EXTENSION_GRACE_MS) },
+      },
+    }),
+  ]);
 
   const counts: Record<string, number> = {};
   for (const row of grouped) counts[row.status] = row._count.status;
@@ -378,6 +407,7 @@ export async function getLookupStats(userId: string): Promise<LookupStats> {
     done,
     failed,
     pending: queued + dispatched,
+    stalled,
     total: queued + dispatched + done + failed,
   };
 }
@@ -391,12 +421,28 @@ export async function getLookupStats(userId: string): Promise<LookupStats> {
 export async function sweepStaleLookups(): Promise<number> {
   const cutoff = new Date(Date.now() - LEASE_TIMEOUT_MS);
 
+  // A `queued` row at the attempt ceiling is invisible to `claimLookups`, so it
+  // can never be worked and never completes — it would sit in `pending` forever
+  // and the dashboard would show a lookup in progress with nothing running.
+  const unclaimable = await prisma.emailLookup.findMany({
+    where: { status: 'queued', attempts: { gte: MAX_ATTEMPTS } },
+    select: { id: true, userId: true },
+  });
+
+  if (unclaimable.length > 0) {
+    await prisma.emailLookup.updateMany({
+      where: { id: { in: unclaimable.map((row) => row.id) } },
+      data: { status: 'failed', completedAt: new Date() },
+    });
+    logger.warn(
+      `[EmailLookup] Retired ${unclaimable.length} unclaimable queued lookups`,
+    );
+  }
+
   const stale = await prisma.emailLookup.findMany({
     where: { status: 'dispatched', dispatchedAt: { lt: cutoff } },
     select: { id: true, userId: true, attempts: true },
   });
-
-  if (stale.length === 0) return 0;
 
   for (const row of stale) {
     const exhausted = row.attempts >= MAX_ATTEMPTS;
@@ -412,9 +458,13 @@ export async function sweepStaleLookups(): Promise<number> {
     });
   }
 
-  logger.warn(`[EmailLookup] Reclaimed ${stale.length} abandoned leases`);
+  if (stale.length > 0) {
+    logger.warn(`[EmailLookup] Reclaimed ${stale.length} abandoned leases`);
+  }
 
-  for (const userId of new Set(stale.map((row) => row.userId))) {
+  const touched = new Set([...unclaimable, ...stale].map((row) => row.userId));
+
+  for (const userId of touched) {
     emitProgress({
       userId,
       type: 'STATS',
@@ -422,7 +472,7 @@ export async function sweepStaleLookups(): Promise<number> {
     });
   }
 
-  return stale.length;
+  return unclaimable.length + stale.length;
 }
 
 /** Cancel everything still waiting. Does not touch work already in flight. */
@@ -437,3 +487,4 @@ export async function cancelQueuedLookups(userId: string): Promise<number> {
 }
 
 export const EMAIL_LOOKUP_MAX_ATTEMPTS = MAX_ATTEMPTS;
+export const EMAIL_LOOKUP_EXTENSION_GRACE_MS = EXTENSION_GRACE_MS;

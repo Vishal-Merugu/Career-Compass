@@ -23,6 +23,7 @@ import {
 import { IconCheck, IconCopy, IconInfoCircle } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
+import { toast } from '../../lib/toast';
 import type {
   TelegramCodeResponse,
   TelegramStatusResponse,
@@ -53,6 +54,9 @@ export function TelegramSection() {
   const unlink = useMutation({
     mutationFn: () => api.del('/api/settings/telegram'),
     onSuccess: () => {
+      toast.success(
+        'Telegram unlinked. No further run notifications are sent.',
+      );
       setIssued(null);
       void queryClient.invalidateQueries({ queryKey: TELEGRAM_KEY });
     },

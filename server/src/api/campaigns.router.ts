@@ -104,33 +104,56 @@ router.get('/campaigns', requireAuth, async (req, res, next) => {
 
 router.get('/campaigns/:id', requireAuth, async (req, res, next) => {
   try {
+    const parsed = paginationSchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid pagination parameters', {
+        issues: parsed.error.errors,
+      });
+    }
+    const { skip, take } = parsed.data;
+
     const campaign = await prisma.campaign.findFirst({
       where: { id: req.params.id, userId: req.user!.id },
     });
     if (!campaign) throw new NotFoundError('Campaign not found');
 
-    const contacts = await prisma.campaignContact.findMany({
-      where: { campaignId: campaign.id },
-      orderBy: { createdAt: 'asc' },
-      // sentBody is excluded deliberately — a full copy of every email sent is
-      // a large payload the list screen does not render. Fetch one contact's
-      // detail when it is actually opened.
-      select: {
-        id: true,
-        profileId: true,
-        name: true,
-        email: true,
-        companyName: true,
-        description: true,
-        customSubject: true,
-        customBody: true,
-        status: true,
-        errorMessage: true,
-        sentAt: true,
-      },
-    });
+    // `contacts` is a page, not the campaign. One `addContacts` call seeds up
+    // to 500 and a campaign accumulates across calls, so this was the one
+    // list-bearing endpoint that still returned everything it had.
+    //
+    // `customBody` stays in the page payload because the table renders an
+    // "edited" badge off it; `totalContacts` on the campaign is the count the
+    // stat tiles read, so they stay correct however many pages are loaded —
+    // same rule as `stats` on `GET /api/profiles`.
+    const [contacts, contactsTotal] = await Promise.all([
+      prisma.campaignContact.findMany({
+        where: { campaignId: campaign.id },
+        orderBy: { createdAt: 'asc' },
+        skip,
+        take,
+        // sentBody is excluded deliberately — a full copy of every email sent is
+        // a large payload the list screen does not render. Fetch one contact's
+        // detail when it is actually opened.
+        select: {
+          id: true,
+          profileId: true,
+          name: true,
+          email: true,
+          companyName: true,
+          description: true,
+          customSubject: true,
+          customBody: true,
+          status: true,
+          errorMessage: true,
+          sentAt: true,
+        },
+      }),
+      prisma.campaignContact.count({ where: { campaignId: campaign.id } }),
+    ]);
 
-    res.status(200).json({ ok: true, campaign, contacts });
+    res
+      .status(200)
+      .json({ ok: true, campaign, contacts, skip, take, contactsTotal });
   } catch (err) {
     next(err);
   }

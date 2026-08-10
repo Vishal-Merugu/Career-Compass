@@ -651,6 +651,46 @@ the return type**: the type is what stops the next caller repeating it.
 Corollary: an infrastructure failure must be stored differently from a business
 outcome (`ProfileDecision.status = 'error'`, not `isQualified: false`).
 
+### A field the parser drops is a field the model will contradict you on
+
+`evaluateProfile`'s criteria said "reject entry level graduates" and it
+shortlisted a working student: MSc Informatik, Oct 2024 – Mar 2027, whose
+Siemens Healthineers position is marked **Work Study** on LinkedIn.
+
+**Why:** neither fact ever reached the model. `parseFullProfile` never read
+`employmentType` at all, and `education` was parsed, mapped through
+`qualificationWorker`, and then left out of `candidateProfileString` — which
+carries only name, headline, experiences, skills and about. So the prompt showed
+`Software Engineer at Siemens Healthineers [10/2024 - Present]` with no degree
+and no employment type: a two-year professional tenure at the target company.
+Accepting that was the right call on the input it was given. The criteria prompt
+was never the problem, and rewording it could not have fixed this.
+
+**Apply:** before blaming a verdict, print the exact string the model received.
+Every fact the criteria can turn on must be _in_ that string — parsing a field
+into `IParsedProfile` does nothing if the prompt builder ignores it. When adding
+a field to `shared/parsers.ts`, follow it all the way through `toRawData` →
+`ScrapedRawData` → the worker's `IParsedProfile` remap → the prompt, and mirror
+the parser change into `extension/services/parsers.js`.
+
+### Do not ask a model to verify a fact you derived from the answer
+
+The prompt's step 1 was "Determine if they are currently at ${targetCompany}",
+and `targetCompany` was `parsedProfile.experiences[0].companyName` — the
+person's own current employer. The check could not fail for anyone.
+
+**Why:** the searched company lives in `SearchJob.searchParams.companyUrl` and
+was never plumbed into the worker, so the nearest available string was taken
+instead. It reads correct at the call site; it is circular one line up. That
+left the pipeline with **no** company check anywhere — `ORGANIZATION_ALUMNI`
+search returns former employees, and the search parser accepts LinkedIn's
+suggestion clusters as results.
+
+**Apply:** a verification step's expected value must come from the request, not
+from the response being checked. `lib/companyName.ts` is where the run's company
+comes from now. Note it lives in `lib/`, not `shared/` — the extension has no
+notion of a search job.
+
 ### Test the process that does the work, not a convenient one
 
 The extension's "Test AI" button ran the health check in its own service worker,

@@ -232,6 +232,43 @@ function parsePeopleSearchResults(response) {
 }
 
 /**
+ * A position's employment type — "Full-time", "Internship", "Work Study".
+ *
+ * Mirrors `employmentTypeOf` in `server/src/shared/parsers.ts`. This is the
+ * field that separates a Werkstudent from a full-time engineer; dropping it made
+ * every student job read to the model as a professional tenure. LinkedIn writes
+ * it as a plain string, as a `{ localizedName }` object on the older Position
+ * schema, or as nothing but `urn:li:fsd_employmentType:WORK_STUDY` on the dash
+ * one.
+ */
+function employmentTypeOf(position) {
+  if (!position || typeof position !== 'object') return '';
+
+  const direct = position.employmentType;
+
+  if (typeof direct === 'string' && direct) return direct;
+
+  if (direct && typeof direct === 'object') {
+    const label = direct.localizedName || direct.name || getText(direct);
+    if (typeof label === 'string' && label) return label;
+  }
+
+  const urn = position.employmentTypeUrn || position['*employmentType'];
+
+  if (typeof urn === 'string' && urn.includes(':')) {
+    const key = urn.split(':').pop() || '';
+    return key
+      .toLowerCase()
+      .split('_')
+      .filter(Boolean)
+      .map((word) => word[0].toUpperCase() + word.slice(1))
+      .join(' ');
+  }
+
+  return '';
+}
+
+/**
  * Parse full profile response
  */
 function parseFullProfile(response) {
@@ -283,6 +320,7 @@ function parseFullProfile(response) {
       profile.experiences.push({
         title: getText(item.title || item.titleV2),
         companyName: getText(item.companyName),
+        employmentType: employmentTypeOf(item),
         timePeriod: {
           startDate: {
             year: startDate.year || '',
@@ -296,10 +334,20 @@ function parseFullProfile(response) {
       });
     }
     if (type.includes('Education') && item.schoolName) {
+      // Same shape juggling as Position: `dateRange` on the dash schema,
+      // `timePeriod` on the older one.
+      const period = item.dateRange || item.timePeriod || {};
+      const eduStart = period.start || period.startDate || {};
+      const eduEnd = period.end || period.endDate || {};
+
       profile.education.push({
         school: getText(item.schoolName),
         degree: getText(item.degreeName),
         fieldOfStudy: getText(item.fieldOfStudy),
+        timePeriod: {
+          startDate: { year: eduStart.year || '' },
+          endDate: { year: eduEnd.year || '' },
+        },
       });
     }
     if (type.includes('Skill') && item.name) {
@@ -390,6 +438,7 @@ function parsePaginationMetadata(response) {
 if (typeof globalThis !== 'undefined') {
   Object.assign(globalThis, {
     getText,
+    employmentTypeOf,
     buildLinkedInProfileUrl,
     parseJobSearchResults,
     parsePeopleSearchResults,

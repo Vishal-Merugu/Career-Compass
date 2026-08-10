@@ -76,6 +76,7 @@ export function toRawData(
       title: exp.title,
       company: exp.companyName,
       companyName: exp.companyName,
+      employmentType: exp.employmentType || '',
       startDate: exp.timePeriod?.startDate || {},
       endDate: exp.timePeriod?.endDate || {},
       timePeriod: exp.timePeriod || {},

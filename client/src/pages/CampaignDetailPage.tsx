@@ -44,7 +44,12 @@ import {
   CampaignStatusBadge,
   ContactStatusBadge,
 } from '../components/StatusBadge';
+import { TablePager } from '../components/TablePager';
+import { toast } from '../lib/toast';
 import classes from './CampaignDetailPage.module.css';
+
+/** Matches the server's default in `server/src/api/campaigns.router.ts`. */
+const PAGE_SIZE = 50;
 
 /**
  * Subscribe to the campaign's SSE stream and fold each frame into the cached
@@ -54,7 +59,17 @@ import classes from './CampaignDetailPage.module.css';
  * campaign emits three frames per contact, and refetching the whole detail
  * payload each time would be 600 requests.
  */
-function useCampaignProgress(campaignId: string | undefined, live: boolean) {
+function useCampaignProgress(
+  campaignId: string | undefined,
+  live: boolean,
+  /**
+   * The page currently cached. The contacts query is keyed by it, so the
+   * patch below has to target the same entry — a frame for a contact on
+   * another page then simply matches nothing, which is correct: that page is
+   * refetched from the server when it is opened.
+   */
+  skip: number,
+) {
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -64,7 +79,7 @@ function useCampaignProgress(campaignId: string | undefined, live: boolean) {
       withCredentials: true,
     });
 
-    const key = ['campaign', campaignId];
+    const key = ['campaign', campaignId, skip];
 
     source.onmessage = (event: MessageEvent<string>) => {
       let frame: CampaignProgress;
@@ -123,7 +138,7 @@ function useCampaignProgress(campaignId: string | undefined, live: boolean) {
     };
 
     return () => source.close();
-  }, [campaignId, live, queryClient]);
+  }, [campaignId, live, queryClient, skip]);
 }
 
 /**
@@ -276,6 +291,11 @@ function DraftModal({
         customBody: body.trim() || null,
       }),
     onSuccess: () => {
+      // The modal closes on save, so without this the only evidence anything
+      // happened is an "edited" badge on a row that may be off-screen.
+      toast.success(
+        `Draft saved for ${contact?.name ?? 'this contact'}. It will be sent exactly as written.`,
+      );
       void queryClient.invalidateQueries({ queryKey: ['campaign'] });
       onClose();
     },
@@ -368,29 +388,49 @@ export function CampaignDetailPage() {
   const { id } = useParams<{ id: string }>();
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<CampaignContact | null>(null);
+  const [skip, setSkip] = useState(0);
 
   const { data, isPending, error } = useQuery({
-    queryKey: ['campaign', id],
-    queryFn: () => api.get<CampaignDetailResponse>(`/api/campaigns/${id}`),
+    queryKey: ['campaign', id, skip],
+    queryFn: () =>
+      api.get<CampaignDetailResponse>(
+        `/api/campaigns/${id}?skip=${skip}&take=${PAGE_SIZE}`,
+      ),
     enabled: Boolean(id),
+    // A page change must not blank the whole screen — the campaign header and
+    // the stat tiles come from this same query and have not changed.
+    placeholderData: (prev) => prev,
   });
 
   const campaign = data?.campaign;
   const contacts = useMemo(() => data?.contacts ?? [], [data]);
+  const contactsTotal = data?.contactsTotal ?? 0;
   const isSending = campaign?.status === 'SENDING';
 
-  useCampaignProgress(id, isSending);
+  useCampaignProgress(id, isSending, skip);
 
+  // Both of these previously reported nothing at all on success, and the page
+  // only catches up when the SSE stream delivers its first frame — so pressing
+  // Start and watching a still-PENDING table for a second looked like a
+  // no-op. Errors are surfaced by the inline Alert below, which carries a link
+  // to Settings when the cause is a missing sending address, so the toast is
+  // silenced for them.
   const send = useMutation({
     mutationFn: () => api.post(`/api/campaigns/${id}/send`),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ['campaign', id] }),
+    meta: { silenceErrorToast: true },
+    onSuccess: () => {
+      toast.success('Sending started. Progress updates live below.');
+      void queryClient.invalidateQueries({ queryKey: ['campaign', id] });
+    },
   });
 
   const stop = useMutation({
     mutationFn: () => api.post(`/api/campaigns/${id}/stop`),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ['campaign', id] }),
+    meta: { silenceErrorToast: true },
+    onSuccess: () => {
+      toast.warning('Sending stopped. Contacts already sent are unaffected.');
+      void queryClient.invalidateQueries({ queryKey: ['campaign', id] });
+    },
   });
 
   if (error) {
@@ -546,7 +586,7 @@ export function CampaignDetailPage() {
       )}
 
       <div className={classes.panel}>
-        {contacts.length === 0 ? (
+        {contactsTotal === 0 ? (
           <EmptyState
             title="No contacts yet"
             icon={<IconMail size={34} stroke={1.4} />}
@@ -652,6 +692,15 @@ export function CampaignDetailPage() {
             </Table>
           </div>
         )}
+
+        <TablePager
+          skip={data?.skip ?? 0}
+          take={data?.take ?? PAGE_SIZE}
+          total={contactsTotal}
+          loaded={contacts.length}
+          noun={['contact', 'contacts']}
+          onChange={setSkip}
+        />
       </div>
 
       <DraftModal
