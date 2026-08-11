@@ -20,6 +20,7 @@ import { sendMail, verifyCredentials } from './mailer.service.js';
 import {
   buildDraftPrompt,
   composeDraft,
+  contactDescription,
   DRAFT_SYSTEM_PROMPT,
 } from './draft.service.js';
 import { sendChatCompletion } from '../shared/llmClient.js';
@@ -160,6 +161,7 @@ export async function addContactsFromProfiles(
       lastName: true,
       email: true,
       headline: true,
+      about: true,
       company: { select: { name: true } },
     },
   });
@@ -174,7 +176,7 @@ export async function addContactsFromProfiles(
       name: `${p.firstName} ${p.lastName}`.trim(),
       email: p.email as string,
       companyName: p.company?.name ?? null,
-      description: p.headline ?? null,
+      description: contactDescription(p.headline, p.about),
     })),
     // The unique index on (campaignId, profileId) is what makes re-adding a
     // selection idempotent instead of queueing a second email per person.
