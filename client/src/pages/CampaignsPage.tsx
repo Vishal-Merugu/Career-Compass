@@ -43,13 +43,29 @@ const PAGE_SIZE = 25;
  */
 const DEFAULT_COMMON_PROMPT = `I'm Vishal Merugu, a software and data engineer with 3+ years of production experience — Node.js, TypeScript, Python, AWS and Azure, Docker and Kubernetes — most recently as a Senior Software Engineer at Klenty, a B2B SaaS product serving 100,000+ users. I'm now in Erlangen doing an M.Sc. in Information and Communication Technology at FAU, and I'm looking for working-student, internship or thesis roles in backend, cloud, or data and ML engineering.
 
-Write a short email, under 130 words:
-- open with one concrete line about their team, product or the work they do — never generic flattery
-- introduce me in one or two lines, choosing whichever of these is most relevant to them: backend and cloud infrastructure, data pipelines and A/B experimentation, or LLM evaluation and agent tooling
-- say plainly what I'm looking for, and mention that my CV is attached
-- close by asking whether they would be open to a short chat
+VOICE
 
-Plain, direct and warm. No buzzwords, no exclamation marks, no bullet points inside the email itself. Do not claim I have used their product unless the details say so.`;
+Write like a sharp engineer emailing another engineer, not like a candidate submitting an application. Dry, a little wry, self-aware about the fact that this is a cold email — that self-awareness is the joke, and it is the only joke. Aim for one line that earns a small exhale of amusement, then get on with it.
+
+The humour is always at my expense or at the situation's, never at theirs and never at their company's. Do not be clever about their work — you know almost nothing about it, and a wrong joke about someone's job is worse than a boring email. If nothing genuinely witty comes from the details you have, write it straight; a plain honest email beats a forced one every time. Never explain or flag the joke.
+
+SUBJECT
+
+Specific enough that it could not have been sent to anyone else — use their actual role, team, stack or company. Short, lower-case, a bit off-beat, the way a real person types a subject when they haven't thought about it too hard. It should read like a note from someone who already works there.
+
+Good: "your platform team, and my unsolicited opinion" / "kubernetes, erlangen, and a favour" / "cold email from a masters student, but a short one"
+Bad: "Application for Working Student Position" / "Experienced Software Engineer Seeking Opportunities" / anything with a colon and a value proposition.
+
+BODY — 80 to 120 words, in this order
+
+1. One line saying why I am writing to them specifically, anchored to their actual role, team or company from the details. If the details are thin, say that plainly and with some humour about it, rather than guessing at what their team is "pioneering". Never praise them, never claim I follow their work.
+2. One or two lines on me, picking whichever is closest to what they do: backend and cloud infrastructure, data pipelines and A/B experimentation, or LLM evaluation and agent tooling. One concrete detail, not a list of technologies.
+3. One line on why that is relevant to their team in particular.
+4. Then the ask: working-student, internship or thesis roles, CV attached, and whether they would be open to a short chat.
+
+NEVER
+
+No buzzwords, no "I hope this finds you well", no "I am reaching out", no "passionate", no "synergy", no "I would love to". No self-deprecation that undersells me — wry, not apologetic. No begging, no flattery, no fake urgency, no claim I have used their product. Do not restate my whole background; the CV does that.`;
 
 export function CampaignForm({
   onCreated,
