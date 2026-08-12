@@ -34,6 +34,7 @@ interface TestLookup {
   profileId: string;
   status: string;
   attempts: number;
+  reclaims: number;
   claimedBy: string | null;
   allowServerFallback: boolean;
   email: string | null;
@@ -65,6 +66,34 @@ vi.mock('../lib/logger.js', () => ({
     debug: vi.fn(),
   },
 }));
+
+/**
+ * Prisma's atomic-number shorthand, applied to a plain object.
+ *
+ * Generic over the column: it used to add every `{ increment }` to `attempts`,
+ * which was true when `attempts` was the only counter and silently wrong the
+ * moment `reclaims` arrived — the sweep's decrement would have been stored as
+ * the literal object `{ decrement: 1 }` and every assertion about it would
+ * still have passed.
+ */
+function applyData(row: TestLookup, data: Record<string, unknown>) {
+  const target = row as unknown as Record<string, unknown>;
+
+  for (const [key, value] of Object.entries(data)) {
+    if (value && typeof value === 'object' && !(value instanceof Date)) {
+      const op = value as { increment?: number; decrement?: number };
+      if (typeof op.increment === 'number') {
+        target[key] = ((target[key] as number) ?? 0) + op.increment;
+        continue;
+      }
+      if (typeof op.decrement === 'number') {
+        target[key] = ((target[key] as number) ?? 0) - op.decrement;
+        continue;
+      }
+    }
+    target[key] = value;
+  }
+}
 
 vi.mock('../lib/prisma.js', () => {
   interface LookupWhere {
@@ -197,6 +226,7 @@ vi.mock('../lib/prisma.js', () => {
             emailSource: null,
             emailValidation: null,
             lastError: null,
+            reclaims: 0,
             requestedAt: new Date(),
             dispatchedAt: null,
             completedAt: null,
@@ -229,10 +259,10 @@ vi.mock('../lib/prisma.js', () => {
           data,
         }: {
           where: { id: string };
-          data: Partial<TestLookup>;
+          data: Record<string, unknown>;
         }) => {
           const row = store.lookups.find((l) => l.id === where.id);
-          if (row) Object.assign(row, data);
+          if (row) applyData(row, data);
           return Promise.resolve(row);
         },
         updateMany: ({
@@ -243,21 +273,7 @@ vi.mock('../lib/prisma.js', () => {
           data: Record<string, unknown>;
         }) => {
           const rows = store.lookups.filter((l) => matchLookup(l, where));
-          for (const row of rows) {
-            for (const [key, value] of Object.entries(data)) {
-              // Prisma's `{ increment: n }` shorthand.
-              if (
-                value &&
-                typeof value === 'object' &&
-                'increment' in (value as Record<string, unknown>)
-              ) {
-                const inc = (value as { increment: number }).increment;
-                row.attempts += inc;
-              } else {
-                Object.assign(row, { [key]: value });
-              }
-            }
-          }
+          for (const row of rows) applyData(row, data);
           return Promise.resolve({ count: rows.length });
         },
         deleteMany: ({ where }: { where: LookupWhere }) => {
@@ -302,6 +318,7 @@ const {
   getLookupStats,
   sweepStaleLookups,
   EMAIL_LOOKUP_MAX_ATTEMPTS,
+  EMAIL_LOOKUP_MAX_RECLAIMS,
 } = await import('./emailLookup.service.js');
 
 const USER = 'user-1';
@@ -610,16 +627,51 @@ describe('sweepStaleLookups', () => {
     expect(store.lookups[0].status).toBe('dispatched');
   });
 
-  it('fails a row that has run out of attempts instead of looping', async () => {
+  // The whole point of a durable queue: closing the laptop is not an answer
+  // about the address, so it must not spend one of the three tries. It used to,
+  // and three interruptions retired a row as `failed` having never once run a
+  // lookup on it.
+  it('gives the attempt back, because a lost lease was never an attempt', async () => {
     const profile = seedProfile();
     await enqueueLookups(USER, [profile.id]);
     await claimLookups(USER, 1, 'extension');
-    store.lookups[0].attempts = EMAIL_LOOKUP_MAX_ATTEMPTS;
-    store.lookups[0].dispatchedAt = new Date(Date.now() - 60 * 60 * 1000);
+    expect(store.lookups[0].attempts).toBe(1);
 
+    store.lookups[0].dispatchedAt = new Date(Date.now() - 60 * 60 * 1000);
     await sweepStaleLookups();
 
+    expect(store.lookups[0].attempts).toBe(0);
+    expect(store.lookups[0].reclaims).toBe(1);
+    expect(store.lookups[0].status).toBe('queued');
+  });
+
+  it('survives more interruptions than it has attempts', async () => {
+    const profile = seedProfile();
+    await enqueueLookups(USER, [profile.id]);
+
+    // One more closed laptop than the attempt budget would have tolerated.
+    for (let i = 0; i < EMAIL_LOOKUP_MAX_ATTEMPTS + 1; i += 1) {
+      await claimLookups(USER, 1, 'extension');
+      store.lookups[0].dispatchedAt = new Date(Date.now() - 60 * 60 * 1000);
+      await sweepStaleLookups();
+    }
+
+    expect(store.lookups[0].status).toBe('queued');
+    expect((await getLookupStats(USER)).pending).toBe(1);
+  });
+
+  it('stops re-queueing a row that keeps killing its executor', async () => {
+    const profile = seedProfile();
+    await enqueueLookups(USER, [profile.id]);
+
+    for (let i = 0; i < EMAIL_LOOKUP_MAX_RECLAIMS; i += 1) {
+      await claimLookups(USER, 1, 'extension');
+      store.lookups[0].dispatchedAt = new Date(Date.now() - 60 * 60 * 1000);
+      await sweepStaleLookups();
+    }
+
     expect(store.lookups[0].status).toBe('failed');
+    expect((await getLookupStats(USER)).pending).toBe(0);
   });
 
   // `claimLookups` skips rows at the ceiling, so a queued one there can never be

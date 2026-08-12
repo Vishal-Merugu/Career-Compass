@@ -12,7 +12,7 @@
  * treat a stream frame as the only way state changes.
  */
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import { toast } from '../lib/toast';
@@ -85,6 +85,43 @@ export function useEmailLookups() {
         );
       }
 
+      // The row's own queue entry has to move too, not just the counters.
+      // `lookups` is what the Email column reads to decide a row is still
+      // being worked — patching only `stats` left a finished row holding a
+      // `queued`/`dispatched` entry, so the spinner kept running next to the
+      // address that had just arrived. The backstop poll does not clear it
+      // either: it stops the moment `stats.pending` hits 0, which is the same
+      // frame that finished the last row.
+      if (frame.type === 'ITEM' && frame.lookupId) {
+        if (frame.status === 'done') {
+          queryClient.setQueryData<LookupStatusResponse>(LOOKUPS_KEY, (prev) =>
+            prev
+              ? {
+                  ...prev,
+                  lookups: prev.lookups.map((l) =>
+                    l.id === frame.lookupId
+                      ? {
+                          ...l,
+                          status: 'done',
+                          email: frame.email ?? l.email,
+                          emailSource: frame.emailSource ?? l.emailSource,
+                          emailValidation:
+                            frame.emailValidation ?? l.emailValidation,
+                          completedAt: new Date().toISOString(),
+                        }
+                      : l,
+                  ),
+                }
+              : prev,
+          );
+        } else {
+          // A miss is `failed` on the wire whether the row is exhausted or
+          // going back in the queue for another attempt, and only the server
+          // knows which. Ask it rather than guessing a terminal state.
+          void queryClient.invalidateQueries({ queryKey: LOOKUPS_KEY });
+        }
+      }
+
       // A found address changes a row in the profiles table, which is a
       // different query. Patch it in place rather than refetching every page
       // that has been loaded.
@@ -132,6 +169,21 @@ export function useEmailLookups() {
       void queryClient.invalidateQueries({ queryKey: ['profiles'] });
     }
   }, [hasPending, query.data, queryClient]);
+
+  // The queue list itself is resynced once at the end of a batch, because the
+  // backstop poll stops on the same frame that empties the queue — anything
+  // that finished without a `done` frame (dropped stream, a lease the sweeper
+  // reclaimed, a cancel) would otherwise keep its badge until a reload.
+  //
+  // Guarded on the true→false edge, not on `hasPending`: invalidating on the
+  // level would refetch, produce new `query.data`, and invalidate again.
+  const wasPending = useRef(false);
+  useEffect(() => {
+    if (wasPending.current && !hasPending) {
+      void queryClient.invalidateQueries({ queryKey: LOOKUPS_KEY });
+    }
+    wasPending.current = hasPending;
+  }, [hasPending, queryClient]);
 
   const findEmails = useMutation({
     mutationFn: (vars: {

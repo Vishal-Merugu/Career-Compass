@@ -98,6 +98,16 @@ const LEASE_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_ATTEMPTS = 3;
 
 /**
+ * After this many expired leases the row stops coming back.
+ *
+ * Higher than `MAX_ATTEMPTS` because an interruption is not a verdict: the
+ * usual cause is a laptop that closed, and a user who closes their laptop five
+ * times before an answer arrives should still get one. It exists only so a row
+ * that reliably kills its executor cannot cycle forever.
+ */
+const MAX_RECLAIMS = 5;
+
+/**
  * How long the extension gets first refusal on a queued row.
  *
  * Lives here rather than in the worker because `getLookupStats` uses the same
@@ -162,6 +172,7 @@ export async function enqueueLookups(
         // A re-request is a fresh start, not a fourth attempt at a row that
         // already exhausted MAX_ATTEMPTS.
         attempts: 0,
+        reclaims: 0,
         claimedBy: null,
         lastError: null,
         dispatchedAt: null,
@@ -441,18 +452,31 @@ export async function sweepStaleLookups(): Promise<number> {
 
   const stale = await prisma.emailLookup.findMany({
     where: { status: 'dispatched', dispatchedAt: { lt: cutoff } },
-    select: { id: true, userId: true, attempts: true },
+    select: { id: true, userId: true, reclaims: true },
   });
 
   for (const row of stale) {
-    const exhausted = row.attempts >= MAX_ATTEMPTS;
+    // The attempt is given back, not spent. A lease that expired means the
+    // executor never reported — a closed laptop, a crashed browser, a machine
+    // that slept — and none of that is evidence about the address. Charging it
+    // to `attempts` retired rows as `failed` after three interruptions without
+    // ever having looked them up, which is precisely the work-lost case a
+    // durable queue exists to prevent.
+    //
+    // `decrement` is safe against the claim that never happened: only a row
+    // that reached `dispatched` is here, and reaching it incremented.
+    const exhausted = row.reclaims + 1 >= MAX_RECLAIMS;
     await prisma.emailLookup.update({
       where: { id: row.id },
       data: {
         status: exhausted ? 'failed' : 'queued',
+        attempts: { decrement: 1 },
+        reclaims: { increment: 1 },
         claimedBy: null,
         dispatchedAt: null,
-        lastError: 'Executor never reported a result',
+        lastError: exhausted
+          ? `Executor never reported a result after ${MAX_RECLAIMS} tries`
+          : 'Executor never reported a result — returned to the queue',
         completedAt: exhausted ? new Date() : null,
       },
     });
@@ -487,4 +511,5 @@ export async function cancelQueuedLookups(userId: string): Promise<number> {
 }
 
 export const EMAIL_LOOKUP_MAX_ATTEMPTS = MAX_ATTEMPTS;
+export const EMAIL_LOOKUP_MAX_RECLAIMS = MAX_RECLAIMS;
 export const EMAIL_LOOKUP_EXTENSION_GRACE_MS = EXTENSION_GRACE_MS;

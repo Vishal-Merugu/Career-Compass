@@ -114,12 +114,31 @@ async function handleMessage(message, sendResponse) {
 
           const activeTab = tabs[0];
           let isLinkedIn = false;
+          // Our own dashboard. Reported separately because the popup's
+          // "open this on a LinkedIn tab" gate is about *sending connection
+          // requests*, and nothing the user comes to the popup for while on
+          // the dashboard — linking the extension, checking status, watching
+          // the queue drain — needs LinkedIn open at all. Blocking there was
+          // telling the user their own web app was the wrong page.
+          let isDashboard = false;
 
           if (activeTab && activeTab.url) {
             const url = new URL(activeTab.url);
             // Verify it's on any linkedin.com subdomain
             if (url.hostname.includes('linkedin.com')) {
               isLinkedIn = true;
+            }
+
+            const { backendUrl } = await getConfig();
+            // Compared by origin, not by string: the dashboard is same-origin
+            // with the backend but the user is on some path under it, and
+            // `backendUrl` carries no path.
+            if (backendUrl) {
+              try {
+                isDashboard = url.origin === new URL(backendUrl).origin;
+              } catch {
+                isDashboard = false;
+              }
             }
           }
 
@@ -132,6 +151,7 @@ async function handleMessage(message, sendResponse) {
           sendResponse({
             ok: true,
             isLinkedIn,
+            isDashboard,
             isLoggedIn,
             url: activeTab?.url,
           });
@@ -140,6 +160,7 @@ async function handleMessage(message, sendResponse) {
           sendResponse({
             ok: false,
             isLinkedIn: false,
+            isDashboard: false,
             isLoggedIn: false,
             error: err.message,
           });
@@ -150,6 +171,38 @@ async function handleMessage(message, sendResponse) {
       case 'sessionCheck': {
         const loggedIn = await isLinkedInLoggedIn();
         sendResponse({ ok: true, loggedIn });
+        break;
+      }
+
+      // ─── Dashboard Bridge ────────────────────────────────────────
+      //
+      // Both arrive from content-scripts/dashboardBridge.js, which relays only
+      // these two. Neither returns the config: the API key lives there, and the
+      // caller is page script on the dashboard origin.
+
+      // "Is there an extension here, and is it wired to this backend?" —
+      // questions the dashboard could not previously ask at all.
+      case 'bridge:ping': {
+        const config = await getConfig();
+        sendResponse({
+          ok: true,
+          version: chrome.runtime.getManifest().version,
+          // Unlinked is a different problem with a different fix (open the
+          // popup and log in) than absent, and it looks identical from the
+          // dashboard otherwise.
+          linked: Boolean(config.apiKey && config.backendUrl),
+          backendUrl: config.backendUrl || null,
+        });
+        break;
+      }
+
+      // Drain now instead of at the next alarm tick. Waking a suspended worker
+      // is exactly what a message does, so this doubles as the manual wake:
+      // the up-to-60s wait after pressing "Find emails" was long enough that
+      // the queue looked stuck.
+      case 'bridge:drain': {
+        const result = await drainEmailLookups();
+        sendResponse(result);
         break;
       }
 
@@ -212,32 +265,55 @@ async function handleWorkflowMessage(message, sendResponse) {
 
 // ─── Alarms ──────────────────────────────────────────────────────
 
-chrome.alarms.create('midnightReset', {
-  // Fire at next midnight, then every 24h
-  when: getNextMidnight(),
-  periodInMinutes: 24 * 60,
-});
+/**
+ * Every recurring wake-up this extension has, in one table.
+ *
+ * `emailLookupDrain` is what makes a suspended worker come back: Chrome kills
+ * the worker after ~30s idle, and an alarm is the only thing that restarts it —
+ * a `setInterval` is suspended with it and never fires again.
+ */
+const ALARMS = {
+  // Fire at next midnight, then every 24h.
+  midnightReset: () => ({
+    when: getNextMidnight(),
+    periodInMinutes: 24 * 60,
+  }),
+  // Keep-alive, to recover from service worker suspension.
+  workflowKeepAlive: () => ({ periodInMinutes: 1 }),
+  // Drains email lookups queued from the web dashboard. One minute is the floor
+  // Chrome allows for a periodic alarm. See services/emailLookupDrainer.js.
+  emailLookupDrain: () => ({ periodInMinutes: 1 }),
+  // Keep the server's cookie jar fresh. LinkedIn rotates JSESSIONID and lidc
+  // during ordinary browsing, and the server cannot obtain a jar on its own, so
+  // re-pushing periodically is what keeps server-side scraping alive. 30 minutes
+  // is well inside any cookie's lifetime while costing one request.
+  sessionSync: () => ({ periodInMinutes: 30 }),
+};
 
-// Keep-alive alarm to prevent/recover from service worker suspension
-chrome.alarms.create('workflowKeepAlive', {
-  periodInMinutes: 1,
-});
+/**
+ * Re-create any alarm that is missing, without disturbing one that exists.
+ *
+ * Alarms survive suspension and browser restarts, so this is normally a no-op —
+ * but they do **not** survive every path that leaves the extension installed
+ * and running: an update, a reload from `chrome://extensions`, a profile Chrome
+ * repaired after a crash. Losing `emailLookupDrain` that way is silent and
+ * permanent, and looks exactly like a user who never opens Chrome: the queue
+ * sits there and the dashboard says it is waiting for a browser that is in fact
+ * right here.
+ *
+ * Re-creating unconditionally would be worse than useless — `create` on an
+ * existing alarm resets its schedule, so calling this on every worker wake-up
+ * (which is often) would push a 30-minute alarm permanently into the future.
+ */
+async function ensureAlarms() {
+  for (const [name, options] of Object.entries(ALARMS)) {
+    if (await chrome.alarms.get(name)) continue;
+    chrome.alarms.create(name, options());
+    console.log(`[Background] Re-created missing alarm: ${name}`);
+  }
+}
 
-// Drains email lookups queued from the web dashboard. One minute is the floor
-// Chrome allows for a periodic alarm, and it has to be an alarm rather than a
-// setInterval because the worker is suspended after ~30s idle and takes any
-// timer with it. See services/emailLookupDrainer.js.
-chrome.alarms.create('emailLookupDrain', {
-  periodInMinutes: 1,
-});
-
-// Keep the server's cookie jar fresh. LinkedIn rotates JSESSIONID and lidc
-// during ordinary browsing, and the server cannot obtain a jar on its own, so
-// re-pushing periodically is what keeps server-side scraping alive. 30 minutes
-// is well inside any cookie's lifetime while costing one request.
-chrome.alarms.create('sessionSync', {
-  periodInMinutes: 30,
-});
+void ensureAlarms();
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === 'midnightReset') {
@@ -245,8 +321,13 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     await resetDailyStats();
     await addActivityEntry('🌅 New day — daily counters reset');
   } else if (alarm.name === 'workflowKeepAlive') {
-    console.log('[Background] Keep-alive alarm fired');
-  } else if (alarm.name === 'emailLookupDrain') {
+    // Cheap enough to piggyback on: it already wakes the worker every minute,
+    // so the alarm table gets checked once a minute for free.
+    await ensureAlarms();
+  } else if (
+    alarm.name === 'emailLookupDrain' ||
+    alarm.name === 'emailLookupDrainSoon'
+  ) {
     // Failures are logged inside; a rejection here would leave the alarm
     // handler with an unhandled rejection and no other effect.
     await drainEmailLookups();
@@ -321,7 +402,12 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 
 chrome.runtime.onStartup.addListener(async () => {
   console.log('[Background] Browser startup — restoring workflow state');
+  await ensureAlarms();
   await initWorkflows();
+  // A browser that was closed for a day has a backlog waiting. Draining on
+  // startup rather than up to a minute later is the difference between the
+  // dashboard being right when the user opens it and being a minute stale.
+  await drainEmailLookups();
 });
 
 console.log(

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Avatar,
@@ -57,6 +57,7 @@ import { ProfileDrawer } from '../components/ProfileDrawer';
 import { EmptyState } from '../components/EmptyState';
 import { StatTile } from '../components/StatTile';
 import { useEmailLookups } from '../hooks/useEmailLookups';
+import { useExtensionBridge } from '../hooks/useExtensionBridge';
 import { toast } from '../lib/toast';
 import { CampaignForm } from './CampaignsPage';
 import classes from './ResultsPage.module.css';
@@ -402,6 +403,22 @@ export function ResultsPage() {
   // that instead of showing a spinner that will never resolve on its own.
   const stalled = pending > 0 && (lookupStats?.stalled ?? 0) >= pending;
 
+  // Which is a different sentence depending on whether a browser that *could*
+  // do the work is on the other side of this page. "Waiting for Chrome" is
+  // unactionable when Chrome is right here with the extension installed, and it
+  // buries the lede when the extension is missing entirely.
+  const { state: extension, drainNow } = useExtensionBridge();
+
+  // A backlog plus a live extension is a drain that has not happened yet, and
+  // the alarm that would eventually do it is a minute away — long enough that
+  // a user watching the panel concludes it is stuck. Poking it is free and
+  // idempotent: the drainer refuses a second concurrent run, and the work is
+  // claimed under the same server-side lease either way, so nothing here can
+  // duplicate a lookup or strand one.
+  useEffect(() => {
+    if (extension === 'ready' && pending > 0) void drainNow();
+  }, [extension, pending, drainNow]);
+
   const toggle = (id: string) =>
     setSelected((prev) => {
       const next = new Set(prev);
@@ -653,7 +670,11 @@ export function ResultsPage() {
           }
           title={
             stalled
-              ? `Paused — ${pending} ${pending === 1 ? 'lookup is' : 'lookups are'} waiting for Chrome`
+              ? extension === 'ready'
+                ? `Picking up ${pending} waiting ${pending === 1 ? 'lookup' : 'lookups'}`
+                : extension === 'unlinked'
+                  ? `Paused — the extension here is not signed in`
+                  : `Paused — no extension in this browser`
               : pending > 0
                 ? `Finding emails — ${lookupStats.done + lookupStats.failed} of ${lookupStats.total} done`
                 : `Email lookups finished — ${lookupStats.done} found, ${lookupStats.failed} failed`
@@ -675,8 +696,15 @@ export function ResultsPage() {
                   {stalled
                     ? // Nothing is running, and saying so is the point: the queue
                       // is intact and resumes on its own, so the user needs to
-                      // know what to do rather than watch a spinner.
-                      'Nothing is running right now — these need Chrome open with the extension installed, which is the only place the free provider lookup works. They resume by themselves when it is; nothing was lost.'
+                      // know what to do rather than watch a spinner. Which
+                      // instruction is useful depends entirely on whether the
+                      // extension answered — telling someone to install what
+                      // they already have is how a status line stops being read.
+                      extension === 'ready'
+                      ? 'The extension in this browser has been asked to take these. It works through them a couple at a time; nothing is lost if you close the tab.'
+                      : extension === 'unlinked'
+                        ? 'The extension is installed here but not signed in, so it cannot claim work. Open it from the toolbar and log in — these resume by themselves after that.'
+                        : 'No extension answered in this browser. These need Chrome with the CareerCompass extension installed and signed in — that is the only place the free provider lookup works. They resume by themselves when it is there; nothing was lost.'
                     : 'Keep Chrome open with the extension installed — it does these in a real browser, which is the only place the free provider lookup works. Progress is saved, so you can leave this tab.'}
                 </Text>
                 <Group gap="sm" wrap="wrap">

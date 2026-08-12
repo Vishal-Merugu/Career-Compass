@@ -390,6 +390,14 @@ async function checkLinkedInContext() {
       document.getElementById('authTitle').textContent = 'Local Preview Mode';
       return true;
     }
+    // The gate exists for the connection workflow, which genuinely needs a
+    // LinkedIn tab. On our own dashboard it was blocking the popup on the one
+    // page where the user is most likely to be opening it deliberately — to
+    // link the extension, or to see why the email queue is not draining.
+    if (res.isDashboard) {
+      overlay.classList.remove('active');
+      return true;
+    }
     if (!res.isLinkedIn || !res.isLoggedIn) {
       overlay.classList.add('active');
       return false;

@@ -264,6 +264,32 @@ deliberately still re-queueable — that is how it gets upgraded later.
 the status code is reserved for transport failures. Three attempts, then
 `failed`.
 
+**An expired lease is not an attempt.** `sweepStaleLookups` gives the attempt
+back (`attempts` decrement) and charges a separate `reclaims` counter,
+`MAX_RECLAIMS = 5`. A closed laptop, a crashed browser or a sleeping machine is
+not evidence about the address, and counting it as one retired rows as `failed`
+after three interruptions without ever having looked them up. Do not merge the
+two counters back together.
+
+**The dashboard can see and poke the extension**, through a content script the
+extension injects on the backend's own origin
+(`extension/content-scripts/dashboardBridge.js` ↔ `client/src/hooks/useExtensionBridge.ts`).
+Two uses: telling "no browser has claimed these yet" apart from "there is no
+extension in this browser" — both rendered as "waiting for Chrome" before, and
+only one is the user's to fix — and waking the suspended service worker so a
+drain starts now instead of at the next alarm.
+
+- **The bridge relays two actions by allowlist**, `bridge:ping` and
+  `bridge:drain`. The same message channel serves `getStatus`, which returns the
+  config _including the API key_; an open relay would publish that key to page
+  script. Never widen it to pass `message.action` through.
+- **A content script, not `externally_connectable`** — that needs the page to
+  know the extension id, which is not stable for an unpacked install.
+  `build-ext.js` bakes the deployed origin into the manifest's match patterns,
+  since a content script's origin is fixed at build time.
+- **It is an accelerator, never a path.** Work still moves only through the
+  queue's server-side lease, so a nudge that arrives mid-crash loses nothing.
+
 See `docs/adr/0006-email-lookup-queue.md`.
 
 ## The finder pipeline reaches the dashboard through `Profile`

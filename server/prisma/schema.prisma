@@ -188,6 +188,17 @@ model EmailLookup {
   /// queued | dispatched | done | failed
   status              String    @default("queued")
   attempts            Int       @default(0)
+  /// Leases that expired without the executor reporting anything.
+  ///
+  /// Separate from `attempts` because they are not the same event and must not
+  /// share a budget. An attempt is a lookup that ran and came back empty; a
+  /// reclaim is a browser that was closed, crashed or slept mid-lookup — the
+  /// row was never actually worked. Counting those as attempts retired a row
+  /// as `failed` after three closed laptops, having never once tried it.
+  ///
+  /// Still counted, and still bounded by `MAX_RECLAIMS`: a row that reliably
+  /// kills whatever picks it up must not cycle through the queue forever.
+  reclaims            Int       @default(0)
   /// Which executor took it: `extension` or `server`.
   claimedBy           String?
   /// May the server finish this with patterns + SMTP if no browser claims it?
