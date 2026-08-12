@@ -88,8 +88,10 @@ const CONTROL_DONE: Record<'pause' | 'resume' | 'cancel', string> = {
 function companyFromUrl(job: SearchJob): string {
   const url = job.searchParams.companyUrl;
   if (!url) return '—';
-  // `https://www.linkedin.com/company/acme/` → `acme`
-  const match = /\/company\/([^/?#]+)/.exec(url);
+  // `https://www.linkedin.com/company/acme/` → `acme`, and `/showcase/` the
+  // same — a run can target either, so a showcase run must not render as a
+  // raw URL in the list.
+  const match = /\/(?:company|showcase)\/([^/?#]+)/.exec(url);
   return match ? match[1] : url;
 }
 

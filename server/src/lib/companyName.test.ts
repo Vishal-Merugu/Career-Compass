@@ -20,6 +20,20 @@ describe('companySlugFromUrl', () => {
     ).toBe('siemens-healthineers');
   });
 
+  // A division or product line: `/showcase/siemens-mobility/`. It resolves
+  // through the same universalName call and its people search returns staff,
+  // so it is a company URL for every purpose here.
+  it('reads a showcase page the same way', () => {
+    expect(
+      companySlugFromUrl('https://www.linkedin.com/showcase/siemens-mobility/'),
+    ).toBe('siemens-mobility');
+    expect(
+      companySlugFromUrl(
+        'https://www.linkedin.com/showcase/siemens-mobility/people/',
+      ),
+    ).toBe('siemens-mobility');
+  });
+
   it('is empty rather than throwing for junk', () => {
     expect(companySlugFromUrl('not a url')).toBe('');
     expect(companySlugFromUrl('')).toBe('');

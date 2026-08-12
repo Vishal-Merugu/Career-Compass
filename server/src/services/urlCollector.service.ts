@@ -80,8 +80,13 @@ export function parseSearchUrl(searchUrl: string): {
     }
 
     if (!companyId) {
+      // `/showcase/` too: a showcase page is an organization like any other to
+      // `q=universalName`, and its people search returns staff. See
+      // `companySlugFromUrl`, which uses the same list for the run's label.
       const parts = url.pathname.split('/').filter(Boolean);
-      const idx = parts.indexOf('company');
+      const idx = parts.findIndex(
+        (part) => part === 'company' || part === 'showcase',
+      );
       companySlug =
         idx !== -1 && parts[idx + 1]
           ? parts[idx + 1]

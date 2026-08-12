@@ -48,11 +48,16 @@ function companyUrlProblem(value: string): string | null {
     if (!url.hostname.endsWith('linkedin.com')) {
       return 'That is not a linkedin.com address.';
     }
+    // `/showcase/` is a company page too — a division or product line, like
+    // `/showcase/siemens-mobility/`. It resolves and searches exactly like
+    // `/company/`, so rejecting it sent people looking for a page that in
+    // plenty of cases does not exist.
     if (
       !url.pathname.includes('/company/') &&
+      !url.pathname.includes('/showcase/') &&
       !url.searchParams.get('currentCompany')
     ) {
-      return 'Use the company page URL — linkedin.com/company/…';
+      return 'Use the company page URL — linkedin.com/company/… or /showcase/…';
     }
     return null;
   } catch {

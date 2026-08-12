@@ -869,3 +869,25 @@ running. The dashboard stores the dismissed `batchId` in `localStorage`, and
 only offers the close button once `pending` is 0, so a dismissal can never hide
 work in flight and the next press always shows. When adding a counter over a
 table whose rows outlive the thing being counted, scope it to that thing.
+
+### `/showcase/` is a company page, and LinkedIn treats it as one
+
+`https://www.linkedin.com/showcase/siemens-mobility/` was rejected by the New
+run form ("Use the company page URL"), and would have died server-side anyway:
+`parseSearchUrl` and `companySlugFromUrl` both looked for a path segment named
+exactly `company`, so a showcase URL produced an empty slug and the run failed
+with "Could not find a company in the search URL". Raised by the user
+2026-08-12.
+
+**Why:** a showcase page is a division or product line hung off a parent
+company, and it is a `Company` entity like any other. Measured before changing
+anything: `resolveCompany('siemens-mobility')` returns
+`urn:li:fs_normalized_company:18049058` and `searchPeople` on that id returns
+12 results. Nothing about the pipeline needed to change — only the URL shapes
+it was willing to read.
+
+**Apply:** `company` and `showcase` are both organization segments. Four places
+read them: `lib/companyName.ts` (`ORG_SEGMENTS`), `parseSearchUrl`, the New run
+form's validation and the Runs list's label. Do not assume LinkedIn's other URL
+shapes are unusable without a probe first — `server/linkedin-cookies.json` plus
+a scratch `resolveCompany` + `searchPeople` call answers it in two requests.
