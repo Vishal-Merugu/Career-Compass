@@ -846,3 +846,26 @@ per method. Pinned by `src/api/profiles.router.test.ts`, which walks
 server, no database. When an `/api` route 404s, check ordering _before_
 suspecting the deploy: `curl` it unauthenticated, and a 401 means the request
 reached a handler.
+
+### A per-user count of rows that are never deleted is a lifetime count
+
+The Results lookup panel reported "Email lookups finished — 62 found, 11 failed"
+after a run of 39 profiles, and never went away. `getLookupStats` grouped every
+`EmailLookup` row for the user, and rows are upserted in place rather than
+deleted — a re-request resets one, it does not create a second — so the numbers
+were the account's whole history of lookups, spanning several runs. The panel
+also had no dismiss, and since `total > 0` is permanently true once anyone has
+pressed the button, it was on screen forever. Reported by the user 2026-08-12.
+
+**Why:** the queue table is the record of every lookup ever performed (that is
+what makes re-queueing idempotent), but the progress panel is about one press of
+"Find emails". Those are different questions asked of the same rows, and without
+a key to tell one press from another there is no query that answers the second.
+
+**Apply:** `EmailLookup.batchId` is set per `enqueueLookups` call and returned to
+the client. `getLookupStats` scopes to the newest batch **plus any older batch
+still holding pending rows** — dropping those would hide work that is genuinely
+running. The dashboard stores the dismissed `batchId` in `localStorage`, and
+only offers the close button once `pending` is 0, so a dismissal can never hide
+work in flight and the next press always shows. When adding a counter over a
+table whose rows outlive the thing being counted, scope it to that thing.

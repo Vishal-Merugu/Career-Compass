@@ -65,6 +65,11 @@ import classes from './ResultsPage.module.css';
 /** Matches the server's `take` cap in `server/src/api/profiles.router.ts`. */
 const PAGE_SIZE = 100;
 
+/** Which finished lookup batch the user closed the progress panel on. */
+const DISMISSED_BATCH_KEY = 'cc.lookups.dismissedBatch';
+/** Stand-in id for pre-batch rows, which have none of their own. */
+const NO_BATCH = 'legacy';
+
 const COLUMNS = [
   { label: '', width: '40px' },
   { label: 'Name', width: '19%' },
@@ -398,6 +403,30 @@ export function ResultsPage() {
     cancel,
   } = useEmailLookups();
 
+  /**
+   * The finished batch the user closed the progress panel on.
+   *
+   * Kept in `localStorage` rather than state because a finished batch stays
+   * finished across reloads — the panel is the record of the last press of
+   * "Find emails", and it has nothing else to say once it has been read. A new
+   * batch has a new id, so dismissing one never hides the next.
+   */
+  const [dismissedBatch, setDismissedBatch] = useState<string | null>(() =>
+    localStorage.getItem(DISMISSED_BATCH_KEY),
+  );
+  const dismissBatch = (batchId: string | null) => {
+    // Rows queued before batches existed have no id of their own, so they share
+    // one stand-in — there is only ever one such group.
+    setDismissedBatch(batchId ?? NO_BATCH);
+    localStorage.setItem(DISMISSED_BATCH_KEY, batchId ?? NO_BATCH);
+  };
+
+  // Only a finished batch can be dismissed, so a dismissal cannot hide work in
+  // flight — and the moment a new batch is queued, `batchId` no longer matches.
+  const panelDismissed =
+    (lookupStats?.pending ?? 0) === 0 &&
+    dismissedBatch === (lookupStats?.batchId ?? NO_BATCH);
+
   // Every pending row is waiting on a browser that is not there. The queue is
   // intact and resumes on its own, but nothing is running — so the panel says
   // that instead of showing a spinner that will never resolve on its own.
@@ -653,12 +682,20 @@ export function ResultsPage() {
 
       {/* Shown whenever the queue is non-empty, including after the tab was
           closed and reopened: the work happens server-side or in the extension,
-          so progress advances with nothing watching. */}
-      {lookupStats && lookupStats.total > 0 && (
+          so progress advances with nothing watching.
+
+          A finished batch the user closed stays closed — the counts are the
+          record of one press of "Find emails", and there is nothing left to
+          watch. Work still running is never hidden: dismissing is only offered
+          once `pending` hits 0, and the next batch carries a new id. */}
+      {lookupStats && lookupStats.total > 0 && !panelDismissed && (
         <Alert
           color={stalled ? 'yellow' : pending > 0 ? 'brand' : 'teal'}
           variant="light"
           radius="lg"
+          withCloseButton={pending === 0}
+          closeButtonLabel="Dismiss"
+          onClose={() => dismissBatch(lookupStats.batchId)}
           icon={
             stalled ? (
               <IconMailSearch size={17} />
