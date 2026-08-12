@@ -8,13 +8,25 @@
 // Kept in `lib/` rather than `shared/` on purpose: `shared/` is mirrored by hand
 // into the extension, and the extension has no notion of a search job.
 
+/**
+ * The path segment that carries an organization's slug.
+ *
+ * `showcase` is the same kind of page as `company` — a division or product
+ * line LinkedIn hangs off a parent, like `/showcase/siemens-mobility/`. It
+ * resolves through the very same `q=universalName` call and its people search
+ * returns staff (measured 2026-08-12: `siemens-mobility` → company 18049058,
+ * 12 hits), so refusing the URL shape only forced a user to go find a
+ * `/company/` page that may not exist.
+ */
+const ORG_SEGMENTS = ['company', 'showcase'];
+
 /** `…/company/siemens-healthineers/people/` → `siemens-healthineers`. */
 export function companySlugFromUrl(companyUrl?: string | null): string {
   if (!companyUrl) return '';
 
   try {
     const parts = new URL(companyUrl).pathname.split('/').filter(Boolean);
-    const idx = parts.indexOf('company');
+    const idx = parts.findIndex((part) => ORG_SEGMENTS.includes(part));
     return idx !== -1 && parts[idx + 1] ? parts[idx + 1] : '';
   } catch {
     return '';
