@@ -32,6 +32,8 @@ interface TestLookup {
   id: string;
   userId: string;
   profileId: string;
+  /** Which press of "Find emails" this row belongs to. Null for legacy rows. */
+  batchId: string | null;
   status: string;
   attempts: number;
   reclaims: number;
@@ -100,7 +102,10 @@ vi.mock('../lib/prisma.js', () => {
     id?: string | { in?: string[] };
     userId?: string;
     profileId?: string;
-    status?: string;
+    /** `null` is a real filter here — legacy rows carry no batch. */
+    batchId?: string | { in: string[] } | null;
+    OR?: LookupWhere[];
+    status?: string | { in: string[] };
     attempts?: { lt?: number; gte?: number };
     allowServerFallback?: boolean;
     requestedAt?: { lt?: Date };
@@ -116,7 +121,26 @@ vi.mock('../lib/prisma.js', () => {
     if (where.profileId !== undefined && row.profileId !== where.profileId) {
       return false;
     }
-    if (where.status !== undefined && row.status !== where.status) return false;
+    if (typeof where.status === 'string' && row.status !== where.status) {
+      return false;
+    }
+    if (where.status && typeof where.status === 'object') {
+      if (!where.status.in.includes(row.status)) return false;
+    }
+    // `batchId` is only absent from a `where` when the query is deliberately
+    // unscoped; `null` means "the legacy batch" and must not be read as "any".
+    if ('batchId' in where) {
+      const want = where.batchId;
+      if (want === null && row.batchId !== null) return false;
+      if (typeof want === 'string' && row.batchId !== want) return false;
+      if (want && typeof want === 'object') {
+        if (row.batchId === null || !want.in.includes(row.batchId))
+          return false;
+      }
+    }
+    if (where.OR && !where.OR.some((clause) => matchLookup(row, clause))) {
+      return false;
+    }
     if (
       where.allowServerFallback !== undefined &&
       row.allowServerFallback !== where.allowServerFallback
@@ -218,6 +242,7 @@ vi.mock('../lib/prisma.js', () => {
             id: `lookup-${store.nextId++}`,
             userId,
             profileId,
+            batchId: null,
             status: 'queued',
             attempts: 0,
             claimedBy: null,
@@ -235,8 +260,24 @@ vi.mock('../lib/prisma.js', () => {
           store.lookups.push(row);
           return Promise.resolve(row);
         },
-        findMany: ({ where, take }: { where: LookupWhere; take?: number }) => {
-          const rows = store.lookups.filter((l) => matchLookup(l, where));
+        findMany: ({
+          where,
+          take,
+          distinct,
+        }: {
+          where: LookupWhere;
+          take?: number;
+          distinct?: ('batchId' | 'id')[];
+        }) => {
+          let rows = store.lookups.filter((l) => matchLookup(l, where));
+          if (distinct?.includes('batchId')) {
+            const seen = new Set<string | null>();
+            rows = rows.filter((l) => {
+              if (seen.has(l.batchId)) return false;
+              seen.add(l.batchId);
+              return true;
+            });
+          }
           return Promise.resolve(take ? rows.slice(0, take) : rows);
         },
         count: ({ where }: { where: LookupWhere }) =>
@@ -246,10 +287,25 @@ vi.mock('../lib/prisma.js', () => {
         // Both reads select a nested `profile`, so the fake has to join too —
         // returning a bare row here made `completeLookup` throw on
         // `current.email` rather than fail a real assertion.
-        findFirst: ({ where }: { where: LookupWhere }) =>
-          Promise.resolve(
-            withProfile(store.lookups.find((l) => matchLookup(l, where))),
-          ),
+        findFirst: ({
+          where,
+          orderBy,
+        }: {
+          where: LookupWhere;
+          orderBy?: { requestedAt?: 'asc' | 'desc' };
+        }) => {
+          const rows = store.lookups.filter((l) => matchLookup(l, where));
+          // `getLookupStats` asks for the newest row to find the current batch,
+          // so insertion order is not good enough here.
+          if (orderBy?.requestedAt) {
+            rows.sort((a, b) =>
+              orderBy.requestedAt === 'desc'
+                ? b.requestedAt.getTime() - a.requestedAt.getTime()
+                : a.requestedAt.getTime() - b.requestedAt.getTime(),
+            );
+          }
+          return Promise.resolve(withProfile(rows[0]));
+        },
         findUnique: ({ where }: { where: LookupWhere }) =>
           Promise.resolve(
             withProfile(store.lookups.find((l) => matchLookup(l, where))),
@@ -733,6 +789,62 @@ describe('getLookupStats', () => {
     store.lookups[0].requestedAt = new Date(Date.now() - 60 * 60 * 1000);
 
     expect((await getLookupStats(USER)).stalled).toBe(0);
+  });
+
+  // The panel said "62 found, 11 failed" after a 39-profile run, because rows
+  // are upserted and never deleted, so a per-user count is a lifetime count.
+  it('counts the latest batch, not every lookup the account has run', async () => {
+    const first = seedProfile();
+    await enqueueLookups(USER, [first.id]);
+    await claimLookups(USER, 1, 'extension');
+    await completeLookup(USER, store.lookups[0].id, {
+      ok: true,
+      email: 'a@corp.com',
+      source: 'mailmeteor',
+    });
+    // Postgres timestamps resolve to microseconds, so two presses are never
+    // actually simultaneous. Two `new Date()` calls in one test are.
+    store.lookups[0].requestedAt = new Date(Date.now() - 60 * 60 * 1000);
+
+    const second = seedProfile();
+    await enqueueLookups(USER, [second.id]);
+
+    const stats = await getLookupStats(USER);
+
+    expect(stats.total).toBe(1);
+    expect(stats.done).toBe(0);
+    expect(stats.pending).toBe(1);
+  });
+
+  // Dropping an older batch that still has rows in flight would hide lookups
+  // that are genuinely running.
+  it('keeps an older batch in scope while it still has work', async () => {
+    const first = seedProfile();
+    await enqueueLookups(USER, [first.id]);
+
+    const second = seedProfile();
+    await enqueueLookups(USER, [second.id]);
+
+    const stats = await getLookupStats(USER);
+
+    expect(stats.total).toBe(2);
+    expect(stats.pending).toBe(2);
+  });
+
+  // What the dashboard keys its "dismiss" on: a new batch must not be hidden by
+  // a panel the user closed on the previous one.
+  it('reports the current batch id, and a new one per press', async () => {
+    const profile = seedProfile();
+    const first = await enqueueLookups(USER, [profile.id]);
+    expect((await getLookupStats(USER)).batchId).toBe(first.batchId);
+
+    store.lookups[0].requestedAt = new Date(Date.now() - 60 * 60 * 1000);
+
+    const other = seedProfile();
+    const second = await enqueueLookups(USER, [other.id]);
+
+    expect(second.batchId).not.toBe(first.batchId);
+    expect((await getLookupStats(USER)).batchId).toBe(second.batchId);
   });
 });
 

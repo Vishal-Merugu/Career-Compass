@@ -185,6 +185,15 @@ model EmailLookup {
   id                  String    @id @default(uuid())
   userId              String
   profileId           String
+  /// Which press of "Find emails" this row belongs to.
+  ///
+  /// Rows are never deleted — a row is the record of a lookup, and re-running
+  /// one upserts it in place — so a per-user count is a lifetime count. The
+  /// dashboard's progress panel is about *this* batch ("39 selected, 35 found"),
+  /// not about every lookup the account has ever run, and without a batch key
+  /// there is no way to tell the two apart. Null on rows that predate the
+  /// column; those are treated as one legacy batch.
+  batchId             String?
   /// queued | dispatched | done | failed
   status              String    @default("queued")
   attempts            Int       @default(0)
@@ -223,6 +232,7 @@ model EmailLookup {
 
   @@unique([userId, profileId])
   @@index([userId, status])
+  @@index([userId, batchId])
   @@index([status, requestedAt])
 }
 

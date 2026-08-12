@@ -89,6 +89,12 @@ export interface LookupStats {
    */
   stalled: number;
   total: number;
+  /**
+   * The batch these counts cover — one press of "Find emails". Counts are
+   * scoped to it (plus anything older still running), so the panel describes
+   * the run you just started rather than every lookup the account has done.
+   */
+  batchId: string | null;
 }
 
 export interface EmailLookup {
@@ -113,6 +119,8 @@ export interface EmailLookup {
 export interface FindEmailsResponse {
   ok: true;
   queued: number;
+  /** The batch these were queued as. */
+  batchId: string;
   skippedVerified: number;
   skippedUnknown: number;
   stats: LookupStats;

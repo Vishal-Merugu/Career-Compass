@@ -15,6 +15,7 @@
 // crashed lookup, and both need the row back.
 
 import { EventEmitter } from 'events';
+import { randomUUID } from 'crypto';
 import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
 import { NotFoundError, ValidationError } from '../errors/AppError.js';
@@ -38,6 +39,13 @@ export interface LookupStats {
    */
   stalled: number;
   total: number;
+  /**
+   * The batch these counts are about — the most recent press of "Find emails",
+   * or the oldest batch still working if one is. `null` only for rows queued
+   * before batches existed. The dashboard keys its "dismiss" on this, so a
+   * finished panel stays closed until the next batch replaces it.
+   */
+  batchId: string | null;
 }
 
 export interface LookupProgress {
@@ -66,6 +74,8 @@ export interface LookupWorkItem {
 
 export interface EnqueueResult {
   queued: number;
+  /** The batch these rows were queued as. See `EmailLookup.batchId`. */
+  batchId: string;
   /** Already had an address stronger than a guess, so nothing to gain. */
   skippedVerified: number;
   /** Requested ids that are not this user's profiles. */
@@ -150,6 +160,7 @@ export async function enqueueLookups(
   });
 
   const skippedUnknown = profileIds.length - profiles.length;
+  const batchId = randomUUID();
   let queued = 0;
   let skippedVerified = 0;
 
@@ -164,10 +175,14 @@ export async function enqueueLookups(
       create: {
         userId,
         profileId: profile.id,
+        batchId,
         status: 'queued',
         allowServerFallback,
       },
       update: {
+        // Moves to the new batch: a re-request is this press's work, and the
+        // press that first asked for it has already been reported on.
+        batchId,
         status: 'queued',
         // A re-request is a fresh start, not a fourth attempt at a row that
         // already exhausted MAX_ATTEMPTS.
@@ -190,7 +205,7 @@ export async function enqueueLookups(
 
   emitProgress({ userId, type: 'STATS', stats: await getLookupStats(userId) });
 
-  return { queued, skippedVerified, skippedUnknown };
+  return { queued, batchId, skippedVerified, skippedUnknown };
 }
 
 /**
@@ -384,11 +399,58 @@ export async function completeLookup(
   });
 }
 
+/**
+ * Which batches the dashboard's counters are about.
+ *
+ * The newest batch, plus any older batch still holding work. Counting every row
+ * the account ever queued instead made the panel read "62 found, 11 failed"
+ * after a 39-profile run — the lifetime total, since rows are upserted in place
+ * and never deleted. Older batches that still have pending rows stay in scope
+ * because dropping them would hide lookups that are genuinely running.
+ *
+ * A `null` batch is the rows queued before the column existed; they form one
+ * legacy batch rather than being excluded, so an in-flight upgrade still shows
+ * progress.
+ */
+async function currentBatches(
+  userId: string,
+): Promise<{ ids: (string | null)[]; latest: string | null }> {
+  const [newest, working] = await Promise.all([
+    prisma.emailLookup.findFirst({
+      where: { userId },
+      orderBy: { requestedAt: 'desc' },
+      select: { batchId: true },
+    }),
+    prisma.emailLookup.findMany({
+      where: { userId, status: { in: ['queued', 'dispatched'] } },
+      distinct: ['batchId'],
+      select: { batchId: true },
+    }),
+  ]);
+
+  const ids = new Set<string | null>(working.map((row) => row.batchId));
+  if (newest) ids.add(newest.batchId);
+
+  return { ids: [...ids], latest: newest?.batchId ?? null };
+}
+
+/** A `where` fragment matching those batches, `null` included. */
+function batchFilter(ids: (string | null)[]) {
+  const named = ids.filter((id): id is string => id !== null);
+  const clauses: { batchId: { in: string[] } | null }[] = [];
+  if (named.length > 0) clauses.push({ batchId: { in: named } });
+  if (ids.includes(null)) clauses.push({ batchId: null });
+  return clauses.length > 0 ? { OR: clauses } : {};
+}
+
 export async function getLookupStats(userId: string): Promise<LookupStats> {
+  const { ids, latest } = await currentBatches(userId);
+  const scope = batchFilter(ids);
+
   const [grouped, stalled] = await Promise.all([
     prisma.emailLookup.groupBy({
       by: ['status'],
-      where: { userId },
+      where: { userId, ...scope },
       _count: { status: true },
     }),
     // Waited out the extension's turn and cannot fall through to the server, so
@@ -397,6 +459,7 @@ export async function getLookupStats(userId: string): Promise<LookupStats> {
     prisma.emailLookup.count({
       where: {
         userId,
+        ...scope,
         status: 'queued',
         allowServerFallback: false,
         requestedAt: { lt: new Date(Date.now() - EXTENSION_GRACE_MS) },
@@ -420,6 +483,7 @@ export async function getLookupStats(userId: string): Promise<LookupStats> {
     pending: queued + dispatched,
     stalled,
     total: queued + dispatched + done + failed,
+    batchId: latest,
   };
 }
 
