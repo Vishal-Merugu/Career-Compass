@@ -111,6 +111,16 @@ async function drainEmailLookups() {
 
     await addActivityEntry(`✉️ Processed ${items.length} email lookup(s)`);
 
+    // A full batch means there is probably more behind it. The periodic alarm
+    // is capped at one minute, which paces a 30-row backlog at a quarter of an
+    // hour of the dashboard saying it is still working — so ask for one extra
+    // wake-up, sooner. One-shot on purpose: an empty claim simply does not
+    // schedule another, so the queue idles back to the one-minute alarm on its
+    // own rather than needing anything cancelled.
+    if (items.length === CLAIM_BATCH) {
+      chrome.alarms.create('emailLookupDrainSoon', { delayInMinutes: 0.5 });
+    }
+
     return { ok: true, processed: items.length };
   } catch (err) {
     console.error('[EmailLookupDrainer] Drain failed:', err);
