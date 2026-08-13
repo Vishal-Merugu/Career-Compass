@@ -108,6 +108,7 @@ function matches(p: Profile, needle: string): boolean {
  */
 const SOURCE_LABEL: Record<string, { label: string; color: string }> = {
   anymailfinder: { label: 'verified', color: 'teal' },
+  anymailfinder_web: { label: 'verified', color: 'teal' },
   smtp_verified: { label: 'verified', color: 'teal' },
   mailmeteor: { label: 'provider', color: 'blue' },
   pattern_guess: { label: 'guess', color: 'yellow' },
