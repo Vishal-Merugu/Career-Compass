@@ -73,6 +73,8 @@ async function findEmailViaMailmeteor(linkedinUrl) {
     return {
       ok: false,
       source: 'mailmeteor',
+      // Carried through: the server treats a throttle as "not an attempt".
+      retryable: Boolean(result?.retryable),
       error: result?.error || 'No email found',
     };
   } catch (err) {
@@ -154,6 +156,31 @@ function mailmeteorContentScript(linkedinUrl, timeoutMs) {
         const noResults = resultSection.querySelector('span.text-secondary');
         if (noResults) {
           const text = noResults.textContent.toLowerCase();
+
+          // "Oops, it didn't work (rate_limit) — We are at capacity. Please try
+          // again in a few minutes." The widget says this when too many lookups
+          // have gone through it lately, and it is not an answer about this
+          // person: nothing was looked up. Reported apart from a real miss so
+          // the server can re-queue the row without spending an attempt —
+          // otherwise one busy afternoon retires three profiles as having no
+          // address, having never once searched for them.
+          const throttled =
+            text.includes('rate_limit') ||
+            text.includes('rate limit') ||
+            text.includes('at capacity') ||
+            text.includes('too many');
+
+          if (throttled) {
+            clearInterval(pollInterval);
+            clearTimeout(timeout);
+            resolve({
+              ok: false,
+              retryable: true,
+              error: 'Mailmeteor is at capacity — nothing was looked up',
+            });
+            return;
+          }
+
           if (
             text.includes("couldn't find") ||
             text.includes('no results') ||

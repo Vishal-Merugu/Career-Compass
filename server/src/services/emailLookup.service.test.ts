@@ -643,6 +643,62 @@ describe('completeLookup', () => {
     expect(await claimLookups(USER, 1, 'extension')).toHaveLength(0);
   });
 
+  // "Oops, it didn't work (rate_limit) — We are at capacity." Nothing was
+  // looked up, so charging it as an attempt would retire three profiles per
+  // busy afternoon as having no address.
+  it('does not spend an attempt when the provider refused to look', async () => {
+    const profile = seedProfile();
+    await enqueueLookups(USER, [profile.id]);
+    const [item] = await claimLookups(USER, 1, 'extension');
+
+    await completeLookup(USER, item.lookupId, {
+      ok: false,
+      retryable: true,
+      error: 'Mailmeteor is at capacity — nothing was looked up',
+    });
+
+    expect(store.lookups[0].status).toBe('queued');
+    expect(store.lookups[0].attempts).toBe(0);
+    expect(store.lookups[0].reclaims).toBe(1);
+  });
+
+  it('survives more throttles than the attempt budget', async () => {
+    const profile = seedProfile();
+    await enqueueLookups(USER, [profile.id]);
+
+    for (let i = 0; i < EMAIL_LOOKUP_MAX_ATTEMPTS + 1; i += 1) {
+      const [item] = await claimLookups(USER, 1, 'extension');
+      await completeLookup(USER, item.lookupId, {
+        ok: false,
+        retryable: true,
+        error: 'at capacity',
+      });
+    }
+
+    // Still claimable: the provider being busy four times running is not four
+    // pieces of evidence about this person.
+    expect(store.lookups[0].status).toBe('queued');
+    expect(await claimLookups(USER, 1, 'extension')).toHaveLength(1);
+  });
+
+  // Bounded all the same — a row that reliably throttles whatever picks it up
+  // must not cycle forever.
+  it('gives up once the reclaim budget is gone', async () => {
+    const profile = seedProfile();
+    await enqueueLookups(USER, [profile.id]);
+
+    for (let i = 0; i < EMAIL_LOOKUP_MAX_RECLAIMS; i += 1) {
+      const [item] = await claimLookups(USER, 1, 'extension');
+      await completeLookup(USER, item.lookupId, {
+        ok: false,
+        retryable: true,
+        error: 'at capacity',
+      });
+    }
+
+    expect(store.lookups[0].status).toBe('failed');
+  });
+
   it('rejects a lookup belonging to another user', async () => {
     const profile = seedProfile();
     await enqueueLookups(USER, [profile.id]);

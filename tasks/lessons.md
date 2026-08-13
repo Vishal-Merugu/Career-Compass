@@ -924,3 +924,34 @@ updates no rows and stops. And `sweepStalledJobs` in the timeout sweeper
 re-checks any `scraping` run that has had no movable work for ten minutes —
 the specific cause is fixed, but a run whose last completion event goes missing
 must not be able to hang silently again.
+
+### A provider refusing to look is not an answer about the address
+
+Mailmeteor's widget replies "Oops, it didn't work (rate_limit) — We are at
+capacity. Please try again in a few minutes." when too many lookups have gone
+through it lately. The extension's matcher tested for `didn't work`, so it
+reported a plain miss, and `completeLookup` charged an attempt. Three throttles
+retired a profile as `failed` — "no email found" — having never once searched
+for them. Reported by the user 2026-08-13.
+
+**Why:** this is the same distinction `reclaims` already exists for. An attempt
+is a lookup that ran and came back empty; a throttle is a lookup that never
+ran. The queue had the concept and the widget driver did not use it, because
+the throttle message reads like every other failure message.
+
+**Apply:** the driver classifies `rate_limit` / `at capacity` / `too many`
+before the generic miss branch and returns `retryable: true`, which the drainer
+forwards and `completeLookup` turns into a decrement of `attempts` plus an
+increment of `reclaims` — bounded by `MAX_RECLAIMS`, so a row that always
+throttles still retires eventually. The drainer stops the batch on the first
+throttle, hands back what it claimed and never tried, and records the backoff
+deadline in `chrome.storage.local` (**not** a module variable: the MV3 worker
+dies after ~30s idle and the periodic alarm would walk into the same wall a
+minute later).
+
+**Do not answer a provider's rate limit with a different IP.** Rotating egress
+to get more free lookups is the same category of thing as the captcha-solving
+service that ADR 0005 already rules out, and the lookup runs in the user's own
+Chrome — moving that IP moves the LinkedIn session with it, which is the one
+credential here that is genuinely expensive to replace. Pay for layer 1
+(`ANYMAILFINDER_API_KEY`) if the free path is not enough.

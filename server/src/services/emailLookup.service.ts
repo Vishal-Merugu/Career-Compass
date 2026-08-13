@@ -320,6 +320,16 @@ export async function completeLookup(
     source?: string | null;
     validation?: string | null;
     error?: string | null;
+    /**
+     * The provider refused to look, rather than looking and finding nothing.
+     *
+     * "We are at capacity (rate_limit)" is the widget's answer when too many
+     * lookups have gone through it lately, and it says nothing whatsoever about
+     * the address. Charged as an attempt it retired three profiles per throttle
+     * as "no email exists" — the same mistake the `reclaims` counter already
+     * exists to prevent for a lease that expired.
+     */
+    retryable?: boolean;
   },
 ): Promise<void> {
   const lookup = await prisma.emailLookup.findFirst({
@@ -328,6 +338,7 @@ export async function completeLookup(
       id: true,
       profileId: true,
       attempts: true,
+      reclaims: true,
       profile: { select: { email: true, emailSource: true } },
     },
   });
@@ -366,6 +377,29 @@ export async function completeLookup(
         completedAt: new Date(),
       },
     });
+  } else if (result.retryable) {
+    // The provider refused to look. Give the attempt back and charge a reclaim,
+    // exactly as `sweepStaleLookups` does for a lease that expired: in both
+    // cases the row was never actually worked, and three throttles in a row
+    // must not retire a profile as having no address.
+    const exhausted = lookup.reclaims + 1 >= MAX_RECLAIMS;
+
+    await prisma.emailLookup.update({
+      where: { id: lookup.id },
+      data: {
+        status: exhausted ? 'failed' : 'queued',
+        attempts: { decrement: 1 },
+        reclaims: { increment: 1 },
+        lastError: result.error ?? 'The lookup provider was unavailable',
+        claimedBy: null,
+        dispatchedAt: null,
+        completedAt: exhausted ? new Date() : null,
+      },
+    });
+
+    logger.warn(
+      `[EmailLookup] Lookup ${lookup.id} returned to the queue unworked: ${result.error ?? 'provider unavailable'}`,
+    );
   } else {
     // Retryable until the attempt budget runs out. A miss is often a transient
     // captcha or a closed tab, not a person without an email.
