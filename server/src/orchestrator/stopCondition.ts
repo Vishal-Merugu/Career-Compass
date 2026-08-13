@@ -143,6 +143,32 @@ export async function checkJobStopCondition(jobId: string): Promise<boolean> {
     const searchParams = (job.searchParams as any) || {};
     const batchSize = searchParams.batchSize || 100;
 
+    // Claim the next batch, rather than announcing it.
+    //
+    // This runs once per finished profile, and the last few finish within
+    // milliseconds of each other — on 2026-08-13 two callers both read batch 13,
+    // both wrote 14, and two collections for batch 14 ran side by side against
+    // LinkedIn. The `currentBatchNumber` guard makes the write the arbiter: the
+    // second caller updates no rows and goes home.
+    const { count: claimed } = await prisma.searchJob.updateMany({
+      where: {
+        id: jobId,
+        currentBatchNumber: job.currentBatchNumber,
+        status: { notIn: [...TERMINAL_OR_PAUSED, 'collecting_urls'] },
+      },
+      data: {
+        status: 'collecting_urls',
+        currentBatchNumber: nextBatchNumber,
+      },
+    });
+
+    if (claimed === 0) {
+      logger.debug(
+        `[Orchestrator] Job ${jobId} batch ${nextBatchNumber} already claimed elsewhere`,
+      );
+      return true;
+    }
+
     logger.info(
       `[Orchestrator] Job ${jobId} batch ${job.currentBatchNumber} exhausted. Requesting batch ${nextBatchNumber} (size: ${batchSize}).`,
     );
@@ -151,15 +177,6 @@ export async function checkJobStopCondition(jobId: string): Promise<boolean> {
       stage: 'collect',
       code: 'COLLECT_PROGRESS',
       message: `Batch ${job.currentBatchNumber} used up. Looking for more people (batch ${nextBatchNumber}).`,
-    });
-
-    // Update job status back to collecting_urls
-    await prisma.searchJob.update({
-      where: { id: jobId },
-      data: {
-        status: 'collecting_urls',
-        currentBatchNumber: nextBatchNumber,
-      },
     });
 
     // Collect it here rather than asking the extension. Not awaited: collection

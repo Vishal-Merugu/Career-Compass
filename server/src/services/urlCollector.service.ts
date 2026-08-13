@@ -29,8 +29,29 @@ import { pauseJobWithFailure } from './jobControl.service.js';
 /** Voyager's people-search page size. Not ours to choose. */
 const SEARCH_PAGE_SIZE = 12;
 
+/**
+ * How many search pages one batch may walk.
+ *
+ * Only reachable when page after page is people the job already has, which is
+ * what a search running out looks like from here. Twice the pages a full batch
+ * of new people would need, so a normal batch never sees it.
+ */
+const MAX_PAGES_PER_BATCH = 40;
+
 export interface CollectResult {
+  /**
+   * URLs this batch actually added — **not** people it saw.
+   *
+   * The distinction is the whole batch loop: LinkedIn's people search happily
+   * returns the same people again near the end of a company, and every one of
+   * those upserts into a row that already exists. Counting them as collected
+   * made a batch of pure duplicates look like 14 new people, so the run set
+   * itself to `scraping` with nothing to scrape and stopped there forever
+   * (job c1ee09f6, 2026-08-13, stuck at 13 of 50 with all 449 URLs decided).
+   */
   collected: number;
+  /** People the search returned, duplicates included. For the log line only. */
+  seen: number;
   companyId: string;
   exhausted: boolean;
   /** True when a pause or cancel ended the loop early. */
@@ -167,11 +188,25 @@ export async function collectProfileUrls(
   const { companyId, geoId } = await resolveTarget(userId, searchUrl);
 
   let collected = 0;
+  let seen = 0;
+  let pages = 0;
   let start = (batchNumber - 1) * targetCount;
   let exhausted = false;
   let interrupted = false;
 
   while (collected < targetCount) {
+    if (pages >= MAX_PAGES_PER_BATCH) {
+      // Pages of people the job already has. There is more to read in theory
+      // and nothing new in practice, so treat it as the end of the search
+      // rather than paging on until the rate limiter is the only brake.
+      logger.warn(
+        `[UrlCollector] Job ${jobId} batch ${batchNumber} walked ${pages} pages for ${collected} new URL(s); treating the search as exhausted`,
+      );
+      exhausted = true;
+      break;
+    }
+    pages += 1;
+
     // Re-read the job each page: a cancel or pause arriving mid-collection
     // should stop us, and this loop can run for a minute or more.
     const job = await prisma.searchJob.findUnique({
@@ -209,26 +244,28 @@ export async function collectProfileUrls(
       if (collected >= targetCount) break;
       if (!person.profileId) continue;
 
-      await prisma.profileUrl.upsert({
-        where: {
-          jobId_url: {
+      seen += 1;
+
+      // `createMany` rather than `upsert` for the count it returns: 1 when the
+      // row is new, 0 when this job already had the person. An upsert cannot
+      // tell those apart, and the difference is what says whether the search
+      // still has anything to give. `skipDuplicates` keeps the old behaviour —
+      // a URL already collected keeps whatever status it reached, so nobody
+      // gets re-scraped.
+      const { count } = await prisma.profileUrl.createMany({
+        data: [
+          {
             jobId,
+            batchNumber,
             url: `https://www.linkedin.com/in/${person.profileId}/`,
+            status: 'queued',
+            attempts: 0,
           },
-        },
-        create: {
-          jobId,
-          batchNumber,
-          url: `https://www.linkedin.com/in/${person.profileId}/`,
-          status: 'queued',
-          attempts: 0,
-        },
-        // Deliberately empty: a URL already collected keeps whatever status it
-        // reached. Resetting it here would re-scrape people already done.
-        update: {},
+        ],
+        skipDuplicates: true,
       });
 
-      collected += 1;
+      collected += count;
     }
 
     const meta = parsePaginationMetadata(response);
@@ -238,10 +275,10 @@ export async function collectProfileUrls(
   }
 
   logger.info(
-    `[UrlCollector] Collected ${collected} URL(s) for job ${jobId} batch ${batchNumber}${exhausted ? ' (results exhausted)' : ''}`,
+    `[UrlCollector] Collected ${collected} new URL(s) from ${seen} result(s) for job ${jobId} batch ${batchNumber}${exhausted ? ' (results exhausted)' : ''}`,
   );
 
-  return { collected, companyId, exhausted, interrupted };
+  return { collected, seen, companyId, exhausted, interrupted };
 }
 
 /**
@@ -265,13 +302,14 @@ export async function runCollection(
       data: { status: 'collecting_urls', currentBatchNumber: batchNumber },
     });
 
-    const { collected, exhausted, interrupted } = await collectProfileUrls(
-      userId,
-      jobId,
-      batchNumber,
-      targetCount,
-      searchUrl,
-    );
+    const { collected, seen, exhausted, interrupted } =
+      await collectProfileUrls(
+        userId,
+        jobId,
+        batchNumber,
+        targetCount,
+        searchUrl,
+      );
 
     // The loop noticed a pause or cancel and stopped. Writing `scraping` here
     // would undo exactly the state the user asked for — the pause would appear
@@ -283,20 +321,34 @@ export async function runCollection(
       return;
     }
 
-    if (collected === 0 && exhausted) {
+    // Nothing new, whether or not LinkedIn admitted the search was over.
+    //
+    // The `&& exhausted` this used to carry is why job c1ee09f6 hung: batch 14
+    // returned 14 people the job already had, `collected` counted them, so the
+    // run fell through to `scraping` with not one URL to scrape. Nothing
+    // finishes, so nothing re-checks the stop condition, and a run that was
+    // actually over sat at "reading profiles" for ten hours.
+    if (collected === 0) {
       logger.warn(
-        `[UrlCollector] No URLs found for job ${jobId}; marking completed`,
+        `[UrlCollector] No new URLs for job ${jobId} batch ${batchNumber} (${seen} duplicate result(s)); marking completed`,
       );
       await recordJobEvent(jobId, {
         stage: 'collect',
         code: 'NO_RESULTS',
         level: 'warn',
         message:
-          'LinkedIn returned no more people for this search, so the run is finished.',
+          seen > 0
+            ? `LinkedIn has no more people for this search — the last ${seen} it returned were already collected, so the run is finished.`
+            : 'LinkedIn returned no more people for this search, so the run is finished.',
       });
       await prisma.searchJob.update({
         where: { id: jobId },
         data: { status: 'completed' },
+      });
+      await recordJobEvent(jobId, {
+        stage: 'run',
+        code: 'RUN_COMPLETED',
+        message: 'Finished — the search ran out of people before the target.',
       });
       return;
     }
@@ -304,7 +356,7 @@ export async function runCollection(
     await recordJobEvent(jobId, {
       stage: 'collect',
       code: 'COLLECT_PROGRESS',
-      message: `Batch ${batchNumber}: ${collected} people found${exhausted ? ' (no more available)' : ''}.`,
+      message: `Batch ${batchNumber}: ${collected} new ${collected === 1 ? 'person' : 'people'} found${exhausted ? ' (no more available)' : ''}.`,
     });
 
     await prisma.searchJob.update({
