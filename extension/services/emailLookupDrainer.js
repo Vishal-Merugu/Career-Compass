@@ -31,31 +31,6 @@ const DRAIN_CONCURRENCY = 2;
 const CLAIM_BATCH = DRAIN_CONCURRENCY;
 
 /**
- * How long to leave the finder alone after it says it is at capacity.
- *
- * Its own message asks for "a few minutes". Coming back sooner spends a
- * background tab to be told the same thing, and the queue is durable — nothing
- * is lost by waiting, and the server's own fallback picks up anything urgent
- * after its grace period regardless.
- */
-const THROTTLE_BACKOFF_MINUTES = 15;
-
-/**
- * When the backoff expires, in `chrome.storage.local` rather than a variable.
- *
- * The worker is suspended after ~30s idle and module state dies with it, so a
- * variable would be gone by the time the next alarm fired — the periodic drain
- * would walk straight back into the same wall a minute later, which is the
- * behaviour this exists to stop.
- */
-const THROTTLE_KEY = 'emailLookupThrottledUntil';
-
-async function throttledUntil() {
-  const stored = await chrome.storage.local.get(THROTTLE_KEY);
-  return Number(stored?.[THROTTLE_KEY]) || 0;
-}
-
-/**
  * Guards against a second drain starting while one is in flight — an alarm can
  * fire again mid-drain, and two drains would fight over tabs.
  *
@@ -87,9 +62,6 @@ async function runOneLookup(item) {
     source: result.source || 'mailmeteor',
     validation: result.validation || null,
     error: result.error || null,
-    // The provider refused to look. The server puts the row back without
-    // charging an attempt, so nobody is retired as "no email" over a throttle.
-    retryable: Boolean(result.retryable),
   });
 
   if (result.ok && result.email) {
@@ -101,8 +73,6 @@ async function runOneLookup(item) {
       `[EmailLookupDrainer] Miss for ${item.firstName} ${item.lastName}: ${result.error}`,
     );
   }
-
-  return result;
 }
 
 /**
@@ -120,15 +90,6 @@ async function drainEmailLookups() {
     return { ok: false, error: 'Extension is not linked to a backend' };
   }
 
-  const until = await throttledUntil();
-  if (Date.now() < until) {
-    const mins = Math.ceil((until - Date.now()) / 60000);
-    console.log(
-      `[EmailLookupDrainer] Finder was at capacity; waiting ${mins} more minute(s)`,
-    );
-    return { ok: true, skipped: 'throttled' };
-  }
-
   draining = true;
 
   try {
@@ -144,45 +105,8 @@ async function drainEmailLookups() {
     // Sequential within the batch; CLAIM_BATCH is already the concurrency cap,
     // so running these in parallel would just open the same number of tabs at
     // once and make the LinkedIn-adjacent traffic burstier for no gain.
-    let throttledAt = -1;
-    for (let i = 0; i < items.length; i += 1) {
-      const result = await runOneLookup(items[i]);
-
-      if (result.retryable) {
-        // The widget is at capacity. The next row would hit the same wall a
-        // second later, so stop here.
-        throttledAt = i;
-        break;
-      }
-    }
-
-    if (throttledAt !== -1) {
-      // Hand back what was claimed and never tried, rather than letting the
-      // lease expire: the server's sweeper would return these too, five minutes
-      // later and at the cost of a reclaim each.
-      for (const item of items.slice(throttledAt + 1)) {
-        await apiSync(`/api/email-lookups/${item.lookupId}/result`, 'POST', {
-          ok: false,
-          source: 'mailmeteor',
-          retryable: true,
-          error: 'Not attempted — the finder was at capacity',
-        });
-      }
-
-      await chrome.storage.local.set({
-        [THROTTLE_KEY]: Date.now() + THROTTLE_BACKOFF_MINUTES * 60_000,
-      });
-
-      console.warn(
-        `[EmailLookupDrainer] Provider at capacity; backing off for ${THROTTLE_BACKOFF_MINUTES} minutes`,
-      );
-      await addActivityEntry(
-        `⏳ Email lookups paused — the finder is at capacity, retrying in ${THROTTLE_BACKOFF_MINUTES} min`,
-      );
-      chrome.alarms.create('emailLookupDrainSoon', {
-        delayInMinutes: THROTTLE_BACKOFF_MINUTES,
-      });
-      return { ok: true, processed: items.length, throttled: true };
+    for (const item of items) {
+      await runOneLookup(item);
     }
 
     await addActivityEntry(`✉️ Processed ${items.length} email lookup(s)`);

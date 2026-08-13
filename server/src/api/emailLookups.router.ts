@@ -64,11 +64,6 @@ const resultSchema = z.object({
   source: z.string().max(64).optional().nullable(),
   validation: z.string().max(64).optional().nullable(),
   error: z.string().max(500).optional().nullable(),
-  /**
-   * The provider would not look, so this is not a verdict about the address.
-   * The row goes back to the queue without spending an attempt.
-   */
-  retryable: z.boolean().optional(),
 });
 
 /**
