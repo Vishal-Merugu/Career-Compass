@@ -3,7 +3,9 @@ import {
   classifyHttpFailure,
   classifyTransportFailure,
   evaluateProfile,
+  extractJsonObject,
   getBaseUrl,
+  llmHealthCheck,
   normalizeProvider,
   resolveModel,
   usesOllamaDialect,
@@ -90,6 +92,147 @@ describe('the built-in `server` provider', () => {
     // The old default. Inside Docker it is the container itself, so silently
     // supplying it turns a configuration mistake into a mystery.
     expect(getBaseUrl(config({ llmProvider: 'ollama', llmUrl: '' }))).toBe('');
+  });
+});
+
+describe('a host that does not serve /models', () => {
+  /**
+   * `/models` is a convention, not part of the OpenAI-compatible contract.
+   * Cloudflare Workers AI's account-scoped `/ai/v1` and most self-hosted
+   * gateways skip it, and treating that 404 as "unreachable" would park a
+   * working key on the strength of a URL the run never calls.
+   */
+  const custom = config({
+    llmProvider: 'custom',
+    llmUrl: 'https://gateway.test/v1',
+    llmModel: 'some-model',
+    llmApiKey: 'k',
+  });
+
+  it('falls back to asking the model, and passes when it answers', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('not found', { status: 404 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ choices: [{ message: { content: 'pong' } }] }),
+          { status: 200 },
+        ),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const health = await llmHealthCheck(custom);
+
+    expect(health.ok).toBe(true);
+    expect(fetchMock.mock.calls[1]?.[0]).toContain('/chat/completions');
+  });
+
+  it('still reports a bad key as a bad key', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response('not found', { status: 404 }))
+        .mockResolvedValueOnce(new Response('bad token', { status: 401 })),
+    );
+
+    const health = await llmHealthCheck(custom);
+
+    // The probe must not turn every failure into a pass; only the missing
+    // listing endpoint is excused.
+    expect(health.ok).toBe(false);
+    expect(health.code).toBe('LLM_AUTH');
+  });
+
+  it('does not probe when the listing endpoint works', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ id: 'some-model' }] }), {
+        status: 200,
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const health = await llmHealthCheck(custom);
+
+    expect(health.ok).toBe(true);
+    expect(health.models).toEqual(['some-model']);
+    // A probe costs a request against the user's quota. Not spending one when
+    // the cheap check already answered.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('reading a verdict out of a messy answer', () => {
+  /**
+   * Every provider serves the same wire format; the models do not write the
+   * same way. These are the shapes free models actually return, and each one
+   * used to be an `LLM_BAD_JSON` — a thrown-away verdict that then burned the
+   * next key in the chain to re-earn.
+   */
+  it('reads plain JSON', () => {
+    expect(extractJsonObject('{"match":true,"reason":"Tier 1"}')).toEqual({
+      match: true,
+      reason: 'Tier 1',
+    });
+  });
+
+  it('reads it out of a ```json fence', () => {
+    const raw = '```json\n{"match":false,"reason":"Tier NONE"}\n```';
+    expect(extractJsonObject(raw)?.match).toBe(false);
+  });
+
+  it('skips an R1-style <think> preamble', () => {
+    const raw =
+      '<think>The headline says intern, so this is a student.</think>\n{"match":false,"reason":"student"}';
+    expect(extractJsonObject(raw)?.reason).toBe('student');
+  });
+
+  it('skips a polite sentence before the object', () => {
+    const raw =
+      'Sure! Here is the evaluation:\n{"match":true,"reason":"Tier 2"}';
+    expect(extractJsonObject(raw)?.reason).toBe('Tier 2');
+  });
+
+  it('is not fooled by a brace inside the reason text', () => {
+    const raw = 'Here: {"match":true,"reason":"uses {braces} in their bio"}';
+    // Ending the object at the first `}` would truncate to invalid JSON and
+    // throw away a perfectly good verdict.
+    expect(extractJsonObject(raw)?.reason).toBe('uses {braces} in their bio');
+  });
+
+  it('is not fooled by an escaped quote', () => {
+    const raw = '{"match":true,"reason":"they call it \\"growth\\" work"}';
+    expect(extractJsonObject(raw)?.reason).toBe('they call it "growth" work');
+  });
+
+  it('returns null for prose with no object at all', () => {
+    expect(extractJsonObject('I cannot evaluate this profile.')).toBeNull();
+  });
+
+  it('unwraps a verdict the model wrapped in an array', () => {
+    expect(extractJsonObject('[{"match":true,"reason":"Tier 1"}]')?.match).toBe(
+      true,
+    );
+  });
+
+  it('walks past a restated format to the real answer', () => {
+    // A small model told to "return {"match": true/false}" often echoes that
+    // literally before answering. `true/false` is not valid JSON, so stopping
+    // at the first balanced object would throw away the verdict behind it.
+    const raw =
+      'Format: {"match": true/false, "reason": "..."}\n\n{"match": true, "reason": "Tier 1 — hiring manager"}';
+    expect(extractJsonObject(raw)?.reason).toBe('Tier 1 — hiring manager');
+  });
+
+  it('rejects an object that carries no verdict at all', () => {
+    // `Boolean(undefined)` is `false`, so accepting this would record a
+    // rejection the model never made — the 2026-08-09 failure, re-entering
+    // through the parser instead of the transport.
+    expect(extractJsonObject('{"tier":"NONE","note":"unclear"}')).toBeNull();
+  });
+
+  it('returns null when the model ran out of tokens mid-thought', () => {
+    expect(extractJsonObject('<think>Let me consider their tenure')).toBeNull();
   });
 });
 

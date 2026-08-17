@@ -11,7 +11,7 @@
  * browser-bound capabilities. One writer, one place.
  */
 
-import { Box, Stack, Tabs, Text, Title } from '@mantine/core';
+import { Box, Divider, Stack, Tabs, Text, Title } from '@mantine/core';
 import {
   IconBrandLinkedin,
   IconBrandTelegram,
@@ -20,6 +20,7 @@ import {
   IconSparkles,
 } from '@tabler/icons-react';
 import { useSearchParams } from 'react-router-dom';
+import { AiFallbackSection } from './settings/AiFallbackSection';
 import { AiModelSection } from './settings/AiModelSection';
 import { FinderSection } from './settings/FinderSection';
 import { LinkedInSection } from './settings/LinkedInSection';
@@ -67,7 +68,20 @@ export function SettingsPage() {
         </Tabs.List>
 
         <Tabs.Panel value="ai">
-          <AiModelSection />
+          <Stack gap="xl">
+            <AiFallbackSection />
+            <Divider />
+            <div>
+              <Text fw={600} fz={15}>
+                Default model
+              </Text>
+              <Text fz={13} c="dimmed" mt={2} mb="md">
+                Used when the list above is empty, and tried last when it is
+                not.
+              </Text>
+              <AiModelSection />
+            </div>
+          </Stack>
         </Tabs.Panel>
         <Tabs.Panel value="linkedin">
           <LinkedInSection />

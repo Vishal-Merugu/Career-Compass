@@ -26,6 +26,7 @@ import { ValidationError } from '../errors/AppError.js';
 import { LlmError } from '../errors/AppError.js';
 import { describeJobError } from '../errors/jobErrors.js';
 import { generateConnectionMessage } from '../shared/llmClient.js';
+import { withLlmFallback } from '../services/llmRouter.service.js';
 import { PrismaStorageAdapter } from '../services/storage.adapter.js';
 import type { IParsedProfile } from '../shared/parsers.js';
 
@@ -78,18 +79,20 @@ router.post(
         publicIdentifier: '',
       };
 
-      const result = await generateConnectionMessage(
-        profile,
-        body.companyName,
-        body.prompt ?? config.userContext ?? null,
-        config,
+      // An `LlmError` from here already carries a 502 and a `JobErrorCode`, so
+      // it goes to `errorHandler` rather than being flattened into a bare
+      // string — and only after every model in the chain has refused.
+      const result = await withLlmFallback(
+        req.user!.id,
+        (target) =>
+          generateConnectionMessage(
+            profile,
+            body.companyName,
+            body.prompt ?? config.userContext ?? null,
+            target,
+          ),
+        { config },
       );
-
-      if (!result.ok) {
-        return res
-          .status(502)
-          .json({ ok: false, error: result.error ?? 'The AI model failed' });
-      }
 
       res.status(200).json({ ok: true, message: result.message });
     } catch (err) {

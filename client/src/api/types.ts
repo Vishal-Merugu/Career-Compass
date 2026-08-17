@@ -164,7 +164,49 @@ export type JobErrorCode =
   | 'SMTP_BLOCKED'
   | 'UNKNOWN';
 
-export type LlmProvider = 'server' | 'ollama' | 'gemini' | 'openrouter';
+export type LlmProvider =
+  'server' | 'ollama' | 'gemini' | 'openrouter' | 'groq' | 'custom';
+
+/**
+ * One entry in the fallback chain — `GET /api/settings/ai/credentials`.
+ *
+ * The order of the array *is* the order the models are tried in. The key is
+ * never included: `apiKeySet` is all the screen needs to know.
+ */
+export interface LlmCredential {
+  id: string;
+  label: string;
+  provider: LlmProvider;
+  baseUrl: string;
+  model: string;
+  priority: number;
+  enabled: boolean;
+  apiKeySet: boolean;
+  /** `cooling` is temporary and ours; `disabled` needs the user to act. */
+  status: 'ready' | 'cooling' | 'disabled' | 'off';
+  cooldownUntil: string | null;
+  disabledCode: string | null;
+  lastErrorCode: string | null;
+  lastUsedAt: string | null;
+  successCount: number;
+  failureCount: number;
+}
+
+export interface LlmCredentialsResponse {
+  ok: true;
+  credentials: LlmCredential[];
+}
+
+export interface LlmCredentialResponse {
+  ok: true;
+  credential: LlmCredential;
+}
+
+export interface LlmCredentialCheckResponse {
+  ok: true;
+  checkedFrom: 'server';
+  check: PreflightCheck;
+}
 
 /** `GET/PUT /api/settings/ai`. The key itself is never sent. */
 export interface AiSettings {

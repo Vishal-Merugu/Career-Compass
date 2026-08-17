@@ -119,7 +119,8 @@ return shape that can express failure as a verdict.
   `ScrapedProfile`.
 - **Fatal codes pause on the first occurrence** (`isRunFatal` in
   `errors/jobErrors.ts`): unreachable, bad key, missing model, rate limit,
-  quota. Only `LLM_BAD_JSON` gets the five-in-a-row breaker.
+  quota, and `LLM_ALL_FAILED`. Only `LLM_BAD_JSON` gets the five-in-a-row
+  breaker. Fatal now means _the whole chain_ failed — see below.
 - **`POST /api/jobs` preflights and returns 422** with a `code`, a `message` and
   a `fix` when a run cannot succeed. It creates no job row. `?dryRun=true` and
   `GET /api/jobs/preflight` are how the New run form checks before the user
@@ -136,6 +137,40 @@ server/src/services/jobEvents.service.ts      the run's readable log
 
 **Every user-facing failure string comes from `describeJobError`.** A raw error
 is `detail`, shown collapsed — never the headline.
+
+### A user is many models, not one
+
+`LlmCredential` is an **ordered list** per user; `llmRouter.service.ts` walks it
+top to bottom and the first model that answers wins. Point of the thing: every
+free tier here is a daily quota, so five stacked free tiers is the budget.
+
+**Never call `llmClient` directly from a feature.** Go through
+`withLlmFallback(userId, (target) => …, { config })`. `llmClient` speaks to
+exactly one `LlmTarget` and cannot fall back on its own — deliberately, because
+whether to try the next key depends on _why_ the last one failed.
+
+- **Put the whole operation inside the callback, including the parse.**
+  `evaluateProfile` throws `LLM_BAD_JSON` when a model returns prose, and a
+  model that cannot follow the format is exactly when the next one helps.
+  Wrapping only the fetch leaves that failure fatal.
+- **A cooldown is not a disable.** 429/quota/unreachable set `cooldownUntil`
+  and the row drops to the **back of the chain, not off it** — the cooldown is
+  our own guess at when a quota resets, and treating a guess as authoritative
+  fails runs that had a working key available. Only `LLM_AUTH` and
+  `LLM_MODEL_NOT_FOUND` set `disabledCode`; any edit clears both.
+- **One-model accounts are untouched.** With no credentials the chain is just
+  the legacy `UserConfig` model, and a single failure rethrows its own error
+  verbatim — same code, same copy. `LLM_ALL_FAILED` only appears at ≥2.
+- **Preflight passes if _any_ model answers** (`checkAiChain`), checked in
+  parallel. Checking only the top of the chain would refuse runs that work.
+- `UserConfig.llmProvider` etc. still exist and are the **last** chain entry.
+  Don't delete them; they are what a fresh account has.
+
+```
+server/src/services/llmRouter.service.ts   the chain, the cooldowns, the policy
+server/src/shared/llmClient.ts             one target, one call, no fallback
+client/src/pages/settings/AiFallbackSection.tsx   the ordered list UI
+```
 
 ## The run event log
 

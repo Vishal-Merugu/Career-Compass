@@ -24,6 +24,7 @@ import {
   DRAFT_SYSTEM_PROMPT,
 } from './draft.service.js';
 import { sendChatCompletion } from '../shared/llmClient.js';
+import { withLlmFallback } from './llmRouter.service.js';
 import type { IUserConfig } from '../shared/types.js';
 
 export type CampaignStatus =
@@ -360,18 +361,25 @@ export async function processCampaignContact(
         );
       }
 
-      const generated = await sendChatCompletion(
-        config as unknown as IUserConfig,
-        DRAFT_SYSTEM_PROMPT,
-        buildDraftPrompt({
-          commonPrompt: campaign.commonPrompt,
-          name: contact.name,
-          email: contact.email,
-          companyName: contact.companyName,
-          description: contact.description,
-        }),
-        800,
-        0.7,
+      const draftPrompt = buildDraftPrompt({
+        commonPrompt: campaign.commonPrompt,
+        name: contact.name,
+        email: contact.email,
+        companyName: contact.companyName,
+        description: contact.description,
+      });
+
+      const generated = await withLlmFallback(
+        userId,
+        (target) =>
+          sendChatCompletion(
+            target,
+            DRAFT_SYSTEM_PROMPT,
+            draftPrompt,
+            800,
+            0.7,
+          ),
+        { config: config as unknown as IUserConfig },
       );
 
       const composed = composeDraft({

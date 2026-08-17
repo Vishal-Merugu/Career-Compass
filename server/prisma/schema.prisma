@@ -25,6 +25,69 @@ model User {
   searchJobs   SearchJob[]
   campaigns    Campaign[]
   emailLookups EmailLookup[]
+  llmCredentials LlmCredential[]
+}
+
+/// One model the account can call, and the key to call it with.
+///
+/// `UserConfig.llmProvider` / `llmApiKey` / `llmUrl` / `llmModel` describe a
+/// *single* model, so one exhausted free tier stopped every run. This table is
+/// the ordered list that replaces it: the router walks it top to bottom and the
+/// first credential that answers wins. The old columns are still read as a
+/// last-resort chain entry, so an account that never adds a row here keeps
+/// working exactly as before.
+///
+/// The point is free tiers. Gemini, OpenRouter, Groq and Cloudflare all give
+/// away a daily quota; five of them in a row is a working budget, and a 429 on
+/// one is a fact about that key at that minute, not about the run.
+model LlmCredential {
+  id     String @id @default(uuid())
+  userId String
+  /// What the user calls it in the list. Their own words — two Gemini keys from
+  /// two Google accounts are otherwise indistinguishable in the UI.
+  label  String
+
+  /// `server` | `ollama` | `gemini` | `openrouter` | `groq` | `custom`.
+  /// `custom` is any other OpenAI-compatible host (Cloudflare Workers AI,
+  /// Together, a self-hosted vLLM) and is the reason `baseUrl` exists.
+  provider String
+  /// AES-256-GCM via `lib/secretBox.ts`, never plaintext at rest. Null for the
+  /// providers that need no key (`server`, a local `ollama`).
+  apiKey   String?
+  baseUrl  String  @default("")
+  model    String  @default("")
+
+  /// Ascending. The order the user dragged them into, which is the order the
+  /// waterfall tries them in.
+  priority Int     @default(0)
+  /// The user's own switch. Distinct from `cooldownUntil` (transient, ours) and
+  /// from `disabledCode` (broken, needs them to act) so the UI can say which.
+  enabled  Boolean @default(true)
+
+  /// Skip this credential until then. Set from a 429's `Retry-After` where the
+  /// provider sends one, otherwise from a per-code default. Null means ready.
+  ///
+  /// A cooldown is deliberately *not* a disable: a daily quota comes back, and
+  /// a key that is retired on its first 429 is a free tier thrown away.
+  cooldownUntil DateTime?
+  /// Set when the failure needs a human — `LLM_AUTH` (wrong key),
+  /// `LLM_MODEL_NOT_FOUND` (wrong model id). Retrying either on a timer only
+  /// spends latency on a request that cannot succeed. Cleared on any edit.
+  disabledCode  String?
+
+  lastUsedAt    DateTime?
+  lastErrorAt   DateTime?
+  /// The `JobErrorCode` of the most recent failure, for the UI's status pill.
+  lastErrorCode String?
+  successCount  Int       @default(0)
+  failureCount  Int       @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, priority])
 }
 
 /// The LinkedIn session the server makes Voyager calls with.
