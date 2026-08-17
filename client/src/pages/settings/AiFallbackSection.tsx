@@ -96,10 +96,10 @@ const PROVIDERS: Array<{
   {
     value: 'custom',
     label: 'Other OpenAI-compatible endpoint',
-    hint: 'Cloudflare Workers AI, Together, a self-hosted vLLM — anything that serves /chat/completions.',
+    hint: 'Cloudflare Workers AI, Together, a self-hosted vLLM — anything that serves /chat/completions. On Cloudflare use an @cf/… model: the partner models (Gemini, OpenAI) bill separately and answer 402 on the free plan.',
     needsKey: true,
     needsUrl: true,
-    modelPlaceholder: '@cf/google/gemma-4-26b-a4b-it',
+    modelPlaceholder: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
   },
   {
     value: 'ollama',
