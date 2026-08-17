@@ -196,6 +196,15 @@ vi.mock('./mailer.service.js', () => ({ sendMail, verifyCredentials }));
 const sendChatCompletion = vi.hoisted(() => vi.fn<() => Promise<string>>());
 vi.mock('../shared/llmClient.js', () => ({ sendChatCompletion }));
 
+// The draft goes through the model waterfall; these tests are about the send
+// loop, so the chain collapses to "call the one mock".
+vi.mock('./llmRouter.service.js', () => ({
+  withLlmFallback: <T>(
+    _userId: string,
+    call: (target: unknown) => Promise<T>,
+  ) => call({ credentialId: null, label: 'test model', provider: 'ollama' }),
+}));
+
 /** What `startCampaign` hands to `Queue.addBulk`. */
 interface QueuedJob {
   name: string;

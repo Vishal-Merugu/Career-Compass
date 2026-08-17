@@ -2,6 +2,7 @@ import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
 import { companyNameFromUrl } from '../lib/companyName.js';
 import { evaluateProfile } from '../shared/llmClient.js';
+import { withLlmFallback } from '../services/llmRouter.service.js';
 import { IParsedProfile } from '../shared/parsers.js';
 import { PrismaStorageAdapter } from '../services/storage.adapter.js';
 import { checkJobStopCondition } from '../orchestrator/stopCondition.js';
@@ -292,11 +293,15 @@ export class QualificationWorker {
     let qualificationReason = '';
 
     try {
-      const evaluation = await evaluateProfile(
-        parsedProfile,
-        criteriaPrompt,
-        config,
-        targetCompany,
+      // Through the router, so one exhausted free tier moves to the next key
+      // instead of pausing the run. The whole evaluation is inside the
+      // callback — including the JSON parse — so a model that answers with
+      // prose falls through to one that can follow the format.
+      const evaluation = await withLlmFallback(
+        job.userId,
+        (target) =>
+          evaluateProfile(parsedProfile, criteriaPrompt, target, targetCompany),
+        { config },
       );
 
       isQualified = evaluation.match;

@@ -13,18 +13,23 @@
 // these fields — see the note there.
 
 import { Router } from 'express';
+import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { requireAuth } from '../auth/middleware.js';
 import { prisma } from '../lib/prisma.js';
-import { ValidationError } from '../errors/AppError.js';
+import { NotFoundError, ValidationError } from '../errors/AppError.js';
 import { encryptSecret } from '../lib/secretBox.js';
 import { env } from '../config/env.js';
 import { DEFAULT_SEARCH_PROMPT } from '../config/defaultPrompt.js';
-import { llmHealthCheck } from '../shared/llmClient.js';
+import { llmHealthCheck, LLM_PROVIDERS } from '../shared/llmClient.js';
 import {
   checkAiModel,
   preflightJob,
 } from '../services/jobPreflight.service.js';
+import {
+  credentialView,
+  targetFromCredential,
+} from '../services/llmRouter.service.js';
 import { PrismaStorageAdapter } from '../services/storage.adapter.js';
 import { issueLinkCode } from '../telegram/linkCodes.js';
 import type { IUserConfig } from '../shared/types.js';
@@ -172,6 +177,256 @@ router.post('/settings/ai/check', requireAuth, async (req, res, next) => {
     next(err);
   }
 });
+
+// ─── The model list ──────────────────────────────────────────────
+//
+// `requireAuth` throughout, cookie only, for the reason at the top of this
+// file: these rows hold billable API keys and the extension's long-lived key
+// must not be able to read, add or reorder one.
+//
+// No route ever returns a key. `apiKeySet` is the whole of what the UI needs.
+
+const credentialSchema = z.object({
+  label: z.string().min(1).max(60),
+  provider: z.enum(LLM_PROVIDERS),
+  model: z.string().max(200).optional(),
+  baseUrl: z.string().max(500).optional(),
+  apiKey: z.string().min(1).max(500).nullable().optional(),
+  enabled: z.boolean().optional(),
+});
+
+/** Every field optional on edit; absent means "leave it alone". */
+const credentialPatchSchema = credentialSchema.partial();
+
+const reorderSchema = z.object({
+  /** Every id the account owns, in the order the user dragged them into. */
+  ids: z.array(z.string().uuid()).min(1).max(50),
+});
+
+const CREDENTIAL_FIELDS = {
+  id: true,
+  label: true,
+  provider: true,
+  apiKey: true,
+  baseUrl: true,
+  model: true,
+  priority: true,
+  enabled: true,
+  cooldownUntil: true,
+  disabledCode: true,
+  lastErrorCode: true,
+  lastUsedAt: true,
+  successCount: true,
+  failureCount: true,
+} as const;
+
+async function listCredentials(userId: string) {
+  const rows = await prisma.llmCredential.findMany({
+    where: { userId },
+    orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
+    select: CREDENTIAL_FIELDS,
+  });
+  return rows.map(credentialView);
+}
+
+router.get('/settings/ai/credentials', requireAuth, async (req, res, next) => {
+  try {
+    res.status(200).json({
+      ok: true,
+      credentials: await listCredentials(req.user!.id),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/settings/ai/credentials', requireAuth, async (req, res, next) => {
+  try {
+    const body = credentialSchema.parse(req.body);
+    const userId = req.user!.id;
+
+    // Appended to the end of the list. A new key is an addition to the
+    // waterfall, never a promotion over one the user has already ordered.
+    const last = await prisma.llmCredential.findFirst({
+      where: { userId },
+      orderBy: { priority: 'desc' },
+      select: { priority: true },
+    });
+
+    const created = await prisma.llmCredential.create({
+      data: {
+        userId,
+        label: body.label.trim(),
+        provider: body.provider,
+        model: body.model?.trim() ?? '',
+        baseUrl: body.baseUrl?.trim() ?? '',
+        apiKey: body.apiKey ? encryptSecret(body.apiKey) : null,
+        enabled: body.enabled ?? true,
+        priority: (last?.priority ?? -1) + 1,
+      },
+      select: CREDENTIAL_FIELDS,
+    });
+
+    res.status(201).json({ ok: true, credential: credentialView(created) });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return next(new ValidationError('Invalid AI credential', err.errors));
+    }
+    next(err);
+  }
+});
+
+router.patch(
+  '/settings/ai/credentials/:id',
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const body = credentialPatchSchema.parse(req.body);
+      const userId = req.user!.id;
+
+      // Scoped by userId in the `where`, not fetched and then checked, so one
+      // account can never edit another's key by guessing an id.
+      const owned = await prisma.llmCredential.findFirst({
+        where: { id: req.params.id, userId },
+        select: { id: true },
+      });
+      if (!owned) return next(new NotFoundError('AI credential not found'));
+
+      const data: Prisma.LlmCredentialUpdateInput = {};
+      if (body.label !== undefined) data.label = body.label.trim();
+      if (body.provider !== undefined) data.provider = body.provider;
+      if (body.model !== undefined) data.model = body.model.trim();
+      if (body.baseUrl !== undefined) data.baseUrl = body.baseUrl.trim();
+      if (body.enabled !== undefined) data.enabled = body.enabled;
+      if (body.apiKey !== undefined) {
+        data.apiKey = body.apiKey ? encryptSecret(body.apiKey) : null;
+      }
+
+      // Any edit is the user's answer to whatever parked it. Clearing both the
+      // disable and the cooldown is what makes "fix the key and save" work
+      // without a second button — a corrected key that stayed disabled would
+      // look broken forever.
+      data.disabledCode = null;
+      data.cooldownUntil = null;
+
+      const updated = await prisma.llmCredential.update({
+        where: { id: owned.id },
+        data,
+        select: CREDENTIAL_FIELDS,
+      });
+
+      res.status(200).json({ ok: true, credential: credentialView(updated) });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return next(new ValidationError('Invalid AI credential', err.errors));
+      }
+      next(err);
+    }
+  },
+);
+
+router.delete(
+  '/settings/ai/credentials/:id',
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const { count } = await prisma.llmCredential.deleteMany({
+        where: { id: req.params.id, userId: req.user!.id },
+      });
+      if (count === 0)
+        return next(new NotFoundError('AI credential not found'));
+
+      res.status(200).json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * Set the waterfall order.
+ *
+ * Takes the whole list rather than a move-one-up call: the order *is* the
+ * array, so there is no state where two rows claim the same priority and no
+ * second request needed to settle it. Written in one transaction for the same
+ * reason.
+ */
+router.post(
+  '/settings/ai/credentials/reorder',
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const { ids } = reorderSchema.parse(req.body);
+      const userId = req.user!.id;
+
+      const owned = await prisma.llmCredential.findMany({
+        where: { id: { in: ids }, userId },
+        select: { id: true },
+      });
+      if (owned.length !== ids.length) {
+        return next(
+          new ValidationError('The order must list credentials you own'),
+        );
+      }
+
+      await prisma.$transaction(
+        ids.map((id, index) =>
+          prisma.llmCredential.update({
+            where: { id },
+            data: { priority: index },
+          }),
+        ),
+      );
+
+      res
+        .status(200)
+        .json({ ok: true, credentials: await listCredentials(userId) });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return next(new ValidationError('Invalid order', err.errors));
+      }
+      next(err);
+    }
+  },
+);
+
+/**
+ * Test one stored credential, from this process.
+ *
+ * Same reasoning as `/settings/ai/check`: a check that runs anywhere else
+ * tests the wrong machine. Clears the cooldown when the model answers, so
+ * "Test" doubles as the way to put a key that has recovered back in the
+ * rotation without waiting out our own guessed timer.
+ */
+router.post(
+  '/settings/ai/credentials/:id/check',
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const row = await prisma.llmCredential.findFirst({
+        where: { id: req.params.id, userId: req.user!.id },
+        select: CREDENTIAL_FIELDS,
+      });
+      if (!row) return next(new NotFoundError('AI credential not found'));
+
+      const verdict = await checkAiModel(targetFromCredential(row));
+
+      await prisma.llmCredential.update({
+        where: { id: row.id },
+        data: verdict.ok
+          ? { cooldownUntil: null, disabledCode: null, lastErrorCode: null }
+          : {
+              lastErrorAt: new Date(),
+              lastErrorCode: verdict.code ?? 'UNKNOWN',
+            },
+      });
+
+      res.status(200).json({ ok: true, checkedFrom: 'server', check: verdict });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 router.get('/settings/finder', requireAuth, async (req, res, next) => {
   try {

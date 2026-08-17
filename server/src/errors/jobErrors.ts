@@ -18,6 +18,7 @@ export type JobErrorCode =
   | 'LLM_RATE_LIMIT'
   | 'LLM_QUOTA'
   | 'LLM_BAD_JSON'
+  | 'LLM_ALL_FAILED'
   | 'SESSION_MISSING'
   | 'SESSION_EXPIRED'
   | 'LINKEDIN_RATE_LIMIT'
@@ -76,6 +77,13 @@ const COPY: Record<JobErrorCode, (ctx: JobErrorContext) => JobErrorCopy> = {
       : "The AI provider's quota or credit is exhausted.",
     fix: 'Add credit, or switch provider in Settings → AI model.',
   }),
+  // Only ever raised when the chain held **more than one** model. A single
+  // configured model still fails with its own specific code, so nothing about
+  // the old one-provider messages changed.
+  LLM_ALL_FAILED: () => ({
+    message: 'Every AI model in your list failed.',
+    fix: 'Open Settings → AI models: each one shows why it failed. Add another key, or wait for a rate limit to clear.',
+  }),
   LLM_BAD_JSON: () => ({
     message: 'The AI model returned something unreadable.',
     fix: 'A smaller model often causes this — try a larger one in Settings → AI model.',
@@ -121,6 +129,9 @@ const COPY: Record<JobErrorCode, (ctx: JobErrorContext) => JobErrorCopy> = {
  * breaker instead.
  */
 const RUN_FATAL: ReadonlySet<JobErrorCode> = new Set<JobErrorCode>([
+  // Fatal precisely *because* it is the whole chain. One model rate-limiting
+  // is now a fallback, not a pause — the run only stops when nothing is left.
+  'LLM_ALL_FAILED',
   'LLM_UNREACHABLE',
   'LLM_MODEL_NOT_FOUND',
   'LLM_AUTH',

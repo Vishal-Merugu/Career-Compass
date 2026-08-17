@@ -31,6 +31,17 @@ const publishQualifiedProfile = vi.hoisted(() => vi.fn());
 const profileDecisionCreate = vi.hoisted(() => vi.fn());
 
 vi.mock('../shared/llmClient.js', () => ({ evaluateProfile }));
+
+// One model, called directly. The waterfall's own behaviour is covered in
+// `llmRouter.service.test.ts`; what matters here is that whatever the model
+// finally throws still reaches the worker as an `LlmError` and is handled as
+// infrastructure rather than as a verdict.
+vi.mock('../services/llmRouter.service.js', () => ({
+  withLlmFallback: <T>(
+    _userId: string,
+    call: (target: unknown) => Promise<T>,
+  ) => call({ credentialId: null, label: 'test model', provider: 'ollama' }),
+}));
 vi.mock('../services/jobControl.service.js', () => ({ pauseJobWithFailure }));
 vi.mock('../services/jobEvents.service.js', () => ({ recordJobEvent }));
 vi.mock('../orchestrator/stopCondition.js', () => ({ checkJobStopCondition }));

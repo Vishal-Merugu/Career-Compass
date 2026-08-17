@@ -10,12 +10,15 @@
 import { getSessionState } from './linkedinSession.service.js';
 import { PrismaStorageAdapter } from './storage.adapter.js';
 import {
+  asTarget,
   llmHealthCheck,
   normalizeProvider,
   providerLabel,
   resolveModel,
   usesOllamaDialect,
+  type LlmSource,
 } from '../shared/llmClient.js';
+import { resolveChain } from './llmRouter.service.js';
 import {
   describeJobError,
   type JobErrorCode,
@@ -77,12 +80,10 @@ async function checkSession(userId: string): Promise<PreflightCheck> {
  * real calls — so it could report a healthy model while the server could not
  * resolve the address at all.
  */
-export async function checkAiModel(
-  config: IUserConfig,
-): Promise<PreflightCheck> {
+export async function checkAiModel(config: LlmSource): Promise<PreflightCheck> {
   const provider = normalizeProvider(config);
   const model = resolveModel(config);
-  const label = providerLabel(provider);
+  const label = asTarget(config).label || providerLabel(provider);
 
   if (!model) {
     return fail('LLM_MODEL_NOT_FOUND', { provider: label });
@@ -124,6 +125,51 @@ export async function checkAiModel(
 }
 
 /**
+ * Can *any* model this account holds answer?
+ *
+ * A waterfall only needs one working model, so this passes when one passes.
+ * Checking only the top of the chain would refuse a run that would have
+ * succeeded on the second key, which is precisely the failure the chain was
+ * built to end.
+ *
+ * Checked in parallel: the chain is a handful of hosts and each check has its
+ * own 5s ceiling, so serial worst-case would put half a minute in front of the
+ * New run form.
+ */
+export async function checkAiChain(
+  userId: string,
+  config: IUserConfig | null,
+): Promise<PreflightCheck> {
+  const chain = await resolveChain(userId, config ?? undefined);
+
+  if (chain.length === 0) return fail('LLM_MODEL_NOT_FOUND');
+
+  const results = await Promise.all(chain.map((t) => checkAiModel(t)));
+  const workingIndex = results.findIndex((r) => r.ok);
+
+  if (workingIndex >= 0) {
+    const working = results.filter((r) => r.ok).length;
+    return {
+      ok: true,
+      detail:
+        chain.length > 1
+          ? `${working} of ${chain.length} models ready · ${chain[workingIndex]!.label} first`
+          : results[workingIndex]!.detail,
+    };
+  }
+
+  // One model is the pre-existing world: keep its specific code and copy.
+  if (chain.length === 1) return results[0]!;
+
+  return {
+    ...fail('LLM_ALL_FAILED'),
+    detail: chain
+      .map((t, i) => `${t.label}: ${results[i]!.message}`)
+      .join(' · '),
+  };
+}
+
+/**
  * Run every check for a user, in the order the user should fix them.
  */
 export async function preflightJob(userId: string): Promise<PreflightResult> {
@@ -135,9 +181,10 @@ export async function preflightJob(userId: string): Promise<PreflightResult> {
     .getConfig()
     .catch(() => null);
 
-  const aiModel = config
-    ? await checkAiModel(config)
-    : fail('LLM_MODEL_NOT_FOUND');
+  // The whole chain, not just `config`: an account whose keys all live in
+  // `LlmCredential` has nothing useful in `UserConfig`, and checking only that
+  // would refuse every run it can actually complete.
+  const aiModel = await checkAiChain(userId, config);
 
   const linkedinSession = await checkSession(userId);
 

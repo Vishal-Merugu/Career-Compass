@@ -16,8 +16,66 @@ import type { JobErrorCode } from '../errors/jobErrors.js';
  */
 export const SERVER_PROVIDER = 'server';
 
-export function normalizeProvider(config: IUserConfig): string {
-  return (config.llmProvider || SERVER_PROVIDER).toLowerCase();
+/** Every provider a credential may name. `custom` is "any OpenAI-compatible host". */
+export const LLM_PROVIDERS = [
+  SERVER_PROVIDER,
+  'ollama',
+  'gemini',
+  'openrouter',
+  'groq',
+  'custom',
+] as const;
+
+export type LlmProvider = (typeof LLM_PROVIDERS)[number];
+
+/**
+ * One model, resolved and ready to call.
+ *
+ * The unit the transport works in. It exists because a *user* is no longer one
+ * model: `llmRouter` turns an account into an ordered list of these and walks
+ * it until one answers. Everything below this line is deliberately ignorant of
+ * that — a target does not know its position in a chain, and the transport
+ * cannot fall back on its own.
+ */
+export interface LlmTarget {
+  /** `LlmCredential.id`, or null for the legacy `UserConfig` single provider. */
+  credentialId: string | null;
+  /** The user's own name for it, for logs and the run event log. */
+  label: string;
+  provider: string;
+  apiKey: string | null;
+  /** Only consulted for `ollama` and `custom`; hosted providers are hardcoded. */
+  url: string;
+  model: string;
+}
+
+/**
+ * Accepted anywhere a target is: the legacy config shape converts on the way in.
+ *
+ * Keeping `IUserConfig` callable is what let this change land without touching
+ * `jobPreflight`, `draftStream` or `jobRunner` — they each derive a url, headers
+ * and a model from a config and were correct before the chain existed.
+ */
+export type LlmSource = LlmTarget | IUserConfig;
+
+export function targetFromConfig(config: IUserConfig): LlmTarget {
+  const provider = (config.llmProvider || SERVER_PROVIDER).toLowerCase();
+  return {
+    credentialId: null,
+    label: providerLabel(provider),
+    provider,
+    apiKey: config.llmApiKey ?? null,
+    url: config.llmUrl || '',
+    model: config.llmModel || '',
+  };
+}
+
+export function asTarget(source: LlmSource): LlmTarget {
+  return 'llmProvider' in source ? targetFromConfig(source) : source;
+}
+
+export function normalizeProvider(source: LlmSource): string {
+  return asTarget(source).provider.toLowerCase();
 }
 
 /** Ollama's native `/api/chat`, as opposed to the OpenAI-compatible shape. */
@@ -32,18 +90,20 @@ export function usesOllamaDialect(provider: string): boolean {
  * id is a 404 the user cannot explain. For the built-in provider the operator's
  * `DEFAULT_LLM_MODEL` is authoritative and the user's field is ignored.
  */
-export function resolveModel(config: IUserConfig): string {
-  const provider = normalizeProvider(config);
-  if (provider === SERVER_PROVIDER) return env.DEFAULT_LLM_MODEL;
-  return config.llmModel || '';
+export function resolveModel(source: LlmSource): string {
+  const target = asTarget(source);
+  if (normalizeProvider(target) === SERVER_PROVIDER) {
+    return env.DEFAULT_LLM_MODEL;
+  }
+  return target.model || '';
 }
 
 /**
  * Get Base URL based on provider
  */
-export function getBaseUrl(config: IUserConfig): string {
-  const provider = normalizeProvider(config);
-  const llmUrl = config.llmUrl || '';
+export function getBaseUrl(source: LlmSource): string {
+  const target = asTarget(source);
+  const provider = normalizeProvider(target);
 
   const stripSlash = (url: string) =>
     url.endsWith('/') ? url.slice(0, -1) : url;
@@ -53,31 +113,40 @@ export function getBaseUrl(config: IUserConfig): string {
       return 'https://generativelanguage.googleapis.com/v1beta/openai';
     case 'openrouter':
       return 'https://openrouter.ai/api/v1';
+    case 'groq':
+      return 'https://api.groq.com/openai/v1';
     case SERVER_PROVIDER:
       return stripSlash(env.DEFAULT_LLM_URL);
     case 'ollama':
+    case 'custom':
     default:
       // No `localhost` fallback. An empty URL is a configuration mistake worth
       // surfacing, not one to paper over with an address that is wrong in every
       // containerised deployment.
-      return stripSlash(llmUrl);
+      //
+      // `custom` is where a Cloudflare Workers AI account URL goes
+      // (`…/accounts/<id>/ai/v1`) — account-scoped, so it cannot be hardcoded.
+      return stripSlash(target.url || '');
   }
 }
 
 /**
  * Get Auth Headers based on provider
  */
-export function getHeaders(config: IUserConfig): Record<string, string> {
-  const provider = normalizeProvider(config);
-  const llmApiKey = config.llmApiKey || '';
+export function getHeaders(source: LlmSource): Record<string, string> {
+  const target = asTarget(source);
+  const provider = normalizeProvider(target);
+  const apiKey = target.apiKey || '';
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
 
-  if (provider === 'gemini' || provider === 'openrouter') {
-    if (llmApiKey) {
-      headers['Authorization'] = `Bearer ${llmApiKey}`;
-    }
+  // Bearer for every hosted provider rather than a per-provider allowlist: each
+  // new free tier added to `LLM_PROVIDERS` is otherwise one forgotten `case`
+  // away from silently sending an unauthenticated request and reading the 401
+  // as a bad key. Ollama's dialect takes no key at all.
+  if (apiKey && !usesOllamaDialect(provider)) {
+    headers['Authorization'] = `Bearer ${apiKey}`;
   }
 
   // OpenRouter requires these for ranking
@@ -97,8 +166,12 @@ export function providerLabel(provider: string): string {
       return 'Gemini';
     case 'openrouter':
       return 'OpenRouter';
+    case 'groq':
+      return 'Groq';
     case 'ollama':
       return 'Ollama';
+    case 'custom':
+      return 'Custom endpoint';
     case SERVER_PROVIDER:
       return 'The built-in model';
     default:
@@ -107,16 +180,27 @@ export function providerLabel(provider: string): string {
 }
 
 /**
- * A failure that never reached the provider — DNS, refused connection,
- * unroutable host, timeout.
+ * What to call the thing that failed.
  *
- * This is the one that produced `LLM Error: fetch failed` 368 times: Node's
- * `fetch` reports every transport problem with that same opaque string, so the
- * cause has to be dug out of `err.cause`.
+ * A credential's own label wins over the provider's generic name: with two
+ * Gemini keys in the chain, "Gemini rejected the API key" does not say which
+ * one to go and fix.
  */
+export interface LlmFailureContext {
+  provider: string;
+  model: string;
+  url: string;
+  /** `LlmTarget.label`, when the call came through the router. */
+  label?: string;
+}
+
+function failureLabel(ctx: LlmFailureContext): string {
+  return ctx.label || providerLabel(ctx.provider);
+}
+
 export function classifyTransportFailure(
   err: unknown,
-  ctx: { provider: string; model: string; url: string },
+  ctx: LlmFailureContext,
 ): LlmError {
   const error = err as { message?: string; name?: string; cause?: unknown };
   const cause = error?.cause as { code?: string; message?: string } | undefined;
@@ -128,7 +212,7 @@ export function classifyTransportFailure(
   return new LlmError('LLM_UNREACHABLE', 'The AI model could not be reached.', {
     detail,
     model: ctx.model,
-    provider: providerLabel(ctx.provider),
+    provider: failureLabel(ctx),
   });
 }
 
@@ -137,11 +221,11 @@ export function classifyHttpFailure(
   status: number,
   bodyText: string,
   headers: Headers | null,
-  ctx: { provider: string; model: string; url: string },
+  ctx: LlmFailureContext,
 ): LlmError {
   const body = bodyText.slice(0, 400);
   const lower = body.toLowerCase();
-  const label = providerLabel(ctx.provider);
+  const label = failureLabel(ctx);
   const mentionsQuota = /quota|credit|billing|payment|insufficient/.test(lower);
   const mentionsModel = /model/.test(lower);
 
@@ -206,13 +290,56 @@ export interface ILlmHealthResponse {
  * server could not resolve the address at all. That is exactly what happened on
  * the VM.
  */
-export async function llmHealthCheck(
-  config: IUserConfig,
+/**
+ * Prove the model works by asking it for one token.
+ *
+ * The fallback for hosts with no `/models`. It costs a request against the
+ * user's quota, which is why it is not the primary check — but it runs only on
+ * an explicit Test or a preflight, and "it answered" is strictly better
+ * evidence than "it has a listing endpoint".
+ *
+ * Returns no model list, because there is none to read. `checkAiModel` only
+ * enforces the installed-model check for Ollama's dialect anyway.
+ */
+async function probeByAnswering(
+  target: LlmTarget,
+  ctx: { provider: string; model: string; url: string },
 ): Promise<ILlmHealthResponse> {
-  const provider = normalizeProvider(config);
-  const baseUrl = getBaseUrl(config);
-  const headers = getHeaders(config);
-  const model = resolveModel(config);
+  try {
+    // An empty completion is still a completion: the request was accepted,
+    // authenticated and routed to the model, which is the whole question here.
+    await sendChatCompletion(target, 'ping', 'ping', 1, 0);
+    return { ok: true, models: [], url: ctx.url, model: ctx.model };
+  } catch (err) {
+    if (err instanceof LlmError) {
+      return {
+        ok: false,
+        code: err.code,
+        error: err.detail ?? err.message,
+        url: ctx.url,
+        model: ctx.model,
+      };
+    }
+    const failure = classifyTransportFailure(err, ctx);
+    return {
+      ok: false,
+      code: failure.code,
+      error: failure.detail ?? failure.message,
+      url: ctx.url,
+      model: ctx.model,
+    };
+  }
+}
+
+export async function llmHealthCheck(
+  source: LlmSource,
+): Promise<ILlmHealthResponse> {
+  const target = asTarget(source);
+  const provider = normalizeProvider(target);
+  const baseUrl = getBaseUrl(target);
+  const headers = getHeaders(target);
+  const model = resolveModel(target);
+  const label = target.label;
 
   if (!baseUrl) {
     return {
@@ -235,11 +362,23 @@ export async function llmHealthCheck(
     });
 
     if (!res.ok) {
+      // A listing endpoint is optional; answering is not.
+      //
+      // `/models` is a convention, not a requirement of the OpenAI-compatible
+      // shape, and several hosts worth using here do not serve it —
+      // Cloudflare Workers AI's account-scoped `/ai/v1` and most self-hosted
+      // gateways among them. Reporting those as unreachable would park a
+      // perfectly good key on a 404 from a URL the run never calls.
+      if (res.status === 404 || res.status === 405) {
+        return probeByAnswering(target, { provider, model, url: modelsUrl });
+      }
+
       const body = await res.text().catch(() => '');
       const failure = classifyHttpFailure(res.status, body, res.headers, {
         provider,
         model,
         url: modelsUrl,
+        label,
       });
       return {
         ok: false,
@@ -272,6 +411,7 @@ export async function llmHealthCheck(
       provider,
       model,
       url: modelsUrl,
+      label,
     });
     return {
       ok: false,
@@ -288,16 +428,17 @@ export async function llmHealthCheck(
  * Automatically switches between Native Ollama and OpenAI schemas.
  */
 export async function sendChatCompletion(
-  config: IUserConfig,
+  source: LlmSource,
   systemPrompt: string,
   userPrompt: string,
   maxTokens: number,
   temperature: number,
 ): Promise<string> {
-  const provider = normalizeProvider(config);
-  const baseUrl = getBaseUrl(config);
-  const headers = getHeaders(config);
-  const model = resolveModel(config);
+  const target = asTarget(source);
+  const provider = normalizeProvider(target);
+  const baseUrl = getBaseUrl(target);
+  const headers = getHeaders(target);
+  const model = resolveModel(target);
 
   if (!baseUrl) {
     throw new LlmError(
@@ -305,7 +446,7 @@ export async function sendChatCompletion(
       'The AI model could not be reached.',
       {
         detail: `No base URL is configured for provider "${provider}".`,
-        provider: providerLabel(provider),
+        provider: target.label || providerLabel(provider),
         model,
       },
     );
@@ -342,7 +483,12 @@ export async function sendChatCompletion(
     });
   }
 
-  const ctx = { provider, model, url: endpoint };
+  const ctx: LlmFailureContext = {
+    provider,
+    model,
+    url: endpoint,
+    label: target.label,
+  };
 
   // Retries are for a slow model, not a wrong address. A refused connection or
   // a rejected key fails identically on every attempt, so retrying it three
@@ -401,7 +547,7 @@ export async function sendChatCompletion(
   // Every attempt timed out.
   throw new LlmError('LLM_UNREACHABLE', 'The AI model could not be reached.', {
     detail: `No response from ${endpoint} after 4 attempts.`,
-    provider: providerLabel(provider),
+    provider: failureLabel(ctx),
     model,
   });
 }
@@ -413,13 +559,22 @@ export interface IConnectionMessageResult {
 }
 
 /**
- * Generate a personalized connection message
+ * Generate a personalized connection message.
+ *
+ * @throws {LlmError} if the model could not be reached or refused.
+ *
+ * It used to catch everything and return `{ ok: false, error }`, which is the
+ * same shape that turned 368 unreachable-model failures into rejections in
+ * `evaluateProfile`. Here it cost less — the caller returned a 502 — but it
+ * also made the note un-routable: `withLlmFallback` decides whether to try the
+ * next key from the `LlmError`'s code, and a swallowed error carries none, so
+ * a rate-limited first key would have ended the request instead of moving on.
  */
 export async function generateConnectionMessage(
   profileData: IParsedProfile,
   companyName: string,
   userContext: string | null,
-  config: IUserConfig,
+  config: LlmSource,
 ): Promise<IConnectionMessageResult> {
   const LINKEDIN_MAX_CHARS = 200;
   const MAX_ATTEMPTS = 3;
@@ -458,7 +613,7 @@ ${profileData.experiences?.length ? `Current Role: ${profileData.experiences[0]?
 
 ${userContext ? `About me (the sender): ${userContext}` : ''}`;
 
-  try {
+  {
     let message = '';
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -511,9 +666,120 @@ ${userContext ? `About me (the sender): ${userContext}` : ''}`;
     }
 
     return { ok: true, message };
-  } catch (err: any) {
-    return { ok: false, error: err.message };
   }
+}
+
+/**
+ * Pull the verdict object out of whatever the model actually said.
+ *
+ * Every provider in the chain serves the same wire format, but the *models* do
+ * not write the same way, and the free ones are the worst offenders — they are
+ * also the ones this account will mostly be running on. Three habits break a
+ * bare `JSON.parse`:
+ *
+ *   - fenced output — ```json { … } ```
+ *   - a reasoning preamble — `<think>…</think>` before the answer, which every
+ *     R1-style distill on OpenRouter and Groq emits
+ *   - a polite sentence first — "Sure! Here's the evaluation: { … }"
+ *
+ * None of these mean the model got the answer wrong, so failing on them throws
+ * away a good verdict and burns the next key in the chain to re-earn it.
+ *
+ * Returns null when there is genuinely no object in there — the caller turns
+ * that into `LLM_BAD_JSON`, which is still a fallback and never a rejection.
+ */
+export function extractJsonObject(
+  raw: string,
+): { match?: unknown; reason?: unknown } | null {
+  const cleaned = raw
+    // Non-greedy, and only matched pairs: an unclosed `<think>` means the model
+    // ran out of tokens mid-thought and there is no verdict to recover.
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/```json/gi, '')
+    .replace(/```/g, '')
+    .trim();
+
+  /**
+   * A candidate is a verdict only if it actually carries `match`.
+   *
+   * Without this guard the extractor is dangerous rather than helpful: any
+   * stray object would be accepted, `parsed.match` would be `undefined`, and
+   * `Boolean(undefined)` is `false` — a silent rejection attributed to the
+   * candidate. That is precisely the class of bug that recorded 368 people as
+   * "not a good fit" on 2026-08-09, and it must not come back through the
+   * parser instead of through the transport.
+   */
+  const attempt = (
+    text: string,
+  ): { match?: unknown; reason?: unknown } | null => {
+    try {
+      const value: unknown = JSON.parse(text);
+      if (typeof value !== 'object' || value === null) return null;
+
+      // A one-element array wrapping the verdict is a common formatting quirk,
+      // so unwrap it rather than discarding a correct answer.
+      const candidate: unknown = Array.isArray(value) ? value[0] : value;
+      if (typeof candidate !== 'object' || candidate === null) return null;
+      if (!('match' in candidate)) return null;
+
+      return candidate as { match?: unknown; reason?: unknown };
+    } catch {
+      return null;
+    }
+  };
+
+  const direct = attempt(cleaned);
+  if (direct) return direct;
+
+  /** End index of the balanced `{…}` opening at `from`, or -1. */
+  const balancedEnd = (text: string, from: number): number => {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = from; i < text.length; i++) {
+      const char = text[i]!;
+
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+
+      if (char === '{') depth++;
+      else if (char === '}' && --depth === 0) return i;
+    }
+
+    return -1;
+  };
+
+  // **Every** object in the text, in order — not just the first. A model that
+  // restates the requested format before answering ("Format: {"match":
+  // true/false, …} … {"match": true, "reason": "Tier 1"}") puts an unparseable
+  // object first, and stopping there would throw away the real verdict sitting
+  // right behind it. String state is tracked so a brace inside `reason` does
+  // not end the object early.
+  for (
+    let start = cleaned.indexOf('{');
+    start !== -1;
+    start = cleaned.indexOf('{', start + 1)
+  ) {
+    const end = balancedEnd(cleaned, start);
+    if (end === -1) continue;
+
+    const candidate = attempt(cleaned.slice(start, end + 1));
+    if (candidate) return candidate;
+  }
+
+  return null;
 }
 
 /**
@@ -540,7 +806,7 @@ export interface IEvaluateProfileResult {
 export async function evaluateProfile(
   profileData: IParsedProfile,
   prompt: string,
-  config: IUserConfig,
+  config: LlmSource,
   targetCompanyName = '',
 ): Promise<IEvaluateProfileResult> {
   if ((globalThis as Record<string, unknown>).MOCK_LLM) {
@@ -657,15 +923,9 @@ INSTRUCTIONS:
     0.1,
   );
 
-  const content = raw
-    .replace(/```json/g, '')
-    .replace(/```/g, '')
-    .trim();
+  const parsed = extractJsonObject(raw);
 
-  let parsed: { match?: unknown; reason?: unknown };
-  try {
-    parsed = JSON.parse(content) as { match?: unknown; reason?: unknown };
-  } catch {
+  if (!parsed) {
     logger.error(
       `[LLM] JSON parse failed. Raw LLM output: ${raw.slice(0, 500)}`,
     );
@@ -674,7 +934,8 @@ INSTRUCTIONS:
       'The AI model returned something unreadable.',
       {
         detail: `Expected JSON, got: ${raw.slice(0, 300)}`,
-        provider: providerLabel(normalizeProvider(config)),
+        provider:
+          asTarget(config).label || providerLabel(normalizeProvider(config)),
         model: resolveModel(config),
       },
     );
