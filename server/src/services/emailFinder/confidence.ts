@@ -16,6 +16,12 @@
  */
 const STRENGTH: Record<string, number> = {
   anymailfinder: 3,
+  // The same provider, reached through its free web tool in the extension
+  // rather than the metered API — it verifies the mailbox live before
+  // answering, so it earns the same rank as the paid path. Kept as a separate
+  // source because which one produced an address decides whether it cost a
+  // credit, and that is the first question asked when the bill arrives.
+  anymailfinder_web: 3,
   smtp_verified: 3,
   // Still live, and still produced — by the *extension*, not by this server.
   // The server-side Mailmeteor layer was deleted (Turnstile refuses an

@@ -26,6 +26,19 @@ describe('sourceStrength', () => {
     );
   });
 
+  // The second provider in the extension's waterfall. It verifies the mailbox
+  // live before answering, so it ranks with the paid API rather than with
+  // Mailmeteor — and an address it found must not be replaced by a later
+  // Mailmeteor hit for the same person.
+  it('ranks the free Anymail Finder tool with the paid one', () => {
+    expect(sourceStrength('anymailfinder_web')).toBe(
+      sourceStrength('anymailfinder'),
+    );
+    expect(sourceStrength('anymailfinder_web')).toBeGreaterThan(
+      sourceStrength('mailmeteor'),
+    );
+  });
+
   it('treats a missing source as no evidence at all', () => {
     expect(sourceStrength(null)).toBe(0);
     expect(sourceStrength(undefined)).toBe(0);

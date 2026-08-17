@@ -206,6 +206,15 @@ a residential IP_. It was deleted along with `playwright` and the
 works, and reports back through the lookup queue — so `mailmeteor` is still a
 live `emailSource`, it just arrives from a browser.
 
+**The extension runs a waterfall, not one provider.** `findEmailForProfile` in
+`extension/services/emailFinder.js` tries Mailmeteor, then Anymail Finder's own
+free LinkedIn tool (`anymailfinder_web`), and reports whichever answered. One
+free tool is a single point of failure twice over: it rate limits, and it does
+not know everyone. Each driver works its page — fill the field, press the
+button, read the result — and calls no provider's internal endpoint directly.
+Adding a third means adding a driver plus an entry in the `providers` array and
+in `emailFinder/confidence.ts`; nothing else knows how many there are.
+
 Do not "fix" this with a captcha-solving service, a stealth plugin, or by
 relaying a token minted in the extension. The token is single-use and expires
 in minutes, so a relay still requires a live browser per lookup. Use a provider
@@ -222,7 +231,8 @@ npx tsx src/scratch-emailfinder-probe.ts --smtp-only
 ```
 
 `emailSource` records which layer produced the address — `anymailfinder`,
-`mailmeteor`, `smtp_verified`, `pattern_guess`, `not_found` — so outreach can
+`anymailfinder_web`, `mailmeteor`, `smtp_verified`, `pattern_guess`,
+`not_found` — so outreach can
 tell a verified address from a weighted guess. **Google Workspace and
 Microsoft 365 accept every recipient**, so a `catch_all` verdict is not a
 confirmation.

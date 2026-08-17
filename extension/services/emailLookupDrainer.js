@@ -51,7 +51,7 @@ async function runOneLookup(item) {
   let result;
 
   try {
-    result = await findEmailViaMailmeteor(item.linkedinUrl);
+    result = await findEmailForProfile(item.linkedinUrl);
   } catch (err) {
     result = { ok: false, error: err.message || 'Widget lookup threw' };
   }
@@ -59,6 +59,8 @@ async function runOneLookup(item) {
   await apiSync(`/api/email-lookups/${item.lookupId}/result`, 'POST', {
     ok: Boolean(result.ok && result.email),
     email: result.email || null,
+    // Whichever provider in the waterfall answered — not a fixed string, or
+    // every address would be recorded as Mailmeteor's.
     source: result.source || 'mailmeteor',
     validation: result.validation || null,
     error: result.error || null,
