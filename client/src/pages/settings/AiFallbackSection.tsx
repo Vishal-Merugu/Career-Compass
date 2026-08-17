@@ -75,7 +75,7 @@ const PROVIDERS: Array<{
     hint: 'Key from Google AI Studio. Generous free daily quota.',
     needsKey: true,
     needsUrl: false,
-    modelPlaceholder: 'gemini-2.0-flash',
+    modelPlaceholder: 'gemini-2.5-flash',
   },
   {
     value: 'openrouter',
@@ -99,7 +99,7 @@ const PROVIDERS: Array<{
     hint: 'Cloudflare Workers AI, Together, a self-hosted vLLM — anything that serves /chat/completions.',
     needsKey: true,
     needsUrl: true,
-    modelPlaceholder: '@cf/meta/llama-3.1-8b-instruct',
+    modelPlaceholder: '@cf/google/gemma-4-26b-a4b-it',
   },
   {
     value: 'ollama',
@@ -479,6 +479,11 @@ export function AiFallbackSection() {
             {form.provider !== 'server' && (
               <TextInput
                 label="Model"
+                // The placeholder is an example of the *shape* of an id, not a
+                // recommendation. Provider line-ups turn over every few months
+                // — a hardcoded name here was already stale once — and a wrong
+                // id is a 404 that reads to the user as "the AI is broken".
+                description="Copy the exact id from the provider. The example is only a format hint and may be out of date."
                 placeholder={spec.modelPlaceholder}
                 value={form.model}
                 onChange={(e) =>
