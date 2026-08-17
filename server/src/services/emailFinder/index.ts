@@ -1,10 +1,13 @@
 // ─── Email Finder ────────────────────────────────────────────────
-// The server's half of email discovery. Two layers, in order:
+// The server's half of email discovery. Three layers, in order:
 //
-//   1. Anymail Finder — a real API with a real key. No browser, no captcha.
+//   1. LinkFinder — a real API with a real key. LinkedIn URL in, a business
+//      address out. No browser, no captcha. Tried first because it resolves
+//      straight from the profile URL. Skipped when LINKFINDER_API_KEY is unset.
+//   2. Anymail Finder — a real API with a real key. No browser, no captcha.
 //      Metered: one credit per valid email found, 100 free on signup.
 //      Skipped entirely when ANYMAILFINDER_API_KEY is unset.
-//   2. Patterns + SMTP — generate the likely formats for the person at their
+//   3. Patterns + SMTP — generate the likely formats for the person at their
 //      company domain and ask the company's own mail server which exist.
 //      Free and unlimited, but Google/Microsoft-hosted domains accept
 //      everything, so the usual outcome is a ranked guess.
@@ -25,6 +28,7 @@
 // See docs/adr/0005-server-side-email-finder.md and 0006-email-lookup-queue.md.
 
 import { logger } from '../../lib/logger.js';
+import { findEmailViaLinkFinder } from './linkfinder.js';
 import { findEmailViaAnymailFinder } from './anymailfinder.js';
 import { generateEmailPatterns } from './patterns.js';
 import { resolveCompanyDomain } from './domain.js';
@@ -66,7 +70,26 @@ export async function findEmail(
 
   const profileUrl = normalizeLinkedInUrl(linkedinUrl);
 
-  // ─── Layer 1: Anymail Finder ───────────────────────────────────
+  // ─── Layer 1: LinkFinder ───────────────────────────────────────
+  const lf = await findEmailViaLinkFinder(profileUrl);
+
+  if (lf.ok && lf.email) {
+    logger.info(
+      `[EmailFinder] LinkFinder hit: ${lf.email} for ${firstName} ${lastName}`,
+    );
+    return {
+      ok: true,
+      email: lf.email,
+      source: 'linkfinder',
+      validation: 'provider',
+    };
+  }
+
+  logger.info(
+    `[EmailFinder] LinkFinder miss for ${firstName} ${lastName} (${lf.reason}) — trying Anymail Finder`,
+  );
+
+  // ─── Layer 2: Anymail Finder ───────────────────────────────────
   const amf = await findEmailViaAnymailFinder(profileUrl);
 
   if (amf.ok && amf.email) {
@@ -85,7 +108,7 @@ export async function findEmail(
     `[EmailFinder] Provider miss for ${firstName} ${lastName} (anymailfinder: ${amf.reason}) — trying patterns`,
   );
 
-  // ─── Layer 2: patterns + SMTP ──────────────────────────────────
+  // ─── Layer 3: patterns + SMTP ──────────────────────────────────
   const domain = await resolveCompanyDomain(companyName, companyWebsite);
   if (!domain) {
     return {
