@@ -15,6 +15,11 @@
  * 0 — no address.
  */
 const STRENGTH: Record<string, number> = {
+  // A key-authenticated API that returns a real business address from a
+  // LinkedIn URL. Ranks with the other confirmed-provider sources: it is not a
+  // pattern guess, so pressing "Find emails" again must not re-spend a lookup
+  // on a profile it already resolved.
+  linkfinder: 3,
   anymailfinder: 3,
   // The same provider, reached through its free web tool in the extension
   // rather than the metered API — it verifies the mailbox live before

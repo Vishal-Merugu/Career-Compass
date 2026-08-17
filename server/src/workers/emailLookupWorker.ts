@@ -18,6 +18,7 @@
 import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
 import { findEmail } from '../services/emailFinder/index.js';
+import { findEmailViaLinkFinder } from '../services/emailFinder/linkfinder.js';
 import {
   EMAIL_LOOKUP_EXTENSION_GRACE_MS as EXTENSION_GRACE_MS,
   claimLookups,
@@ -29,6 +30,25 @@ const SWEEP_INTERVAL_MS = 60 * 1000;
 
 /** Per tick, so a large batch does not monopolise the process. */
 const FALLBACK_BATCH_SIZE = 5;
+
+/**
+ * The immediate LinkFinder pass. Larger than the fallback batch because these
+ * calls run concurrently, not one after another — the endpoint takes ~40s each,
+ * so a serial drain of a 40-profile batch would run for half an hour.
+ */
+const LINKFINDER_BATCH_SIZE = 12;
+
+/**
+ * How many LinkFinder calls are in flight at once. The endpoint is slow but
+ * cheap to wait on (it is a remote request, not local work), so concurrency is
+ * what makes "run all in the backend" finish in a reasonable time. Kept modest
+ * so one user's batch cannot saturate the process against everyone else's.
+ */
+const LINKFINDER_CONCURRENCY = 6;
+
+function linkFinderEnabled(): boolean {
+  return Boolean((process.env.LINKFINDER_API_KEY || '').trim());
+}
 
 let timer: NodeJS.Timeout | null = null;
 let running = false;
@@ -97,6 +117,91 @@ async function runFallbackLookups(): Promise<void> {
   }
 }
 
+/**
+ * The immediate first pass: run every freshly-queued row through LinkFinder.
+ *
+ * This is what makes "press Find emails and the backend does the rest" true.
+ * Unlike `runFallbackLookups` it waits for no grace period and needs no
+ * `allowServerFallback` opt-in — LinkFinder returns a real address, not a
+ * guess, so there is nothing to protect the row from by making it wait for a
+ * browser first.
+ *
+ * A miss is a **one-way handoff to the extension**. `claimLookups(...,
+ * 'linkfinder')` takes only `attempts: 0` rows, and reporting a miss increments
+ * `attempts`, so a row LinkFinder could not resolve drops out of this pass for
+ * good and is left `queued` for a real browser to solve — automatically, with
+ * no button. LinkFinder never spends a second 40s call on the same person.
+ */
+async function runLinkFinderPass(): Promise<void> {
+  // No key means every call returns instantly as `disabled` — which would count
+  // as a miss and shove untouched rows to the browser before the extension even
+  // had its normal turn. Skip the pass entirely instead.
+  if (!linkFinderEnabled()) return;
+
+  const waiting = await prisma.emailLookup.groupBy({
+    by: ['userId'],
+    where: { status: 'queued', attempts: 0 },
+    _count: { userId: true },
+  });
+
+  for (const group of waiting) {
+    const items = await claimLookups(
+      group.userId,
+      LINKFINDER_BATCH_SIZE,
+      'linkfinder',
+    );
+    if (items.length === 0) continue;
+
+    // Bounded concurrency: workers pull from a shared cursor so no single slow
+    // call (they are all ~40s) blocks the others behind it.
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      while (cursor < items.length) {
+        const item = items[cursor++];
+        try {
+          const result = await findEmailViaLinkFinder(item.linkedinUrl);
+
+          if (result.ok && result.email) {
+            logger.info(
+              `[EmailLookupWorker] LinkFinder resolved ${item.firstName} ${item.lastName}`,
+            );
+            await completeLookup(group.userId, item.lookupId, {
+              ok: true,
+              email: result.email,
+              source: 'linkfinder',
+              validation: 'provider',
+            });
+          } else {
+            logger.info(
+              `[EmailLookupWorker] LinkFinder missed ${item.firstName} ${item.lastName} (${result.reason}) — leaving for the browser`,
+            );
+            await completeLookup(group.userId, item.lookupId, {
+              ok: false,
+              error: `LinkFinder: ${result.reason ?? 'no email'}`,
+            });
+          }
+        } catch (err) {
+          logger.error(
+            err,
+            `[EmailLookupWorker] LinkFinder lookup ${item.lookupId} threw; leaving for the browser`,
+          );
+          await completeLookup(group.userId, item.lookupId, {
+            ok: false,
+            error: err instanceof Error ? err.message : 'LinkFinder failed',
+          });
+        }
+      }
+    };
+
+    await Promise.all(
+      Array.from(
+        { length: Math.min(LINKFINDER_CONCURRENCY, items.length) },
+        worker,
+      ),
+    );
+  }
+}
+
 async function tick(): Promise<void> {
   // Overlapping ticks would double-claim: a fallback batch can outlast the
   // interval easily, since each SMTP probe carries its own timeout.
@@ -105,6 +210,7 @@ async function tick(): Promise<void> {
 
   try {
     await sweepStaleLookups();
+    await runLinkFinderPass();
     await runFallbackLookups();
   } catch (err) {
     logger.error(err, '[EmailLookupWorker] Tick failed');

@@ -219,7 +219,7 @@ export async function enqueueLookups(
 export async function claimLookups(
   userId: string,
   take: number,
-  claimedBy: 'extension' | 'server',
+  claimedBy: 'extension' | 'server' | 'linkfinder',
   /**
    * Only claim rows requested before this instant. Used by the server fallback
    * to honour the extension's grace period per row — the caller's own
@@ -232,10 +232,17 @@ export async function claimLookups(
     where: {
       userId,
       status: 'queued',
-      attempts: { lt: MAX_ATTEMPTS },
-      // The server may only take rows that opted in. Without this the fallback
+      // LinkFinder is the immediate first pass over a fresh batch: a real API,
+      // no grace wait, no `allowServerFallback` gate. It takes only untouched
+      // rows (`attempts: 0`) so that a row it already missed drops out of its
+      // net and falls through to the extension — that one-way handoff to the
+      // browser is what `attempts` buys without a new column. Everyone else
+      // works any row under the attempt ceiling.
+      attempts: claimedBy === 'linkfinder' ? 0 : { lt: MAX_ATTEMPTS },
+      // The server fallback may only take rows that opted in. Without this it
       // races a working extension and fills rows with guesses it could have
-      // resolved properly a few minutes later.
+      // resolved properly a few minutes later. LinkFinder is exempt: it returns
+      // a real address, not a guess, so there is nothing to protect the row from.
       ...(claimedBy === 'server' ? { allowServerFallback: true } : {}),
       ...(requestedBefore ? { requestedAt: { lt: requestedBefore } } : {}),
     },
