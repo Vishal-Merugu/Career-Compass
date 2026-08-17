@@ -29,6 +29,7 @@ import type { Profile, ProfileDetailResponse } from '../api/types';
 
 const SOURCE_LABEL: Record<string, { label: string; color: string }> = {
   anymailfinder: { label: 'verified', color: 'teal' },
+  anymailfinder_web: { label: 'verified', color: 'teal' },
   smtp_verified: { label: 'verified', color: 'teal' },
   mailmeteor: { label: 'from provider', color: 'blue' },
   pattern_guess: { label: 'guess', color: 'yellow' },

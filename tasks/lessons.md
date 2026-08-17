@@ -891,3 +891,36 @@ read them: `lib/companyName.ts` (`ORG_SEGMENTS`), `parseSearchUrl`, the New run
 form's validation and the Runs list's label. Do not assume LinkedIn's other URL
 shapes are unusable without a probe first — `server/linkedin-cookies.json` plus
 a scratch `resolveCompany` + `searchPeople` call answers it in two requests.
+
+### A batch of duplicates is not progress, and a run with nothing to do never re-checks itself
+
+Job c1ee09f6 (framatome, 50 requested) sat at "reading profiles" for ten hours
+with all 449 URLs scraped and every one judged — 13 qualified, 436 rejected,
+nothing queued, nothing errored. Found 2026-08-13 over SSH.
+
+`collectProfileUrls` counted every person the search returned, using `upsert`,
+which cannot tell an insert from a row that already existed. Batch 14 returned
+14 people the job had already collected, reported `collected: 14`, and so
+missed the `collected === 0 && exhausted` branch that completes a run. It set
+the job to `scraping` instead — with zero new URLs. Nothing was left to finish,
+and since `checkJobStopCondition` is only ever called by something finishing,
+nobody ever asked whether the run was over.
+
+The logs also showed batch 14 being collected **twice** in four seconds: the
+last two profiles both finished, both read `currentBatchNumber: 13`, and both
+wrote 14.
+
+**Why:** "how many did we collect" and "how many did the search return" are the
+same number right up until a company runs out of people, which is precisely the
+moment the answer decides whether the run is finished.
+
+**Apply:** `createMany({ skipDuplicates: true })` returns the number of rows
+actually inserted — count that, and keep `seen` separately for the log line.
+The batch loop pages on past duplicates until it has `targetCount` **new**
+people, bounded by `MAX_PAGES_PER_BATCH`. `collected === 0` completes the run
+whether or not LinkedIn called itself exhausted. The next batch is _claimed_
+with an `updateMany` guarded on `currentBatchNumber`, so a second caller
+updates no rows and stops. And `sweepStalledJobs` in the timeout sweeper
+re-checks any `scraping` run that has had no movable work for ten minutes —
+the specific cause is fixed, but a run whose last completion event goes missing
+must not be able to hang silently again.
