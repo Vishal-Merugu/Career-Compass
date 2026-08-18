@@ -536,6 +536,39 @@ describe('claimLookups', () => {
     expect(extItems.map((i) => i.profileId)).toEqual([optedOut.id]);
   });
 
+  it('reserves fresh rows for LinkFinder — the extension takes only misses', async () => {
+    vi.stubEnv('LINKFINDER_API_KEY', 'lf_sk_test');
+    try {
+      const fresh = seedProfile();
+      const missed = seedProfile();
+      await enqueueLookups(USER, [fresh.id, missed.id]);
+
+      // Mark one row as already tried-and-missed by LinkFinder.
+      const missedRow = store.lookups.find((l) => l.profileId === missed.id)!;
+      missedRow.attempts = 1;
+
+      // With LinkFinder configured, the browser is confined to leftovers so the
+      // server pass genuinely goes first on a fresh batch.
+      const extItems = await claimLookups(USER, 5, 'extension');
+      expect(extItems.map((i) => i.profileId)).toEqual([missed.id]);
+
+      // LinkFinder itself takes only the untouched row.
+      const lfItems = await claimLookups(USER, 5, 'linkfinder');
+      expect(lfItems.map((i) => i.profileId)).toEqual([fresh.id]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('lets the extension claim fresh rows when LinkFinder is not configured', async () => {
+    // No key: the old behaviour stands, or a fresh batch would wait forever.
+    const fresh = seedProfile();
+    await enqueueLookups(USER, [fresh.id]);
+
+    const extItems = await claimLookups(USER, 5, 'extension');
+    expect(extItems.map((i) => i.profileId)).toEqual([fresh.id]);
+  });
+
   it('honours a requestedBefore cutoff, so fresh rows are not swept early', async () => {
     const old = seedProfile();
     const fresh = seedProfile();

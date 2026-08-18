@@ -57,6 +57,15 @@ export function resetLinkFinderLatch(): void {
   latchReason = null;
 }
 
+/**
+ * Whether the layer is configured. Exported so the queue can reserve fresh rows
+ * for LinkFinder and the worker can skip the pass — both must agree on the same
+ * answer, so it lives with the key it reads.
+ */
+export function linkFinderEnabled(): boolean {
+  return Boolean((process.env.LINKFINDER_API_KEY || '').trim());
+}
+
 function apiKey(): string | null {
   const key = (process.env.LINKFINDER_API_KEY || '').trim();
   return key || null;

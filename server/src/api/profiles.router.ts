@@ -12,6 +12,7 @@ import {
   getLookupStats,
   type LookupProgress,
 } from '../services/emailLookup.service.js';
+import { kickLinkFinderPass } from '../workers/emailLookupWorker.js';
 
 const router = Router();
 
@@ -242,6 +243,14 @@ router.post('/profiles/find-emails', requireAuth, async (req, res, next) => {
       parsed.data.force,
       parsed.data.serverFallback,
     );
+
+    // Begin the server-side LinkFinder pass now, not on the worker's next tick.
+    // The dashboard nudges the browser to drain the instant this returns, so a
+    // tick's delay here is the whole window in which the extension could claim
+    // the batch first. Fire-and-forget: the drain runs in the background and
+    // this request still answers 202 immediately.
+    kickLinkFinderPass(req.user!.id);
+
     const stats = await getLookupStats(req.user!.id);
 
     res.status(202).json({ ok: true, ...result, stats });

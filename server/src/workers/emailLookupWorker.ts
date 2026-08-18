@@ -18,7 +18,10 @@
 import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
 import { findEmail } from '../services/emailFinder/index.js';
-import { findEmailViaLinkFinder } from '../services/emailFinder/linkfinder.js';
+import {
+  findEmailViaLinkFinder,
+  linkFinderEnabled,
+} from '../services/emailFinder/linkfinder.js';
 import {
   EMAIL_LOOKUP_EXTENSION_GRACE_MS as EXTENSION_GRACE_MS,
   claimLookups,
@@ -45,10 +48,6 @@ const LINKFINDER_BATCH_SIZE = 12;
  * so one user's batch cannot saturate the process against everyone else's.
  */
 const LINKFINDER_CONCURRENCY = 6;
-
-function linkFinderEnabled(): boolean {
-  return Boolean((process.env.LINKFINDER_API_KEY || '').trim());
-}
 
 let timer: NodeJS.Timeout | null = null;
 let running = false;
@@ -118,20 +117,102 @@ async function runFallbackLookups(): Promise<void> {
 }
 
 /**
- * The immediate first pass: run every freshly-queued row through LinkFinder.
- *
- * This is what makes "press Find emails and the backend does the rest" true.
- * Unlike `runFallbackLookups` it waits for no grace period and needs no
- * `allowServerFallback` opt-in — LinkFinder returns a real address, not a
- * guess, so there is nothing to protect the row from by making it wait for a
- * browser first.
- *
- * A miss is a **one-way handoff to the extension**. `claimLookups(...,
- * 'linkfinder')` takes only `attempts: 0` rows, and reporting a miss increments
- * `attempts`, so a row LinkFinder could not resolve drops out of this pass for
- * good and is left `queued` for a real browser to solve — automatically, with
- * no button. LinkFinder never spends a second 40s call on the same person.
+ * Users kicked mid-tick or draining right now. Keeps a button press and the
+ * periodic tick from both draining the same user at once — the lease already
+ * makes that safe, but skipping the duplicate work is cheaper than racing it.
  */
+const draining = new Set<string>();
+
+/**
+ * Run every one of a user's fresh rows through LinkFinder, now.
+ *
+ * Loops until no untouched (`attempts: 0`) row is left: a hit marks the row
+ * `done`, a miss bumps it to `attempts: 1` and leaves it `queued` for the
+ * browser, and either way it drops out of the `linkfinder` claim — so the loop
+ * terminates without a separate cursor and drains a batch larger than one claim.
+ */
+async function drainLinkFinderForUser(userId: string): Promise<void> {
+  if (draining.has(userId)) return;
+  draining.add(userId);
+
+  try {
+    for (;;) {
+      const items = await claimLookups(
+        userId,
+        LINKFINDER_BATCH_SIZE,
+        'linkfinder',
+      );
+      if (items.length === 0) break;
+
+      // Bounded concurrency: workers pull from a shared cursor so no single slow
+      // call (they are all ~40s) blocks the others behind it.
+      let cursor = 0;
+      const worker = async (): Promise<void> => {
+        while (cursor < items.length) {
+          const item = items[cursor++];
+          try {
+            const result = await findEmailViaLinkFinder(item.linkedinUrl);
+
+            if (result.ok && result.email) {
+              logger.info(
+                `[EmailLookupWorker] LinkFinder resolved ${item.firstName} ${item.lastName}`,
+              );
+              await completeLookup(userId, item.lookupId, {
+                ok: true,
+                email: result.email,
+                source: 'linkfinder',
+                validation: 'provider',
+              });
+            } else {
+              logger.info(
+                `[EmailLookupWorker] LinkFinder missed ${item.firstName} ${item.lastName} (${result.reason}) — leaving for the browser`,
+              );
+              await completeLookup(userId, item.lookupId, {
+                ok: false,
+                error: `LinkFinder: ${result.reason ?? 'no email'}`,
+              });
+            }
+          } catch (err) {
+            logger.error(
+              err,
+              `[EmailLookupWorker] LinkFinder lookup ${item.lookupId} threw; leaving for the browser`,
+            );
+            await completeLookup(userId, item.lookupId, {
+              ok: false,
+              error: err instanceof Error ? err.message : 'LinkFinder failed',
+            });
+          }
+        }
+      };
+
+      await Promise.all(
+        Array.from(
+          { length: Math.min(LINKFINDER_CONCURRENCY, items.length) },
+          worker,
+        ),
+      );
+    }
+  } finally {
+    draining.delete(userId);
+  }
+}
+
+/**
+ * Start a user's LinkFinder pass immediately, off the tick.
+ *
+ * Called from the enqueue route so pressing "Find emails" begins the server
+ * pass at once, instead of waiting up to a full `SWEEP_INTERVAL_MS` for the
+ * next tick — the window in which the browser, nudged the instant the button is
+ * pressed, would otherwise have claimed the whole batch first. Fire-and-forget:
+ * the request returns 202 and the drain runs in the background.
+ */
+export function kickLinkFinderPass(userId: string): void {
+  if (!linkFinderEnabled()) return;
+  void drainLinkFinderForUser(userId).catch((err) =>
+    logger.error(err, '[EmailLookupWorker] Kicked LinkFinder pass failed'),
+  );
+}
+
 async function runLinkFinderPass(): Promise<void> {
   // No key means every call returns instantly as `disabled` — which would count
   // as a miss and shove untouched rows to the browser before the extension even
@@ -145,60 +226,7 @@ async function runLinkFinderPass(): Promise<void> {
   });
 
   for (const group of waiting) {
-    const items = await claimLookups(
-      group.userId,
-      LINKFINDER_BATCH_SIZE,
-      'linkfinder',
-    );
-    if (items.length === 0) continue;
-
-    // Bounded concurrency: workers pull from a shared cursor so no single slow
-    // call (they are all ~40s) blocks the others behind it.
-    let cursor = 0;
-    const worker = async (): Promise<void> => {
-      while (cursor < items.length) {
-        const item = items[cursor++];
-        try {
-          const result = await findEmailViaLinkFinder(item.linkedinUrl);
-
-          if (result.ok && result.email) {
-            logger.info(
-              `[EmailLookupWorker] LinkFinder resolved ${item.firstName} ${item.lastName}`,
-            );
-            await completeLookup(group.userId, item.lookupId, {
-              ok: true,
-              email: result.email,
-              source: 'linkfinder',
-              validation: 'provider',
-            });
-          } else {
-            logger.info(
-              `[EmailLookupWorker] LinkFinder missed ${item.firstName} ${item.lastName} (${result.reason}) — leaving for the browser`,
-            );
-            await completeLookup(group.userId, item.lookupId, {
-              ok: false,
-              error: `LinkFinder: ${result.reason ?? 'no email'}`,
-            });
-          }
-        } catch (err) {
-          logger.error(
-            err,
-            `[EmailLookupWorker] LinkFinder lookup ${item.lookupId} threw; leaving for the browser`,
-          );
-          await completeLookup(group.userId, item.lookupId, {
-            ok: false,
-            error: err instanceof Error ? err.message : 'LinkFinder failed',
-          });
-        }
-      }
-    };
-
-    await Promise.all(
-      Array.from(
-        { length: Math.min(LINKFINDER_CONCURRENCY, items.length) },
-        worker,
-      ),
-    );
+    await drainLinkFinderForUser(group.userId);
   }
 }
 

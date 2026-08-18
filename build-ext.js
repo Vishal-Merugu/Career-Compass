@@ -16,18 +16,20 @@ if (fs.existsSync(envProdPath)) {
 console.log(`Building extension with Backend URL: ${backendUrl}`);
 
 const extDir = path.join(__dirname, 'extension');
-const tempExtDir = path.join(__dirname, 'dist-extension');
+// An unpacked folder, not a zip: load it straight into Chrome via
+// chrome://extensions → Load unpacked. Rebuild overwrites it in place.
+const outDir = path.join(__dirname, 'ext-prod');
 
-// Clean up previous temp dir
-if (fs.existsSync(tempExtDir)) {
-  fs.rmSync(tempExtDir, { recursive: true, force: true });
+// Clean up the previous build
+if (fs.existsSync(outDir)) {
+  fs.rmSync(outDir, { recursive: true, force: true });
 }
 
-// Copy extension to temp folder
-execSync(`cp -R ${extDir} ${tempExtDir}`);
+// Copy the extension source into the output folder
+execSync(`cp -R ${extDir} ${outDir}`);
 
 // Replace backendUrl in storage.js
-const storageFile = path.join(tempExtDir, 'services', 'storage.js');
+const storageFile = path.join(outDir, 'services', 'storage.js');
 let storageContent = fs.readFileSync(storageFile, 'utf-8');
 storageContent = storageContent.replace(
   /backendUrl:\s*'http:\/\/localhost:3000'/g,
@@ -39,7 +41,7 @@ fs.writeFileSync(storageFile, storageContent);
 // time — a match pattern cannot be read from config at runtime. The checked-in
 // manifest lists the dev origins; a distributable has to carry the deployed one
 // or the dashboard sees no extension on the machine it actually runs on.
-const manifestFile = path.join(tempExtDir, 'manifest.json');
+const manifestFile = path.join(outDir, 'manifest.json');
 const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf-8'));
 const bridge = manifest.content_scripts?.find((cs) =>
   cs.js?.includes('content-scripts/dashboardBridge.js'),
@@ -57,14 +59,14 @@ if (bridge) {
   console.log(`Dashboard bridge matches: ${bridge.matches.join(', ')}`);
 }
 
-// Zip the temp folder
-console.log('Zipping extension...');
+// Drop any stray macOS metadata, then leave the folder in place for Chrome.
 try {
-  execSync(`cd ${tempExtDir} && zip -r ../extension.zip . -x '*.DS_Store*'`);
-  console.log('Successfully created extension.zip!');
-} catch (err) {
-  console.error('Error zipping extension:', err.message);
+  execSync(`find ${outDir} -name '.DS_Store' -delete`);
+} catch {
+  // No .DS_Store to remove — nothing to do.
 }
 
-// Clean up temp dir
-fs.rmSync(tempExtDir, { recursive: true, force: true });
+console.log(`Successfully built unpacked extension at: ${outDir}`);
+console.log(
+  'Load it in Chrome: chrome://extensions → Developer mode → Load unpacked → select the ext-prod folder.',
+);
