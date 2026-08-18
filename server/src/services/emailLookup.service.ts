@@ -20,6 +20,7 @@ import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
 import { NotFoundError, ValidationError } from '../errors/AppError.js';
 import { isEmailUpgrade, isVerifiedSource } from './emailFinder/confidence.js';
+import { linkFinderEnabled } from './emailFinder/linkfinder.js';
 
 /** Statuses a row moves through. `dispatched` means leased to a client. */
 export type LookupStatus = 'queued' | 'dispatched' | 'done' | 'failed';
@@ -238,7 +239,22 @@ export async function claimLookups(
       // net and falls through to the extension — that one-way handoff to the
       // browser is what `attempts` buys without a new column. Everyone else
       // works any row under the attempt ceiling.
-      attempts: claimedBy === 'linkfinder' ? 0 : { lt: MAX_ATTEMPTS },
+      // Who may take which rows, by how many times a row has been tried:
+      //   linkfinder — only untouched rows (`attempts: 0`). A row it misses
+      //     becomes `attempts: 1` and drops out of its net for good.
+      //   extension, while LinkFinder is enabled — only rows LinkFinder has
+      //     already tried and missed (`attempts >= 1`). This is what makes the
+      //     server pass genuinely *first*: the browser is nudged to drain the
+      //     instant the button is pressed, so without this gate it would race
+      //     in and claim fresh rows before LinkFinder's tick ever ran.
+      //   everyone else (extension with no key, server fallback) — any row
+      //     under the attempt ceiling, exactly as before.
+      attempts:
+        claimedBy === 'linkfinder'
+          ? 0
+          : claimedBy === 'extension' && linkFinderEnabled()
+            ? { gte: 1, lt: MAX_ATTEMPTS }
+            : { lt: MAX_ATTEMPTS },
       // The server fallback may only take rows that opted in. Without this it
       // races a working extension and fills rows with guesses it could have
       // resolved properly a few minutes later. LinkFinder is exempt: it returns

@@ -9,10 +9,15 @@ import type { SmtpVerdict } from './smtpVerify.js';
 // browser and never returned an address, and that lookup now runs in the
 // extension instead. See services/emailFinder/index.ts.
 
+const linkfinderMock = vi.hoisted(() => vi.fn());
 const anymailMock = vi.hoisted(() => vi.fn());
 const smtpMock = vi.hoisted(() => vi.fn());
 const domainMock = vi.hoisted(() => vi.fn());
 
+vi.mock('./linkfinder.js', () => ({
+  findEmailViaLinkFinder: linkfinderMock,
+  linkFinderEnabled: () => true,
+}));
 vi.mock('./anymailfinder.js', () => ({
   findEmailViaAnymailFinder: anymailMock,
 }));
@@ -32,12 +37,38 @@ const verdict = (v: SmtpVerdict) => ({ verdict: v });
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Layer 1 misses by default; the cases below drive it explicitly where it
+  // matters. Every existing case here predates LinkFinder and expects the flow
+  // to reach Anymail Finder / patterns, so a miss keeps them meaningful.
+  linkfinderMock.mockResolvedValue({ ok: false, reason: 'not_found' });
   anymailMock.mockResolvedValue({ ok: false, reason: 'disabled' });
   domainMock.mockResolvedValue('acme.com');
 });
 
 describe('findEmail layering', () => {
-  it('prefers Anymail Finder above every other layer', async () => {
+  it('prefers LinkFinder above every other layer', async () => {
+    linkfinderMock.mockResolvedValue({
+      ok: true,
+      email: 'jane@acme.com',
+    });
+    anymailMock.mockResolvedValue({
+      ok: true,
+      email: 'other@acme.com',
+      validation: 'valid',
+    });
+
+    const result = await findEmail(CONTACT);
+
+    expect(result).toMatchObject({
+      ok: true,
+      email: 'jane@acme.com',
+      source: 'linkfinder',
+    });
+    // A LinkFinder hit short-circuits — the lower layers are never consulted.
+    expect(anymailMock).not.toHaveBeenCalled();
+  });
+
+  it('falls through to Anymail Finder when LinkFinder misses', async () => {
     anymailMock.mockResolvedValue({
       ok: true,
       email: 'jane@acme.com',
