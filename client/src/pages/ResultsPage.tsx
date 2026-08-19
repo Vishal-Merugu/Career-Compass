@@ -428,8 +428,7 @@ export function ResultsPage() {
   // a new one (new batchId). Unlike before, an in-flight batch can be dismissed
   // too — the cross always closes the banner; the work keeps running server-side
   // and the counts are still correct when the next batch reopens it.
-  const panelDismissed =
-    dismissedBatch === (lookupStats?.batchId ?? NO_BATCH);
+  const panelDismissed = dismissedBatch === (lookupStats?.batchId ?? NO_BATCH);
 
   // Every pending row is waiting on a browser that is not there. The queue is
   // intact and resumes on its own, but nothing is running — so the panel says
