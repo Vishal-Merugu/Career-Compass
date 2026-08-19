@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Alert,
   Avatar,
@@ -424,9 +424,11 @@ export function ResultsPage() {
 
   // Only a finished batch can be dismissed, so a dismissal cannot hide work in
   // flight — and the moment a new batch is queued, `batchId` no longer matches.
-  const panelDismissed =
-    (lookupStats?.pending ?? 0) === 0 &&
-    dismissedBatch === (lookupStats?.batchId ?? NO_BATCH);
+  // A dismissed batch stays hidden until the next press of "Find emails" queues
+  // a new one (new batchId). Unlike before, an in-flight batch can be dismissed
+  // too — the cross always closes the banner; the work keeps running server-side
+  // and the counts are still correct when the next batch reopens it.
+  const panelDismissed = dismissedBatch === (lookupStats?.batchId ?? NO_BATCH);
 
   // Every pending row is waiting on a browser that is not there. The queue is
   // intact and resumes on its own, but nothing is running — so the panel says
@@ -439,15 +441,16 @@ export function ResultsPage() {
   // buries the lede when the extension is missing entirely.
   const { state: extension, drainNow } = useExtensionBridge();
 
-  // A backlog plus a live extension is a drain that has not happened yet, and
-  // the alarm that would eventually do it is a minute away — long enough that
-  // a user watching the panel concludes it is stuck. Poking it is free and
-  // idempotent: the drainer refuses a second concurrent run, and the work is
-  // claimed under the same server-side lease either way, so nothing here can
-  // duplicate a lookup or strand one.
-  useEffect(() => {
-    if (extension === 'ready' && pending > 0) void drainNow();
-  }, [extension, pending, drainNow]);
+  // The extension no longer starts on its own. Pressing "Find emails" runs the
+  // server (LinkFinder) pass; whatever it cannot resolve is left for the user
+  // to hand to the browser deliberately, with the Start button in the progress
+  // panel. Auto-draining here is what made the page "jump to a Chrome tab" the
+  // moment a lookup was queued.
+  const [draining, setDraining] = useState(false);
+  const startExtensionDrain = () => {
+    setDraining(true);
+    void Promise.resolve(drainNow()).finally(() => setDraining(false));
+  };
 
   const toggle = (id: string) =>
     setSelected((prev) => {
@@ -694,7 +697,7 @@ export function ResultsPage() {
           color={stalled ? 'yellow' : pending > 0 ? 'brand' : 'teal'}
           variant="light"
           radius="lg"
-          withCloseButton={pending === 0}
+          withCloseButton
           closeButtonLabel="Dismiss"
           onClose={() => dismissBatch(lookupStats.batchId)}
           icon={
@@ -714,7 +717,7 @@ export function ResultsPage() {
                   ? `Paused — the extension here is not signed in`
                   : `Paused — no extension in this browser`
               : pending > 0
-                ? `Finding emails — ${lookupStats.done + lookupStats.failed} of ${lookupStats.total} done`
+                ? `${lookupStats.done} found · ${pending} left`
                 : `Email lookups finished — ${lookupStats.done} found, ${lookupStats.failed} failed`
           }
         >
@@ -743,9 +746,28 @@ export function ResultsPage() {
                       : extension === 'unlinked'
                         ? 'The extension is installed here but not signed in, so it cannot claim work. Open it from the toolbar and log in — these resume by themselves after that.'
                         : 'No extension answered in this browser. These need Chrome with the CareerCompass extension installed and signed in — that is the only place the free provider lookup works. They resume by themselves when it is there; nothing was lost.'
-                    : 'Keep Chrome open with the extension installed — it does these in a real browser, which is the only place the free provider lookup works. Progress is saved, so you can leave this tab.'}
+                    : 'The server is finding what it can with LinkFinder. Anything it cannot resolve waits here — press "Find in your browser" to hand those to the extension. Progress is saved, so you can leave this tab.'}
                 </Text>
                 <Group gap="sm" wrap="wrap">
+                  {waitingProfileIds.length > 0 && (
+                    <Button
+                      size="xs"
+                      color="brand"
+                      leftSection={<IconMailSearch size={14} />}
+                      loading={draining}
+                      disabled={extension !== 'ready'}
+                      onClick={startExtensionDrain}
+                    >
+                      {/* The leftovers the server pass could not resolve. The
+                          extension only runs when this is pressed — that is the
+                          "if click Start, else wait" the panel promises. */}
+                      {extension === 'ready'
+                        ? `Find ${waitingProfileIds.length} in your browser`
+                        : extension === 'unlinked'
+                          ? 'Sign in to the extension to continue'
+                          : 'Open Chrome with the extension installed'}
+                    </Button>
+                  )}
                   {waitingProfileIds.length > 0 && (
                     <Tooltip
                       label="Generates the likely address from the name and company domain and verifies it over SMTP. Free and needs no browser, but usually returns an unverified guess — which is why it is not the default."

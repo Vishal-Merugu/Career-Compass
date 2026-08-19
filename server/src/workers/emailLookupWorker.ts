@@ -34,20 +34,17 @@ const SWEEP_INTERVAL_MS = 60 * 1000;
 /** Per tick, so a large batch does not monopolise the process. */
 const FALLBACK_BATCH_SIZE = 5;
 
-/**
- * The immediate LinkFinder pass. Larger than the fallback batch because these
- * calls run concurrently, not one after another — the endpoint takes ~40s each,
- * so a serial drain of a 40-profile batch would run for half an hour.
- */
+/** How many rows a single LinkFinder claim leases at once. */
 const LINKFINDER_BATCH_SIZE = 12;
 
 /**
- * How many LinkFinder calls are in flight at once. The endpoint is slow but
- * cheap to wait on (it is a remote request, not local work), so concurrency is
- * what makes "run all in the backend" finish in a reasonable time. Kept modest
- * so one user's batch cannot saturate the process against everyone else's.
+ * How many LinkFinder calls are in flight at once. The official API asks for
+ * ~1 request/second per key, which the provider enforces with a process-wide
+ * pacer — so extra concurrency here just queues on that pacer. A small pool
+ * keeps the free-worker fallback (no pacer) from bursting while still letting a
+ * slow call overlap the next one's pacing wait.
  */
-const LINKFINDER_CONCURRENCY = 6;
+const LINKFINDER_CONCURRENCY = 3;
 
 let timer: NodeJS.Timeout | null = null;
 let running = false;

@@ -56,10 +56,11 @@ services:
       # fall through to patterns + SMTP. 100 free credits on signup; billed
       # per valid email found. https://anymailfinder.com/email-finder-api
       ANYMAILFINDER_API_KEY: ${ANYMAILFINDER_API_KEY}
-      # Tried before Anymail Finder: a key-authenticated API that returns a real
-      # business address from a LinkedIn URL, no browser. Unset, the layer is
-      # skipped. Secret — lives in ~/cc-config/.env only. Slow (~40s/lookup).
+      # Tried before Anymail Finder: LinkFinder, a real business address from a
+      # LinkedIn URL, no browser. Official API (Bearer) first, free worker
+      # (x-api-secret, 20 req/hour) as fallback. Both secret — ~/cc-config/.env.
       LINKFINDER_API_KEY: ${LINKFINDER_API_KEY}
+      LINKFINDER_FREE_SECRET: ${LINKFINDER_FREE_SECRET}
       # What `llmProvider: 'server'` — the default for new accounts — resolves
       # to. `host.docker.internal` pairs with the `extra_hosts` entry below and
       # is how this container reaches an Ollama running on the Docker host;
