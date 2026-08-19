@@ -1,14 +1,32 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { findEmailViaLinkFinder, resetLinkFinderLatch } from './linkfinder.js';
+import {
+  findEmailViaLinkFinder,
+  linkFinderEnabled,
+  resetLinkFinderLatch,
+} from './linkfinder.js';
 
-const URL = 'https://www.linkedin.com/in/vinzent-ruf-7a26932ba/';
+const URL = 'https://www.linkedin.com/in/tim-klein-31437721b/';
+const OFFICIAL = 'https://api.linkfinderai.com';
 
-function mockFetch(status: number, body: unknown) {
-  const fn = vi.fn().mockResolvedValue({
-    ok: status >= 200 && status < 300,
-    status,
-    json: async () => body,
-    text: async () => JSON.stringify(body),
+interface Reply {
+  status: number;
+  body: unknown;
+}
+
+/**
+ * Route fetch by endpoint so a test can script the official API and the free
+ * worker independently. Returns the mock for header/body assertions.
+ */
+function mockFetch(routes: { official?: Reply; free?: Reply }) {
+  const fn = vi.fn((url: string, _init?: RequestInit) => {
+    const reply = url === OFFICIAL ? routes.official : routes.free;
+    if (!reply) throw new Error(`unexpected fetch to ${url}`);
+    return Promise.resolve({
+      ok: reply.status >= 200 && reply.status < 300,
+      status: reply.status,
+      json: async () => reply.body,
+      text: async () => JSON.stringify(reply.body),
+    });
   });
   vi.stubGlobal('fetch', fn);
   return fn;
@@ -16,7 +34,8 @@ function mockFetch(status: number, body: unknown) {
 
 beforeEach(() => {
   resetLinkFinderLatch();
-  vi.stubEnv('LINKFINDER_API_KEY', 'lf_sk_test');
+  vi.stubEnv('LINKFINDER_API_KEY', 'official-key');
+  vi.stubEnv('LINKFINDER_FREE_SECRET', 'lf_sk_free');
 });
 
 afterEach(() => {
@@ -24,75 +43,125 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe('findEmailViaLinkFinder', () => {
-  it('is skipped entirely when no key is configured', async () => {
+describe('linkFinderEnabled', () => {
+  it('is true when either key is set, false when neither is', () => {
+    expect(linkFinderEnabled()).toBe(true);
     vi.stubEnv('LINKFINDER_API_KEY', '');
-    const fetchMock = mockFetch(200, {});
-
-    const result = await findEmailViaLinkFinder(URL);
-
-    expect(result).toMatchObject({ ok: false, reason: 'disabled' });
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(linkFinderEnabled()).toBe(true); // free secret still set
+    vi.stubEnv('LINKFINDER_FREE_SECRET', '');
+    expect(linkFinderEnabled()).toBe(false);
   });
+});
 
-  it('sends the secret as x-api-secret with the business_email_finder body', async () => {
-    const fetchMock = mockFetch(200, { email: 'vinzent.ruf@hydrogenious.net' });
-
-    await findEmailViaLinkFinder(URL);
-
-    const [, init] = fetchMock.mock.calls[0];
-    const headers = init.headers as Record<string, string>;
-    expect(headers['x-api-secret']).toBe('lf_sk_test');
-    expect(JSON.parse(init.body as string)).toEqual({
-      type: 'business_email_finder',
-      linkedin_url: URL,
+describe('findEmailViaLinkFinder', () => {
+  it('returns the official result and never calls the free worker on a hit', async () => {
+    const fetchMock = mockFetch({
+      official: {
+        status: 200,
+        body: { status: 'success', result: 'tim@power-service.com' },
+      },
     });
-  });
-
-  it('returns the email on a hit', async () => {
-    mockFetch(200, { email: 'vinzent.ruf@hydrogenious.net' });
 
     const result = await findEmailViaLinkFinder(URL);
 
-    expect(result).toEqual({ ok: true, email: 'vinzent.ruf@hydrogenious.net' });
-  });
-
-  it('reports not_found when the response carries no email', async () => {
-    mockFetch(200, {});
-
-    const result = await findEmailViaLinkFinder(URL);
-
-    expect(result).toMatchObject({ ok: false, reason: 'not_found' });
-  });
-
-  it('reports not_found when email is null', async () => {
-    mockFetch(200, { email: null });
-
-    const result = await findEmailViaLinkFinder(URL);
-
-    expect(result).toMatchObject({ ok: false, reason: 'not_found' });
-  });
-
-  it('latches off after the secret is rejected', async () => {
-    const fetchMock = mockFetch(401, { error: 'unauthorized' });
-
-    const first = await findEmailViaLinkFinder(URL);
-    expect(first).toMatchObject({ ok: false, reason: 'bad_key' });
-
-    // A second call must not hit the network again — the latch answers it.
-    const second = await findEmailViaLinkFinder(URL);
-    expect(second).toMatchObject({ ok: false, reason: 'disabled' });
+    expect(result).toMatchObject({
+      ok: true,
+      email: 'tim@power-service.com',
+      via: 'official',
+    });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('surfaces an unexpected HTTP status as an error, without latching', async () => {
-    const fetchMock = mockFetch(500, 'boom');
+  it('sends a Bearer token and the linkedin_profile_to_email body to the official API', async () => {
+    const fetchMock = mockFetch({
+      official: { status: 200, body: { status: 'success', result: 'a@b.com' } },
+    });
+
+    await findEmailViaLinkFinder(URL);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(OFFICIAL);
+    const headers = init!.headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer official-key');
+    expect(JSON.parse(init!.body as string)).toEqual({
+      type: 'linkedin_profile_to_email',
+      input_data: URL,
+    });
+  });
+
+  it('falls back to the free worker when the official API 500s', async () => {
+    const fetchMock = mockFetch({
+      official: { status: 500, body: { message: 'Workflow execution failed' } },
+      free: { status: 200, body: { email: 'tim@power-service.com' } },
+    });
 
     const result = await findEmailViaLinkFinder(URL);
-    expect(result).toMatchObject({ ok: false, reason: 'error' });
 
-    // 500 is transient — the next call is allowed to try again.
-    await findEmailViaLinkFinder(URL);
+    expect(result).toMatchObject({
+      ok: true,
+      email: 'tim@power-service.com',
+      via: 'free',
+    });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not spend a free-worker call when the official API says not_found', async () => {
+    const fetchMock = mockFetch({
+      official: { status: 200, body: { status: 'success', result: '' } },
+    });
+
+    const result = await findEmailViaLinkFinder(URL);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'not_found',
+      via: 'official',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces the free worker rate-limit when both fail to find', async () => {
+    mockFetch({
+      official: { status: 500, body: { message: 'Workflow execution failed' } },
+      free: {
+        status: 429,
+        body: { message: 'Rate limit exceeded: maximum 20 requests per hour' },
+      },
+    });
+
+    const result = await findEmailViaLinkFinder(URL);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'rate_limited',
+      via: 'free',
+    });
+  });
+
+  it('latches the official layer off after a 401 and stops calling it', async () => {
+    const fetchMock = mockFetch({
+      official: { status: 401, body: { message: 'unauthorized' } },
+      free: { status: 200, body: { email: 'x@y.com' } },
+    });
+
+    // First call: official 401 -> falls back to free and finds it.
+    const first = await findEmailViaLinkFinder(URL);
+    expect(first).toMatchObject({ ok: true, via: 'free' });
+
+    // Second call must not hit the official endpoint again — it is latched.
+    await findEmailViaLinkFinder(URL);
+    const officialCalls = fetchMock.mock.calls.filter(([u]) => u === OFFICIAL);
+    expect(officialCalls).toHaveLength(1);
+  });
+
+  it('is disabled with no keys at all', async () => {
+    vi.stubEnv('LINKFINDER_API_KEY', '');
+    vi.stubEnv('LINKFINDER_FREE_SECRET', '');
+    const fetchMock = mockFetch({});
+
+    const result = await findEmailViaLinkFinder(URL);
+
+    expect(result.ok).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
