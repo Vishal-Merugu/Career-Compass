@@ -224,13 +224,57 @@ from there ("Find emails"). It used to run inline, and because the server only
 reaches the two layers below, every profile resolved to a `pattern_guess` before
 a real browser saw it — and a guess is an answer, so the row never got upgraded.
 
-Two layers, the second running only when the first produced nothing:
+**LinkFinder runs first, on the user's own key.** LinkedIn URL in, a business
+address out, no browser — so it is the only server-side layer that returns a
+real address rather than a guess. The key is **per account**
+(`UserConfig.linkFinderApiKey`, encrypted; Settings → Finder), never an env var:
+the credit balance is the user's, and an instance-wide key would spend the
+operator's credits on everyone's lookups. There is no `LINKFINDER_API_KEY`.
+
+```
+server/src/services/linkFinderAccount.service.ts  key, pause state, pause copy
+server/src/services/emailFinder/linkfinder.ts     the API call, stateless
+server/src/workers/emailLookupWorker.ts           the pass: drain, pause, hold
+```
+
+**Two things stop the pass, and both need a person to restart it.**
+
+- **Out of credits (402), rate limited (429 after retries), bad key (401)**
+  → `pauseLinkFinder`. The pass stops _immediately_, mid-batch: each of these
+  answers identically on the next call, so finishing the batch would spend the
+  rest of the user's balance proving it. Rows already leased are handed back
+  with `releaseClaimedLookups` (attempt decremented — a claim is not a lookup),
+  and the untouched rows stay reserved. Nothing clears the pause on a timer;
+  the server cannot see a topped-up balance, so an automatic resume is just a
+  slower way to hit the same wall. Only `POST /api/profiles/find-emails/resume`
+  clears it.
+- **A miss (`not_found`, or a transient 5xx)** → the row is parked with
+  `pendingHandoff: true`. The pass continues with the rest. A held row is
+  claimable by **nobody** until `POST /api/profiles/find-emails/handoff`
+  releases it — the extension's browser waterfall knows people the API does
+  not, but it costs a real browser and ~30s per profile in a tab the user is
+  looking at, so they start it.
+
+**`configured` and `paused` are separate, and conflating them is a bug.** Both
+stop the pass; they mean opposite things for the extension. No key → fresh rows
+go to the browser at once, as before LinkFinder existed. Paused → the rows stay
+reserved, because the browser inheriting them performs exactly the automatic
+lookup the pause exists to prevent, and Resume would then find nothing to do.
+`getLinkFinderGate` returns both; the claim gate reads `configured` for the
+extension and both for the pass.
+
+Behind LinkFinder, two more layers, the second running only when the first
+produced nothing:
 
 1. **Anymail Finder** — a real key-authenticated API. Set
    `ANYMAILFINDER_API_KEY` to enable; unset, the layer is skipped. Metered
    (one credit per valid email found, 100 free on signup), so it latches off
    on 401/402 rather than retrying per profile.
 2. **Patterns + SMTP** — needs no credentials at all.
+
+**`findEmail` does not call LinkFinder**, deliberately. It is the
+`allowServerFallback` path, which only ever sees rows the pass already claimed
+and missed — a layer there would spend a second credit for the same answer.
 
 **There is no server-side Mailmeteor layer, and no browser in the image.** There
 used to be: it drove their free widget in headless Chromium and returned nothing,
@@ -282,6 +326,7 @@ claim them under a lease.
 
 ```
 server/src/services/emailLookup.service.ts   enqueue / claim / complete / sweep
+                                             + releaseHandoff / releaseClaimedLookups
 server/src/services/emailFinder/confidence.ts  source ranking, upgrade rule
 server/src/workers/emailLookupWorker.ts      lease sweeper + server fallback
 server/src/api/emailLookups.router.ts        claim + report (extension, api key)

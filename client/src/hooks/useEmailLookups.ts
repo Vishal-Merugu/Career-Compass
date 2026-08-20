@@ -18,7 +18,9 @@ import { api } from '../api/client';
 import { toast } from '../lib/toast';
 import type {
   FindEmailsResponse,
+  LookupHandoffResponse,
   LookupProgress,
+  LookupResumeResponse,
   LookupStatusResponse,
   ProfilesResponse,
 } from '../api/types';
@@ -222,6 +224,43 @@ export function useEmailLookups() {
     },
   });
 
+  /**
+   * Clear a LinkFinder pause and start the pass again.
+   *
+   * Only ever user-initiated. The server cannot see a topped-up balance or an
+   * expired rate-limit window, so nothing here resumes on a timer — that would
+   * be a slower way of hitting the same wall with the user's credits.
+   */
+  const resumeLinkFinder = useMutation({
+    mutationFn: () =>
+      api.post<LookupResumeResponse>('/api/profiles/find-emails/resume', {}),
+    onSuccess: (res) => {
+      toast.success(
+        `LinkFinder resumed. ${res.stats.queued} ${res.stats.queued === 1 ? 'lookup' : 'lookups'} back in the queue.`,
+      );
+      void queryClient.invalidateQueries({ queryKey: LOOKUPS_KEY });
+    },
+  });
+
+  /**
+   * Release the rows LinkFinder missed to the extension's browser waterfall.
+   *
+   * The second manual gate. That path spends a real browser and about 30s per
+   * profile in a tab the user is looking at, so it is entered on purpose.
+   */
+  const pushToExtension = useMutation({
+    mutationFn: () =>
+      api.post<LookupHandoffResponse>('/api/profiles/find-emails/handoff', {}),
+    onSuccess: (res) => {
+      toast.info(
+        res.released === 0
+          ? 'Nothing was waiting to be sent.'
+          : `${res.released} ${res.released === 1 ? 'lookup' : 'lookups'} sent to the extension. Open Chrome with it signed in to work them.`,
+      );
+      void queryClient.invalidateQueries({ queryKey: LOOKUPS_KEY });
+    },
+  });
+
   const cancel = useMutation({
     mutationFn: () =>
       api.del<{ ok: true; cancelled: number }>('/api/profiles/find-emails'),
@@ -235,10 +274,13 @@ export function useEmailLookups() {
 
   return {
     stats: query.data?.stats,
+    linkFinder: query.data?.linkFinder,
     lookups: query.data?.lookups ?? [],
     pending,
     isLoading: query.isPending,
     findEmails,
     cancel,
+    resumeLinkFinder,
+    pushToExtension,
   };
 }

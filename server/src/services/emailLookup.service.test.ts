@@ -39,6 +39,8 @@ interface TestLookup {
   reclaims: number;
   claimedBy: string | null;
   allowServerFallback: boolean;
+  /** Parked after a LinkFinder miss; unclaimable until the user releases it. */
+  pendingHandoff: boolean;
   email: string | null;
   emailSource: string | null;
   emailValidation: string | null;
@@ -48,15 +50,26 @@ interface TestLookup {
   completedAt: Date | null;
 }
 
+/** Only the columns the LinkFinder gate reads. */
+interface TestConfig {
+  userId: string;
+  linkFinderApiKey: string | null;
+  linkFinderPausedAt: Date | null;
+  linkFinderPauseCode: string | null;
+  linkFinderPauseDetail: string | null;
+}
+
 interface Store {
   profiles: TestProfile[];
   lookups: TestLookup[];
+  configs: TestConfig[];
   nextId: number;
 }
 
 const store = vi.hoisted<Store>(() => ({
   profiles: [],
   lookups: [],
+  configs: [],
   nextId: 1,
 }));
 
@@ -106,8 +119,12 @@ vi.mock('../lib/prisma.js', () => {
     batchId?: string | { in: string[] } | null;
     OR?: LookupWhere[];
     status?: string | { in: string[] };
-    attempts?: { lt?: number; gte?: number };
+    /** A bare number is an equality filter — that is how LinkFinder asks for
+     *  untouched rows. Treating it as "no filter" made the pass match every
+     *  row, which is the opposite of what it means. */
+    attempts?: number | { lt?: number; gte?: number };
     allowServerFallback?: boolean;
+    pendingHandoff?: boolean;
     requestedAt?: { lt?: Date };
     dispatchedAt?: { lt?: Date };
   }
@@ -148,16 +165,18 @@ vi.mock('../lib/prisma.js', () => {
       return false;
     }
     if (
-      where.attempts?.lt !== undefined &&
-      !(row.attempts < where.attempts.lt)
+      where.pendingHandoff !== undefined &&
+      row.pendingHandoff !== where.pendingHandoff
     ) {
       return false;
     }
-    if (
-      where.attempts?.gte !== undefined &&
-      !(row.attempts >= where.attempts.gte)
-    ) {
+    if (typeof where.attempts === 'number' && row.attempts !== where.attempts) {
       return false;
+    }
+    if (where.attempts && typeof where.attempts === 'object') {
+      const { lt, gte } = where.attempts;
+      if (lt !== undefined && !(row.attempts < lt)) return false;
+      if (gte !== undefined && !(row.attempts >= gte)) return false;
     }
     if (where.requestedAt?.lt !== undefined) {
       if (!(row.requestedAt < where.requestedAt.lt)) return false;
@@ -220,6 +239,29 @@ vi.mock('../lib/prisma.js', () => {
           return Promise.resolve(row);
         },
       },
+      userConfig: {
+        findUnique: ({ where }: { where: { userId: string } }) =>
+          Promise.resolve(
+            store.configs.find((c) => c.userId === where.userId) ?? null,
+          ),
+        updateMany: ({
+          where,
+          data,
+        }: {
+          where: { userId: string; linkFinderPausedAt?: null };
+          data: Partial<TestConfig>;
+        }) => {
+          const rows = store.configs.filter(
+            (c) =>
+              c.userId === where.userId &&
+              // `pauseLinkFinder` guards on this so the first reason wins.
+              (where.linkFinderPausedAt === undefined ||
+                c.linkFinderPausedAt === null),
+          );
+          for (const row of rows) Object.assign(row, data);
+          return Promise.resolve({ count: rows.length });
+        },
+      },
       emailLookup: {
         upsert: ({
           where,
@@ -247,6 +289,7 @@ vi.mock('../lib/prisma.js', () => {
             attempts: 0,
             claimedBy: null,
             allowServerFallback: false,
+            pendingHandoff: false,
             email: null,
             emailSource: null,
             emailValidation: null,
@@ -372,6 +415,8 @@ const {
   completeLookup,
   enqueueLookups,
   getLookupStats,
+  releaseClaimedLookups,
+  releaseHandoff,
   sweepStaleLookups,
   EMAIL_LOOKUP_MAX_ATTEMPTS,
   EMAIL_LOOKUP_MAX_RECLAIMS,
@@ -396,9 +441,27 @@ function seedProfile(over: Partial<TestProfile> = {}): TestProfile {
   return profile;
 }
 
+/** Give the user a LinkFinder key, so the per-user gate reports ready. */
+function seedLinkFinderKey(over: Partial<TestConfig> = {}): TestConfig {
+  const config: TestConfig = {
+    userId: USER,
+    // Plaintext is fine here: `getLinkFinderKey` tolerates an unencrypted
+    // column, and encrypting would drag `JWT_SECRET` into a queue test.
+    linkFinderApiKey: 'lf_sk_test',
+    linkFinderPausedAt: null,
+    linkFinderPauseCode: null,
+    linkFinderPauseDetail: null,
+    ...over,
+  };
+  store.configs = store.configs.filter((c) => c.userId !== config.userId);
+  store.configs.push(config);
+  return config;
+}
+
 beforeEach(() => {
   store.profiles = [];
   store.lookups = [];
+  store.configs = [];
   store.nextId = 1;
 });
 
@@ -537,8 +600,8 @@ describe('claimLookups', () => {
   });
 
   it('reserves fresh rows for LinkFinder — the extension takes only misses', async () => {
-    vi.stubEnv('LINKFINDER_API_KEY', 'lf_sk_test');
-    try {
+    seedLinkFinderKey();
+    {
       const fresh = seedProfile();
       const missed = seedProfile();
       await enqueueLookups(USER, [fresh.id, missed.id]);
@@ -555,8 +618,6 @@ describe('claimLookups', () => {
       // LinkFinder itself takes only the untouched row.
       const lfItems = await claimLookups(USER, 5, 'linkfinder');
       expect(lfItems.map((i) => i.profileId)).toEqual([fresh.id]);
-    } finally {
-      vi.unstubAllEnvs();
     }
   });
 
@@ -893,5 +954,141 @@ describe('cancelQueuedLookups', () => {
     expect(cancelled).toBe(1);
     expect(store.lookups).toHaveLength(1);
     expect(store.lookups[0].status).toBe('dispatched');
+  });
+});
+
+describe('the LinkFinder handoff hold', () => {
+  it('parks a missed row so no executor can pick it up', async () => {
+    seedLinkFinderKey();
+    const profile = seedProfile();
+    await enqueueLookups(USER, [profile.id]);
+
+    const [item] = await claimLookups(USER, 5, 'linkfinder');
+    await completeLookup(USER, item.lookupId, {
+      ok: false,
+      error: 'LinkFinder: not_found',
+      holdForHandoff: true,
+    });
+
+    const row = store.lookups[0];
+    expect(row.status).toBe('queued');
+    expect(row.pendingHandoff).toBe(true);
+
+    // This is the whole point: without the hold, `attempts: 1` is exactly the
+    // shape the extension's gate looks for, and the browser would start on it
+    // by itself at the next alarm tick.
+    expect(await claimLookups(USER, 5, 'extension')).toEqual([]);
+    expect(await claimLookups(USER, 5, 'linkfinder')).toEqual([]);
+  });
+
+  it('counts held rows apart from stalled ones', async () => {
+    seedLinkFinderKey();
+    const held = seedProfile();
+    const waiting = seedProfile();
+    await enqueueLookups(USER, [held.id, waiting.id]);
+
+    const heldRow = store.lookups.find((l) => l.profileId === held.id)!;
+    heldRow.attempts = 1;
+    heldRow.pendingHandoff = true;
+
+    // Both are old enough to be "stalled" by the clock alone.
+    for (const row of store.lookups) {
+      row.requestedAt = new Date(Date.now() - 60 * 60 * 1000);
+    }
+
+    const stats = await getLookupStats(USER);
+
+    expect(stats.heldForHandoff).toBe(1);
+    // The held row is waiting on the user, who has a button. Counting it as
+    // stalled would tell them to go install a Chrome extension instead.
+    expect(stats.stalled).toBe(1);
+  });
+
+  it('releaseHandoff hands the rows to the extension and nobody else', async () => {
+    seedLinkFinderKey();
+    const profile = seedProfile();
+    await enqueueLookups(USER, [profile.id]);
+
+    const [item] = await claimLookups(USER, 5, 'linkfinder');
+    await completeLookup(USER, item.lookupId, {
+      ok: false,
+      error: 'LinkFinder: not_found',
+      holdForHandoff: true,
+    });
+
+    expect(await releaseHandoff(USER)).toBe(1);
+    expect(store.lookups[0].pendingHandoff).toBe(false);
+
+    // Still `attempts: 1`, so the LinkFinder pass cannot reclaim it and spend
+    // another credit being told the same thing.
+    expect(await claimLookups(USER, 5, 'linkfinder')).toEqual([]);
+
+    const ext = await claimLookups(USER, 5, 'extension');
+    expect(ext.map((i) => i.profileId)).toEqual([profile.id]);
+  });
+
+  it('releases nothing when nothing is held', async () => {
+    seedLinkFinderKey();
+    const profile = seedProfile();
+    await enqueueLookups(USER, [profile.id]);
+
+    expect(await releaseHandoff(USER)).toBe(0);
+  });
+});
+
+describe('a paused LinkFinder pass', () => {
+  it('claims nothing while paused, and resumes claiming when cleared', async () => {
+    const config = seedLinkFinderKey();
+    const profile = seedProfile();
+    await enqueueLookups(USER, [profile.id]);
+
+    config.linkFinderPausedAt = new Date();
+    config.linkFinderPauseCode = 'no_credits';
+
+    expect(await claimLookups(USER, 5, 'linkfinder')).toEqual([]);
+
+    // And the browser must not quietly inherit the work: the rows were
+    // reserved for a pass the user intends to resume after topping up.
+    expect(await claimLookups(USER, 5, 'extension')).toEqual([]);
+
+    config.linkFinderPausedAt = null;
+    const items = await claimLookups(USER, 5, 'linkfinder');
+    expect(items.map((i) => i.profileId)).toEqual([profile.id]);
+  });
+
+  it('gives a mid-batch claim back untouched so a resume re-runs it', async () => {
+    seedLinkFinderKey();
+    const profile = seedProfile();
+    await enqueueLookups(USER, [profile.id]);
+
+    const [item] = await claimLookups(USER, 5, 'linkfinder');
+    expect(store.lookups[0].attempts).toBe(1);
+
+    // The pause path hands back leases it never worked.
+    expect(await releaseClaimedLookups(USER, [item.lookupId])).toBe(1);
+
+    const row = store.lookups[0];
+    expect(row.status).toBe('queued');
+    expect(row.claimedBy).toBeNull();
+    // Decremented back to 0 — otherwise the row falls out of the LinkFinder
+    // claim's `attempts: 0` net and a resume skips exactly the rows the pause
+    // interrupted, handing them to the browser instead.
+    expect(row.attempts).toBe(0);
+
+    const again = await claimLookups(USER, 5, 'linkfinder');
+    expect(again.map((i) => i.profileId)).toEqual([profile.id]);
+  });
+
+  it('leaves rows to the extension for a user with no key at all', async () => {
+    // No `seedLinkFinderKey` — the layer is off for this account, and the
+    // browser gets fresh rows on its normal turn rather than waiting on a pass
+    // that will never run.
+    const profile = seedProfile();
+    await enqueueLookups(USER, [profile.id]);
+
+    expect(await claimLookups(USER, 5, 'linkfinder')).toEqual([]);
+
+    const ext = await claimLookups(USER, 5, 'extension');
+    expect(ext.map((i) => i.profileId)).toEqual([profile.id]);
   });
 });

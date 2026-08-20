@@ -20,7 +20,7 @@ import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
 import { NotFoundError, ValidationError } from '../errors/AppError.js';
 import { isEmailUpgrade, isVerifiedSource } from './emailFinder/confidence.js';
-import { linkFinderEnabled } from './emailFinder/linkfinder.js';
+import { getLinkFinderGate } from './linkFinderAccount.service.js';
 
 /** Statuses a row moves through. `dispatched` means leased to a client. */
 export type LookupStatus = 'queued' | 'dispatched' | 'done' | 'failed';
@@ -39,6 +39,16 @@ export interface LookupStats {
    * user who closed Chrome sees "finding emails" forever with nothing running.
    */
   stalled: number;
+  /**
+   * Rows LinkFinder ran and missed, now waiting on the user.
+   *
+   * Not stalled and not failed: the API said it does not know this person, and
+   * the extension's browser waterfall might. That path costs a real browser and
+   * the user's attention, so it is entered by hand — these sit until the
+   * "Send to extension" button releases them. Counted separately so the panel
+   * can offer that button rather than rendering a spinner.
+   */
+  heldForHandoff: number;
   total: number;
   /**
    * The batch these counts are about — the most recent press of "Find emails",
@@ -229,10 +239,23 @@ export async function claimLookups(
    */
   requestedBefore?: Date,
 ): Promise<LookupWorkItem[]> {
+  // Asked once per claim, not once per row: the answer is a property of the
+  // account, and re-reading it inside the `where` would let the gate disagree
+  // with itself mid-query.
+  const lf = await getLinkFinderGate(userId);
+
+  // A paused pass claims nothing at all. The pause exists precisely to stop
+  // spending against a wall, and a claim here would do exactly that.
+  if (claimedBy === 'linkfinder' && (!lf.configured || lf.paused)) return [];
+
   const candidates = await prisma.emailLookup.findMany({
     where: {
       userId,
       status: 'queued',
+      // Never claimable by anyone. A held row is a decision waiting on a
+      // person, not work waiting on a worker — see `EmailLookup.pendingHandoff`.
+      // `releaseHandoff` is the only thing that puts these back in play.
+      pendingHandoff: false,
       // LinkFinder is the immediate first pass over a fresh batch: a real API,
       // no grace wait, no `allowServerFallback` gate. It takes only untouched
       // rows (`attempts: 0`) so that a row it already missed drops out of its
@@ -242,17 +265,21 @@ export async function claimLookups(
       // Who may take which rows, by how many times a row has been tried:
       //   linkfinder — only untouched rows (`attempts: 0`). A row it misses
       //     becomes `attempts: 1` and drops out of its net for good.
-      //   extension, while LinkFinder is enabled — only rows LinkFinder has
+      //   extension, for a user who *has* a LinkFinder key — only rows it has
       //     already tried and missed (`attempts >= 1`). This is what makes the
       //     server pass genuinely *first*: the browser is nudged to drain the
       //     instant the button is pressed, so without this gate it would race
       //     in and claim fresh rows before LinkFinder's tick ever ran.
+      //     Keyed on `configured`, not on whether the pass can run right now:
+      //     while it is *paused* its fresh rows must stay reserved for the
+      //     resume, or the browser silently performs the lookup the pause was
+      //     meant to stop and Resume finds nothing left to do.
       //   everyone else (extension with no key, server fallback) — any row
       //     under the attempt ceiling, exactly as before.
       attempts:
         claimedBy === 'linkfinder'
           ? 0
-          : claimedBy === 'extension' && linkFinderEnabled()
+          : claimedBy === 'extension' && lf.configured
             ? { gte: 1, lt: MAX_ATTEMPTS }
             : { lt: MAX_ATTEMPTS },
       // The server fallback may only take rows that opted in. Without this it
@@ -343,6 +370,16 @@ export async function completeLookup(
     source?: string | null;
     validation?: string | null;
     error?: string | null;
+    /**
+     * Park the row instead of returning it to the queue.
+     *
+     * Set by the LinkFinder pass on a genuine miss. Without it the row would
+     * drop straight into the extension's net on the next alarm tick, which is
+     * the automatic browser lookup the user asked not to happen — a real
+     * browser doing 30s of work per profile is their time, so it starts when
+     * they press the button. Ignored on a hit; there is nothing to hand off.
+     */
+    holdForHandoff?: boolean;
   },
 ): Promise<void> {
   const lookup = await prisma.emailLookup.findFirst({
@@ -392,12 +429,18 @@ export async function completeLookup(
   } else {
     // Retryable until the attempt budget runs out. A miss is often a transient
     // captcha or a closed tab, not a person without an email.
-    const exhausted = lookup.attempts >= MAX_ATTEMPTS;
+    // A held row is not retryable work, so the attempt ceiling does not apply
+    // to it: it is waiting on a person, and a person can take longer than three
+    // attempts. It returns to `queued` with `pendingHandoff` set, invisible to
+    // every executor until `releaseHandoff` clears it.
+    const hold = Boolean(result.holdForHandoff);
+    const exhausted = !hold && lookup.attempts >= MAX_ATTEMPTS;
 
     await prisma.emailLookup.update({
       where: { id: lookup.id },
       data: {
         status: exhausted ? 'failed' : 'queued',
+        pendingHandoff: hold,
         lastError: result.error ?? 'No email found',
         claimedBy: null,
         dispatchedAt: null,
@@ -470,7 +513,7 @@ export async function getLookupStats(userId: string): Promise<LookupStats> {
   const { ids, latest } = await currentBatches(userId);
   const scope = batchFilter(ids);
 
-  const [grouped, stalled] = await Promise.all([
+  const [grouped, stalled, heldForHandoff] = await Promise.all([
     prisma.emailLookup.groupBy({
       by: ['status'],
       where: { userId, ...scope },
@@ -485,8 +528,15 @@ export async function getLookupStats(userId: string): Promise<LookupStats> {
         ...scope,
         status: 'queued',
         allowServerFallback: false,
+        // A held row is not waiting on a browser that never came — it is
+        // waiting on the user, who has a button for it. Rendering it as
+        // "no extension answered" would send them to fix the wrong thing.
+        pendingHandoff: false,
         requestedAt: { lt: new Date(Date.now() - EXTENSION_GRACE_MS) },
       },
+    }),
+    prisma.emailLookup.count({
+      where: { userId, ...scope, status: 'queued', pendingHandoff: true },
     }),
   ]);
 
@@ -505,6 +555,7 @@ export async function getLookupStats(userId: string): Promise<LookupStats> {
     failed,
     pending: queued + dispatched,
     stalled,
+    heldForHandoff,
     total: queued + dispatched + done + failed,
     batchId: latest,
   };
@@ -593,6 +644,84 @@ export async function cancelQueuedLookups(userId: string): Promise<number> {
   });
 
   emitProgress({ userId, type: 'STATS', stats: await getLookupStats(userId) });
+
+  return count;
+}
+
+/**
+ * Hand back rows that were claimed but never worked.
+ *
+ * Used when the LinkFinder pass pauses mid-batch: a lease it holds is not a
+ * lookup it performed, and the rows must go back untouched so that resuming
+ * picks them up instead of the sweeper eventually deciding they were tried.
+ *
+ * `attempts` is decremented for the same reason `sweepStaleLookups` decrements
+ * it — the claim happened, the lookup did not. Leaving the increment in place
+ * would push these rows out of the LinkFinder claim's `attempts: 0` net, so a
+ * resume after topping up would skip exactly the rows the pause interrupted.
+ */
+export async function releaseClaimedLookups(
+  userId: string,
+  lookupIds: string[],
+): Promise<number> {
+  if (lookupIds.length === 0) return 0;
+
+  const { count } = await prisma.emailLookup.updateMany({
+    where: { userId, id: { in: lookupIds }, status: 'dispatched' },
+    data: {
+      status: 'queued',
+      attempts: { decrement: 1 },
+      claimedBy: null,
+      dispatchedAt: null,
+    },
+  });
+
+  if (count > 0) {
+    emitProgress({
+      userId,
+      type: 'STATS',
+      stats: await getLookupStats(userId),
+    });
+  }
+
+  return count;
+}
+
+/**
+ * Put held rows back in play, for the extension.
+ *
+ * The manual half of the handoff: LinkFinder ran these and found nothing, they
+ * have been sitting where the user can see them, and this is the user saying
+ * "yes, spend the browser on them". Clearing `pendingHandoff` is all it takes —
+ * the rows are already `queued` with `attempts: 1`, which is exactly the shape
+ * the extension's claim gate looks for, so the next drain picks them up.
+ *
+ * Deliberately does not reset `attempts`. Resetting would make them claimable
+ * by the LinkFinder pass again, which just spends another credit each to be
+ * told the same thing.
+ */
+export async function releaseHandoff(userId: string): Promise<number> {
+  const { count } = await prisma.emailLookup.updateMany({
+    where: { userId, status: 'queued', pendingHandoff: true },
+    data: {
+      pendingHandoff: false,
+      // The held row's `lastError` is LinkFinder's miss. Keeping it would make
+      // the extension's own first result look like a second failure in the UI.
+      lastError: null,
+      requestedAt: new Date(),
+    },
+  });
+
+  if (count > 0) {
+    logger.info(
+      `[EmailLookup] Released ${count} held lookups to the extension for user ${userId}`,
+    );
+    emitProgress({
+      userId,
+      type: 'STATS',
+      stats: await getLookupStats(userId),
+    });
+  }
 
   return count;
 }

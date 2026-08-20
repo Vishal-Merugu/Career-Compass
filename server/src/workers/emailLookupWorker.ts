@@ -20,12 +20,18 @@ import { prisma } from '../lib/prisma.js';
 import { findEmail } from '../services/emailFinder/index.js';
 import {
   findEmailViaLinkFinder,
-  linkFinderEnabled,
+  isPausingReason,
 } from '../services/emailFinder/linkfinder.js';
+import {
+  getLinkFinderKey,
+  linkFinderReady,
+  pauseLinkFinder,
+} from '../services/linkFinderAccount.service.js';
 import {
   EMAIL_LOOKUP_EXTENSION_GRACE_MS as EXTENSION_GRACE_MS,
   claimLookups,
   completeLookup,
+  releaseClaimedLookups,
   sweepStaleLookups,
 } from '../services/emailLookup.service.js';
 
@@ -38,11 +44,11 @@ const FALLBACK_BATCH_SIZE = 5;
 const LINKFINDER_BATCH_SIZE = 12;
 
 /**
- * How many LinkFinder calls are in flight at once. The official API asks for
- * ~1 request/second per key, which the provider enforces with a process-wide
- * pacer — so extra concurrency here just queues on that pacer. A small pool
- * keeps the free-worker fallback (no pacer) from bursting while still letting a
- * slow call overlap the next one's pacing wait.
+ * How many LinkFinder calls are in flight at once. The API asks for ~1
+ * request/second per key, which the layer enforces with a per-key pacer — so
+ * extra concurrency here just queues on that pacer. A small pool exists so a
+ * slow call can overlap the next one's pacing wait, and so a pause is noticed
+ * after a few calls rather than a few dozen.
  */
 const LINKFINDER_CONCURRENCY = 3;
 
@@ -120,19 +126,35 @@ async function runFallbackLookups(): Promise<void> {
  */
 const draining = new Set<string>();
 
+/** A reason to stop the whole pass, carried out of the concurrent workers. */
+interface PauseStop {
+  code: 'no_credits' | 'rate_limited' | 'bad_key';
+  detail?: string;
+}
+
 /**
  * Run every one of a user's fresh rows through LinkFinder, now.
  *
  * Loops until no untouched (`attempts: 0`) row is left: a hit marks the row
- * `done`, a miss bumps it to `attempts: 1` and leaves it `queued` for the
+ * `done`, a miss parks it as `pendingHandoff` for the user to release to the
  * browser, and either way it drops out of the `linkfinder` claim — so the loop
  * terminates without a separate cursor and drains a batch larger than one claim.
+ *
+ * **A pausing reason stops the whole pass, immediately.** Out of credits, a
+ * rejected key and a standing rate limit all answer identically on the next
+ * call, so finishing the batch would spend the user's remaining credits — or,
+ * on 402, spend nothing but mark every remaining profile a miss — to learn
+ * something already known. In-flight rows are handed back untouched and the
+ * account is paused until the user presses Resume.
  */
 async function drainLinkFinderForUser(userId: string): Promise<void> {
   if (draining.has(userId)) return;
   draining.add(userId);
 
   try {
+    const apiKey = await getLinkFinderKey(userId);
+    if (!apiKey) return;
+
     for (;;) {
       const items = await claimLookups(
         userId,
@@ -142,13 +164,26 @@ async function drainLinkFinderForUser(userId: string): Promise<void> {
       if (items.length === 0) break;
 
       // Bounded concurrency: workers pull from a shared cursor so no single slow
-      // call (they are all ~40s) blocks the others behind it.
+      // call blocks the others behind it.
       let cursor = 0;
+      // Pushed to by whichever worker first sees a pausing reason. Every worker
+      // checks it before taking another row, so a 402 stops the batch within
+      // one call rather than after all twelve have each spent a credit.
+      //
+      // An array rather than a nullable `let` on purpose: a `let` initialised
+      // to `null` and assigned only inside these closures is narrowed to `null`
+      // by control-flow analysis at the check below, so the pause branch would
+      // be typed unreachable and quietly never compile as intended.
+      const stops: PauseStop[] = [];
+
       const worker = async (): Promise<void> => {
-        while (cursor < items.length) {
+        while (cursor < items.length && stops.length === 0) {
           const item = items[cursor++];
           try {
-            const result = await findEmailViaLinkFinder(item.linkedinUrl);
+            const result = await findEmailViaLinkFinder(
+              item.linkedinUrl,
+              apiKey,
+            );
 
             if (result.ok && result.email) {
               logger.info(
@@ -160,23 +195,34 @@ async function drainLinkFinderForUser(userId: string): Promise<void> {
                 source: 'linkfinder',
                 validation: 'provider',
               });
-            } else {
-              logger.info(
-                `[EmailLookupWorker] LinkFinder missed ${item.firstName} ${item.lastName} (${result.reason}) — leaving for the browser`,
-              );
-              await completeLookup(userId, item.lookupId, {
-                ok: false,
-                error: `LinkFinder: ${result.reason ?? 'no email'}`,
-              });
+              continue;
             }
+
+            if (isPausingReason(result.reason)) {
+              stops.push({ code: result.reason, detail: result.detail });
+              // This row was never answered for — hand the lease straight back
+              // rather than recording a miss against it.
+              await releaseClaimedLookups(userId, [item.lookupId]);
+              continue;
+            }
+
+            logger.info(
+              `[EmailLookupWorker] LinkFinder missed ${item.firstName} ${item.lastName} (${result.reason}) — holding for a manual handoff`,
+            );
+            await completeLookup(userId, item.lookupId, {
+              ok: false,
+              error: `LinkFinder: ${result.reason ?? 'no email'}`,
+              holdForHandoff: true,
+            });
           } catch (err) {
             logger.error(
               err,
-              `[EmailLookupWorker] LinkFinder lookup ${item.lookupId} threw; leaving for the browser`,
+              `[EmailLookupWorker] LinkFinder lookup ${item.lookupId} threw; holding for a manual handoff`,
             );
             await completeLookup(userId, item.lookupId, {
               ok: false,
               error: err instanceof Error ? err.message : 'LinkFinder failed',
+              holdForHandoff: true,
             });
           }
         }
@@ -188,6 +234,20 @@ async function drainLinkFinderForUser(userId: string): Promise<void> {
           worker,
         ),
       );
+
+      if (stops.length > 0) {
+        const stop = stops[0];
+        // Rows the other workers never reached. They are still `dispatched`
+        // under this pass's lease; without this they would sit unclaimable
+        // until the five-minute sweep, and a user who topped up and pressed
+        // Resume immediately would see nothing happen.
+        await releaseClaimedLookups(
+          userId,
+          items.slice(cursor).map((item) => item.lookupId),
+        );
+        await pauseLinkFinder(userId, stop.code, stop.detail);
+        break;
+      }
     }
   } finally {
     draining.delete(userId);
@@ -204,25 +264,29 @@ async function drainLinkFinderForUser(userId: string): Promise<void> {
  * the request returns 202 and the drain runs in the background.
  */
 export function kickLinkFinderPass(userId: string): void {
-  if (!linkFinderEnabled()) return;
-  void drainLinkFinderForUser(userId).catch((err) =>
+  void (async () => {
+    // No key, or paused: `drainLinkFinderForUser` would claim nothing anyway,
+    // but checking here keeps the common no-key case from touching the queue.
+    if (!(await linkFinderReady(userId))) return;
+    await drainLinkFinderForUser(userId);
+  })().catch((err) =>
     logger.error(err, '[EmailLookupWorker] Kicked LinkFinder pass failed'),
   );
 }
 
 async function runLinkFinderPass(): Promise<void> {
-  // No key means every call returns instantly as `disabled` — which would count
-  // as a miss and shove untouched rows to the browser before the extension even
-  // had its normal turn. Skip the pass entirely instead.
-  if (!linkFinderEnabled()) return;
-
   const waiting = await prisma.emailLookup.groupBy({
     by: ['userId'],
-    where: { status: 'queued', attempts: 0 },
+    where: { status: 'queued', attempts: 0, pendingHandoff: false },
     _count: { userId: true },
   });
 
   for (const group of waiting) {
+    // Per user, because the key and the pause are per user. A user with no key
+    // is skipped so their rows reach the extension on its normal turn instead
+    // of being marked missed by a layer that never ran; a paused user is
+    // skipped until they resume.
+    if (!(await linkFinderReady(group.userId))) continue;
     await drainLinkFinderForUser(group.userId);
   }
 }

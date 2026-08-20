@@ -5,19 +5,17 @@ import type { SmtpVerdict } from './smtpVerify.js';
 // being checked here is the orchestration: which verdict produces which
 // claim, and — most importantly — when the finder refuses to answer.
 //
-// Two layers, not three. The Mailmeteor layer was removed: it needed a headless
-// browser and never returned an address, and that lookup now runs in the
-// extension instead. See services/emailFinder/index.ts.
+// Two layers. The Mailmeteor layer was removed: it needed a headless browser
+// and never returned an address, and that lookup now runs in the extension
+// instead. LinkFinder is not a layer here either — its key is per user and it
+// only ever sees rows this path has already been handed *after* it missed them,
+// so calling it from here would spend a second credit for the same answer. See
+// services/emailFinder/index.ts.
 
-const linkfinderMock = vi.hoisted(() => vi.fn());
 const anymailMock = vi.hoisted(() => vi.fn());
 const smtpMock = vi.hoisted(() => vi.fn());
 const domainMock = vi.hoisted(() => vi.fn());
 
-vi.mock('./linkfinder.js', () => ({
-  findEmailViaLinkFinder: linkfinderMock,
-  linkFinderEnabled: () => true,
-}));
 vi.mock('./anymailfinder.js', () => ({
   findEmailViaAnymailFinder: anymailMock,
 }));
@@ -37,23 +35,18 @@ const verdict = (v: SmtpVerdict) => ({ verdict: v });
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // Layer 1 misses by default; the cases below drive it explicitly where it
-  // matters. Every existing case here predates LinkFinder and expects the flow
-  // to reach Anymail Finder / patterns, so a miss keeps them meaningful.
-  linkfinderMock.mockResolvedValue({ ok: false, reason: 'not_found' });
   anymailMock.mockResolvedValue({ ok: false, reason: 'disabled' });
   domainMock.mockResolvedValue('acme.com');
 });
 
 describe('findEmail layering', () => {
-  it('prefers LinkFinder above every other layer', async () => {
-    linkfinderMock.mockResolvedValue({
-      ok: true,
-      email: 'jane@acme.com',
-    });
+  it('starts at Anymail Finder — LinkFinder is not one of its layers', async () => {
+    // Guards a real double-charge. This path only ever runs on rows the
+    // LinkFinder pass already claimed and missed, so a layer here would spend
+    // a second credit of the user's money for an answer already known.
     anymailMock.mockResolvedValue({
       ok: true,
-      email: 'other@acme.com',
+      email: 'jane@acme.com',
       validation: 'valid',
     });
 
@@ -62,13 +55,11 @@ describe('findEmail layering', () => {
     expect(result).toMatchObject({
       ok: true,
       email: 'jane@acme.com',
-      source: 'linkfinder',
+      source: 'anymailfinder',
     });
-    // A LinkFinder hit short-circuits — the lower layers are never consulted.
-    expect(anymailMock).not.toHaveBeenCalled();
   });
 
-  it('falls through to Anymail Finder when LinkFinder misses', async () => {
+  it('uses Anymail Finder before patterns', async () => {
     anymailMock.mockResolvedValue({
       ok: true,
       email: 'jane@acme.com',
