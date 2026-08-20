@@ -88,6 +88,15 @@ export interface LookupStats {
    * never as a spinner.
    */
   stalled: number;
+  /**
+   * Rows LinkFinder ran and missed, now waiting on a person.
+   *
+   * Not stalled and not failed — the API does not know them, the extension's
+   * browser waterfall might, and entering that path costs a real browser and
+   * the user's time. The panel offers a "Send to extension" button for these
+   * rather than a spinner.
+   */
+  heldForHandoff: number;
   total: number;
   /**
    * The batch these counts cover — one press of "Find emails". Counts are
@@ -95,6 +104,25 @@ export interface LookupStats {
    * the run you just started rather than every lookup the account has done.
    */
   batchId: string | null;
+}
+
+/** Mirrors `LinkFinderPauseCode` in `linkFinderAccount.service.ts`. */
+export type LinkFinderPauseCode = 'no_credits' | 'rate_limited' | 'bad_key';
+
+/**
+ * Mirrors `LinkFinderState`. Never carries the key — `configured` is the only
+ * thing the client learns about it.
+ */
+export interface LinkFinderState {
+  configured: boolean;
+  paused: boolean;
+  pauseCode: LinkFinderPauseCode | null;
+  /** Ready-to-render copy for `pauseCode`, or null when running. */
+  title: string | null;
+  message: string | null;
+  /** The provider's own words. Render collapsed, never as the headline. */
+  detail: string | null;
+  pausedAt: string | null;
 }
 
 export interface EmailLookup {
@@ -113,6 +141,11 @@ export interface EmailLookup {
   dispatchedAt: string | null;
   /** Whether an unclaimed row may fall through to the server-side finder. */
   allowServerFallback: boolean;
+  /**
+   * LinkFinder missed this one and it is parked, waiting on the user to send
+   * it to the extension. No executor can claim it until they do.
+   */
+  pendingHandoff: boolean;
   completedAt: string | null;
 }
 
@@ -124,12 +157,29 @@ export interface FindEmailsResponse {
   skippedVerified: number;
   skippedUnknown: number;
   stats: LookupStats;
+  linkFinder: LinkFinderState;
 }
 
 export interface LookupStatusResponse {
   ok: true;
   stats: LookupStats;
+  linkFinder: LinkFinderState;
   lookups: EmailLookup[];
+}
+
+/** `POST /api/profiles/find-emails/resume`. */
+export interface LookupResumeResponse {
+  ok: true;
+  stats: LookupStats;
+  linkFinder: LinkFinderState;
+}
+
+/** `POST /api/profiles/find-emails/handoff`. */
+export interface LookupHandoffResponse {
+  ok: true;
+  released: number;
+  stats: LookupStats;
+  linkFinder: LinkFinderState;
 }
 
 /** One frame of `GET /api/profiles/find-emails/events`. */
@@ -238,6 +288,17 @@ export interface FinderSettings {
   dailyLimit: number;
   emailFinderEnabled: boolean;
   userContext: string | null;
+  /** Whether a LinkFinder key is saved. Never the key itself. */
+  linkFinderApiKeySet: boolean;
+  linkFinder: LinkFinderState;
+}
+
+/** `POST /api/settings/finder/linkfinder/check`. Spends one LinkFinder credit. */
+export interface LinkFinderCheckResponse {
+  ok: boolean;
+  reason?: string;
+  message: string;
+  detail?: string | null;
 }
 
 export interface FinderSettingsResponse {

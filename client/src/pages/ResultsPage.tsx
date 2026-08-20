@@ -29,6 +29,7 @@ import {
   IconMail,
   IconMailPlus,
   IconMailSearch,
+  IconPlayerPlay,
   IconRadar,
   IconRefresh,
   IconSearch,
@@ -398,10 +399,13 @@ export function ResultsPage() {
   });
   const {
     stats: lookupStats,
+    linkFinder,
     lookups,
     pending,
     findEmails,
     cancel,
+    resumeLinkFinder,
+    pushToExtension,
   } = useEmailLookups();
 
   /**
@@ -549,10 +553,22 @@ export function ResultsPage() {
 
   // Rows still waiting on a browser, so the "guess instead" action can re-queue
   // exactly those rather than the current selection.
+  //
+  // Held rows are excluded: no executor can claim them until the user releases
+  // them, so offering to "find these in your browser" would be a button that
+  // starts a drain and finds nothing to do. They get their own action.
   const waitingProfileIds = useMemo(
-    () => lookups.filter((l) => l.status === 'queued').map((l) => l.profileId),
+    () =>
+      lookups
+        .filter((l) => l.status === 'queued' && !l.pendingHandoff)
+        .map((l) => l.profileId),
     [lookups],
   );
+
+  // Rows LinkFinder ran and missed. Counted from `stats`, not from `lookups`:
+  // the status endpoint returns at most 100 rows, so on a large batch the list
+  // undercounts and the button would understate what it is about to release.
+  const held = lookupStats?.heldForHandoff ?? 0;
 
   const lastError = useMemo(() => {
     const map = new Map<string, string>();
@@ -684,6 +700,54 @@ export function ResultsPage() {
         </Alert>
       )}
 
+      {/* LinkFinder stopped itself and is waiting on the user.
+          
+          Its own banner rather than a line inside the progress panel: the
+          progress panel is dismissible and scoped to one batch, and a paused
+          provider outlives both — it stays true until someone tops up and
+          presses Resume, across batches and reloads. */}
+      {linkFinder?.paused && (
+        <Alert
+          color="yellow"
+          variant="light"
+          radius="lg"
+          icon={<IconAlertCircle size={18} />}
+          title={linkFinder.title ?? 'LinkFinder is paused'}
+        >
+          <Stack gap="sm">
+            <Text fz={13}>{linkFinder.message}</Text>
+            {linkFinder.detail && (
+              <Text fz={12} c="dimmed">
+                {linkFinder.detail}
+              </Text>
+            )}
+            <Group gap="sm" wrap="wrap">
+              <Button
+                size="xs"
+                color="yellow"
+                leftSection={<IconPlayerPlay size={14} />}
+                loading={resumeLinkFinder.isPending}
+                onClick={() => resumeLinkFinder.mutate()}
+              >
+                Resume LinkFinder
+              </Button>
+              {/* The other way out: stop waiting on credits and spend the
+                  browser instead. Only offered when there is something held. */}
+              {held > 0 && (
+                <Button
+                  size="xs"
+                  variant="light"
+                  loading={pushToExtension.isPending}
+                  onClick={() => pushToExtension.mutate()}
+                >
+                  Send {held} to the extension instead
+                </Button>
+              )}
+            </Group>
+          </Stack>
+        </Alert>
+      )}
+
       {/* Shown whenever the queue is non-empty, including after the tab was
           closed and reopened: the work happens server-side or in the extension,
           so progress advances with nothing watching.
@@ -746,13 +810,33 @@ export function ResultsPage() {
                       : extension === 'unlinked'
                         ? 'The extension is installed here but not signed in, so it cannot claim work. Open it from the toolbar and log in — these resume by themselves after that.'
                         : 'No extension answered in this browser. These need Chrome with the CareerCompass extension installed and signed in — that is the only place the free provider lookup works. They resume by themselves when it is there; nothing was lost.'
-                    : 'The server is finding what it can with LinkFinder. Anything it cannot resolve waits here — press "Find in your browser" to hand those to the extension. Progress is saved, so you can leave this tab.'}
+                    : held > 0
+                      ? `LinkFinder could not find ${held} of these. They are held here — nothing else runs on them until you send them to the extension, which looks them up in a real browser. Progress is saved, so you can leave this tab.`
+                      : 'The server is finding what it can with LinkFinder. Anything it cannot resolve is held here for you to send to the extension. Progress is saved, so you can leave this tab.'}
                 </Text>
                 <Group gap="sm" wrap="wrap">
+                  {/* The manual handoff. LinkFinder answered "I don't know
+                      them" for these, which is not the same as "no email
+                      exists" — the extension's browser waterfall knows people
+                      the API does not. It costs a real browser and about 30s
+                      each, in a tab the user is looking at, so it starts here
+                      and not on their behalf. */}
+                  {held > 0 && (
+                    <Button
+                      size="xs"
+                      color="brand"
+                      leftSection={<IconMailSearch size={14} />}
+                      loading={pushToExtension.isPending}
+                      onClick={() => pushToExtension.mutate()}
+                    >
+                      Send {held} to the extension
+                    </Button>
+                  )}
                   {waitingProfileIds.length > 0 && (
                     <Button
                       size="xs"
                       color="brand"
+                      variant={held > 0 ? 'light' : 'filled'}
                       leftSection={<IconMailSearch size={14} />}
                       loading={draining}
                       disabled={extension !== 'ready'}

@@ -10,8 +10,13 @@ import {
   emailLookupEvents,
   enqueueLookups,
   getLookupStats,
+  releaseHandoff,
   type LookupProgress,
 } from '../services/emailLookup.service.js';
+import {
+  getLinkFinderState,
+  resumeLinkFinder,
+} from '../services/linkFinderAccount.service.js';
 import { kickLinkFinderPass } from '../workers/emailLookupWorker.js';
 
 const router = Router();
@@ -251,9 +256,12 @@ router.post('/profiles/find-emails', requireAuth, async (req, res, next) => {
     // this request still answers 202 immediately.
     kickLinkFinderPass(req.user!.id);
 
-    const stats = await getLookupStats(req.user!.id);
+    const [stats, linkFinder] = await Promise.all([
+      getLookupStats(req.user!.id),
+      getLinkFinderState(req.user!.id),
+    ]);
 
-    res.status(202).json({ ok: true, ...result, stats });
+    res.status(202).json({ ok: true, ...result, stats, linkFinder });
   } catch (err) {
     next(err);
   }
@@ -269,8 +277,12 @@ router.post('/profiles/find-emails', requireAuth, async (req, res, next) => {
 router.get('/profiles/find-emails', requireAuth, async (req, res, next) => {
   try {
     const userId = req.user!.id;
-    const [stats, recent] = await Promise.all([
+    const [stats, linkFinder, recent] = await Promise.all([
       getLookupStats(userId),
+      // Shipped with the counts rather than from its own endpoint: the panel
+      // that renders "23 held" is the same panel that has to say *why* nothing
+      // is moving, and two endpoints would let those two disagree for a poll.
+      getLinkFinderState(userId),
       prisma.emailLookup.findMany({
         where: { userId },
         orderBy: { requestedAt: 'desc' },
@@ -291,18 +303,79 @@ router.get('/profiles/find-emails', requireAuth, async (req, res, next) => {
           // than the sweep window is abandoned rather than in progress.
           dispatchedAt: true,
           allowServerFallback: true,
+          // Drives the row badge and keeps the panel's "waiting" actions from
+          // offering to work rows no executor can claim.
+          pendingHandoff: true,
           completedAt: true,
         },
       }),
     ]);
 
-    res.status(200).json({ ok: true, stats, lookups: recent });
+    res.status(200).json({ ok: true, stats, linkFinder, lookups: recent });
   } catch (err) {
     next(err);
   }
 });
 
 /** Drop everything still waiting. Work already leased out is left alone. */
+/**
+ * Resume a paused LinkFinder pass. The manual half of "pause on no credits".
+ *
+ * Only a person can press this, and that is the point: the server cannot see a
+ * topped-up balance or an expired rate-limit window, so an automatic retry
+ * would just walk into the same wall on the user's money. Clearing the pause
+ * and kicking the pass are one action because a Resume that did not visibly
+ * start anything reads as a broken button.
+ */
+router.post(
+  '/profiles/find-emails/resume',
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const userId = req.user!.id;
+      await resumeLinkFinder(userId);
+      kickLinkFinderPass(userId);
+
+      const [stats, linkFinder] = await Promise.all([
+        getLookupStats(userId),
+        getLinkFinderState(userId),
+      ]);
+
+      res.status(202).json({ ok: true, stats, linkFinder });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * Release the rows LinkFinder missed to the extension.
+ *
+ * The other manual gate. LinkFinder does not know everyone, and the browser
+ * waterfall knows some of the people it does not — but that path spends a real
+ * browser and ~30s per profile in a tab the user is looking at, so it is not
+ * entered on their behalf. These rows sit visible and counted until this.
+ */
+router.post(
+  '/profiles/find-emails/handoff',
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const userId = req.user!.id;
+      const released = await releaseHandoff(userId);
+
+      const [stats, linkFinder] = await Promise.all([
+        getLookupStats(userId),
+        getLinkFinderState(userId),
+      ]);
+
+      res.status(200).json({ ok: true, released, stats, linkFinder });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 router.delete('/profiles/find-emails', requireAuth, async (req, res, next) => {
   try {
     const cancelled = await cancelQueuedLookups(req.user!.id);

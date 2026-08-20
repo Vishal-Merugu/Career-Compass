@@ -169,6 +169,35 @@ model UserConfig {
   //
   // smtpPassword is a Google app password, not the account password. It is
   // stored encrypted — see server/src/lib/secretBox.ts.
+  // ─── LinkFinder ────────────────────────────────────────────────
+  // The user's own LinkFinder API key (https://linkfinderai.com). Per-account
+  // rather than an instance-wide env var: the credit balance is theirs, it is
+  // theirs to top up, and a shared key would spend one user's credits on
+  // another's lookups. Encrypted at rest — see server/src/lib/secretBox.ts.
+  //
+  // Null means the layer is off for this user; the lookup queue then goes
+  // straight to the extension waterfall, exactly as it did before the key
+  // existed.
+  linkFinderApiKey String?
+
+  /// When the user's LinkFinder pass was paused, and why.
+  ///
+  /// A pause is deliberate and sticky: out of credits or over the rate limit
+  /// produces the same answer on every subsequent call, so continuing would
+  /// burn the rest of the batch against a wall and report every profile as a
+  /// miss. The queue holds instead, and **only the user resumes it** — from the
+  /// banner on Results, after they have topped up. Nothing clears this on a
+  /// timer, because nothing here can know when their credits came back.
+  ///
+  /// Null means running.
+  linkFinderPausedAt DateTime?
+  /// `no_credits` | `rate_limited` | `bad_key` — see LINKFINDER_PAUSE_REASONS
+  /// in server/src/services/linkFinderAccount.service.ts, which owns the
+  /// user-facing message for each.
+  linkFinderPauseCode String?
+  /// The provider's own words, shown collapsed under the message. Never the key.
+  linkFinderPauseDetail String? @db.Text
+
   smtpUser     String?
   smtpPassword String?
   smtpFromName String?
@@ -282,6 +311,18 @@ model EmailLookup {
   /// browser, where the provider captcha solves) ever had a turn. Opt in per
   /// request when you know no browser is coming.
   allowServerFallback Boolean   @default(false)
+  /// Held for a manual push to the extension.
+  ///
+  /// Set when LinkFinder ran this row and found nothing. The address may still
+  /// exist — the extension's browser waterfall knows people the API does not —
+  /// but that path costs a real browser and the user's time, so it is not
+  /// entered automatically. The row waits, visible and counted, until the user
+  /// presses "Send to extension" on Results.
+  ///
+  /// While true no executor may claim the row: it is not queued work, it is a
+  /// decision waiting on a person. `releaseHandoff` clears it for the whole
+  /// batch at once.
+  pendingHandoff      Boolean   @default(false)
   email               String?
   emailSource         String?
   emailValidation     String?
@@ -297,6 +338,7 @@ model EmailLookup {
   @@index([userId, status])
   @@index([userId, batchId])
   @@index([status, requestedAt])
+  @@index([userId, pendingHandoff])
 }
 
 model WorkflowRun {

@@ -4,55 +4,47 @@
 // widgets need a real browser to solve their Turnstile/reCAPTCHA (that path
 // lives in the extension).
 //
-// Two sources, tried in order, because the official one is the right home but
-// its email endpoint is intermittently broken:
+//   POST https://api.linkfinderai.com   Authorization: Bearer <key>
+//     { "type": "linkedin_profile_to_email", "input_data": "<profile url>" }
+//   → 200 { "status": "success", "result": "person@company.com" }
+//     `result` may be "" or null when nothing is found — still a billed credit.
 //
-//   1. Official API — POST https://api.linkfinderai.com, Bearer auth.
-//        { "type": "linkedin_profile_to_email", "input_data": "<profile url>" }
-//        → 200 { "status": "success", "result": "person@company.com" }  (result
-//          may be "" when nothing is found — still a billed credit).
-//      Proper rate limits (~1 req/s per key; 429 → exponential backoff) and a
-//      credit balance, not a 20/hour wall. Set LINKFINDER_API_KEY to enable.
+// **The key is the user's own, resolved per request** from `UserConfig`
+// (`linkFinderAccount.service.ts`). This module holds no key, reads no
+// environment variable, and keeps no per-account state: a credit balance
+// belongs to whoever paid for it, and an instance-wide key would spend one
+// user's credits on another's lookups. Callers pass the key in.
 //
-//   2. Free worker — POST https://linkfinder-free-tools.hamoureliasse.workers.dev/
-//        x-api-secret: <secret>
-//        { "type": "business_email_finder", "linkedin_url": "<profile url>" }
-//        → 200 { "email": "person@company.com" }
-//      Capped at **20 requests/hour** (429 { "message": "…maximum 20 requests
-//      per hour" }). Used only as a fallback for when the official endpoint is
-//      down, and never worth hammering. Set LINKFINDER_FREE_SECRET to enable.
-//
-// Both keys are secrets: they live only in `.env` (gitignored) and are never
-// logged.
+// There used to be a second source here — a free Cloudflare worker capped at
+// 20 requests/hour, used when the official endpoint 500'd. It was removed with
+// the move to per-user keys: it is an unmetered shared resource with no
+// per-account balance, so it cannot honour "pause when *this user's* credits
+// run out", and a 20/hour ceiling silently became the real limit whenever the
+// official API wobbled. A miss is now a miss, and the extension waterfall is
+// the fallback.
 
 import { logger } from '../../lib/logger.js';
 
-const OFFICIAL_ENDPOINT = 'https://api.linkfinderai.com';
-const FREE_ENDPOINT =
-  'https://linkfinder-free-tools.hamoureliasse.workers.dev/';
+const ENDPOINT = 'https://api.linkfinderai.com';
 
-// The free worker's own site sends these; matching them keeps a fallback call
-// indistinguishable from a legitimate one and costs nothing.
-const FREE_ORIGIN = 'https://linkfinderai.com';
+// Lookups usually answer in ~3s. The docs note that any endpoint can go async
+// past a ~27s window; past this ceiling a call is hung, not slow.
+const REQUEST_TIMEOUT_MS = 45_000;
 
-// Official lookups usually answer in a few seconds; the free worker can take
-// ~40s. One ceiling covers both — past it a call is hung, not slow.
-const REQUEST_TIMEOUT_MS = 75_000;
+// The docs ask for ~1 request/second per key on single lookups and name
+// back-to-back calls as the top cause of 429s. Paced per key rather than
+// process-wide: two users' keys have two separate limits, and sharing one
+// pacer between them would halve the throughput of both for no reason.
+const MIN_SPACING_MS = 1_100;
 
-// The official docs ask for ~1 request/second per key on single lookups, and
-// name back-to-back calls as the top cause of 429s. Space them process-wide so
-// a concurrent batch cannot burst.
-const OFFICIAL_MIN_SPACING_MS = 1_100;
-
-// On a 429, back off and retry a bounded number of times: 1s, then 2s. Kept
-// short because this runs inline in a batch drain, not a background job.
-const OFFICIAL_MAX_RETRIES = 2;
+// On a 429, back off and retry twice — 1s, then 2s — before reporting it. Kept
+// short because this runs inline in a batch drain, not a background job, and
+// because a persistent 429 pauses the pass rather than being retried forever.
+const MAX_RETRIES = 2;
 
 export interface LinkFinderResult {
   ok: boolean;
   email?: string;
-  /** Which source answered — for logs only; the emailSource stays `linkfinder`. */
-  via?: 'official' | 'free';
   reason?:
     | 'not_found'
     | 'rate_limited'
@@ -63,65 +55,68 @@ export interface LinkFinderResult {
   detail?: string;
 }
 
-function officialKey(): string | null {
-  const key = (process.env.LINKFINDER_API_KEY || '').trim();
-  return key || null;
+/**
+ * Reasons that mean "stop the whole pass", not "this profile has no email".
+ *
+ * Each returns the same answer on every subsequent call, so continuing spends
+ * the rest of the batch — and, for `no_credits`, real money — proving it. The
+ * worker maps these onto a pause; everything else is a per-row miss.
+ */
+export function isPausingReason(
+  reason: LinkFinderResult['reason'],
+): reason is 'no_credits' | 'rate_limited' | 'bad_key' {
+  return (
+    reason === 'no_credits' || reason === 'rate_limited' || reason === 'bad_key'
+  );
 }
 
-function freeSecret(): string | null {
-  const key = (process.env.LINKFINDER_FREE_SECRET || '').trim();
-  return key || null;
+// ─── Pacing, per key ─────────────────────────────────────────────
+// Keyed by the credential, not the user: it is the key that carries the rate
+// limit. A short digest rather than the key itself so a heap dump or a stray
+// log of this map cannot leak a credential.
+const lastCallAt = new Map<string, number>();
+
+function paceBucket(key: string): string {
+  return `${key.length}:${key.slice(0, 4)}:${key.slice(-4)}`;
+}
+
+async function pace(key: string): Promise<void> {
+  const bucket = paceBucket(key);
+  const wait = (lastCallAt.get(bucket) ?? 0) + MIN_SPACING_MS - Date.now();
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  lastCallAt.set(bucket, Date.now());
+}
+
+/** Test seam — clears the pacing map between cases. */
+export function resetLinkFinderPacing(): void {
+  lastCallAt.clear();
 }
 
 /**
- * Whether the layer is configured at all. Exported so the queue can reserve
- * fresh rows for LinkFinder and the worker can skip the pass — both must agree
- * on the same answer, so it lives with the keys it reads.
+ * Find a business email for a LinkedIn profile URL, using `apiKey`.
+ *
+ * Never throws for a provider outcome: a rejected key, an empty balance and a
+ * genuine miss are all `{ ok: false, reason }`, because the caller has to tell
+ * them apart to decide between pausing the pass and moving to the next row.
  */
-export function linkFinderEnabled(): boolean {
-  return Boolean(officialKey() || freeSecret());
-}
-
-// ─── Latches ─────────────────────────────────────────────────────
-// A rejected key or an empty credit balance produces the same answer on every
-// subsequent call, so retrying per profile only adds latency. Latch until the
-// process restarts. The free worker's hourly cap is *not* latched here — it
-// resets on its own, and the worker paces around it.
-let officialLatched: string | null = null;
-
-/** Test seam — reset process latches between cases. */
-export function resetLinkFinderLatch(): void {
-  officialLatched = null;
-  lastOfficialCallAt = 0;
-}
-
-// ─── Official API ────────────────────────────────────────────────
-let lastOfficialCallAt = 0;
-
-async function paceOfficial(): Promise<void> {
-  const wait = lastOfficialCallAt + OFFICIAL_MIN_SPACING_MS - Date.now();
-  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-  lastOfficialCallAt = Date.now();
-}
-
-async function viaOfficial(profileUrl: string): Promise<LinkFinderResult> {
-  const key = officialKey();
-  if (!key) return { ok: false, reason: 'disabled', detail: 'no official key' };
-  if (officialLatched) {
-    return { ok: false, reason: 'disabled', detail: officialLatched };
-  }
+export async function findEmailViaLinkFinder(
+  profileUrl: string,
+  apiKey: string | null,
+): Promise<LinkFinderResult> {
+  const key = (apiKey || '').trim().replace(/^Bearer\s+/i, '');
+  if (!key) return { ok: false, reason: 'disabled', detail: 'no API key' };
 
   for (let attempt = 0; ; attempt++) {
-    await paceOfficial();
+    await pace(key);
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
-      const response = await fetch(OFFICIAL_ENDPOINT, {
+      const response = await fetch(ENDPOINT, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${key.replace(/^Bearer\s+/i, '')}`,
+          Authorization: `Bearer ${key}`,
         },
         body: JSON.stringify({
           type: 'linkedin_profile_to_email',
@@ -131,38 +126,29 @@ async function viaOfficial(profileUrl: string): Promise<LinkFinderResult> {
       });
 
       if (response.status === 401) {
-        officialLatched = 'official key rejected (401)';
-        logger.error(
-          '[EmailFinder] LinkFinder official API rejected the key (401). Disabled; check LINKFINDER_API_KEY.',
-        );
-        return { ok: false, via: 'official', reason: 'bad_key' };
+        return { ok: false, reason: 'bad_key', detail: 'HTTP 401' };
       }
       if (response.status === 402) {
-        officialLatched = 'official credits exhausted (402)';
-        logger.warn(
-          '[EmailFinder] LinkFinder official API out of credits (402). Disabled; falling back to the free worker.',
-        );
-        return { ok: false, via: 'official', reason: 'no_credits' };
+        return { ok: false, reason: 'no_credits', detail: 'HTTP 402' };
       }
       if (response.status === 429) {
-        if (attempt < OFFICIAL_MAX_RETRIES) {
+        if (attempt < MAX_RETRIES) {
           const backoff = 1_000 * 2 ** attempt;
           logger.info(
-            `[EmailFinder] LinkFinder official 429 — backing off ${backoff}ms`,
+            `[EmailFinder] LinkFinder 429 — backing off ${backoff}ms`,
           );
           await new Promise((r) => setTimeout(r, backoff));
           continue;
         }
-        return { ok: false, via: 'official', reason: 'rate_limited' };
+        return { ok: false, reason: 'rate_limited', detail: 'HTTP 429' };
       }
 
       if (!response.ok) {
-        // 500 "Workflow execution failed" lands here. Transient on their side —
-        // report an error and let the caller fall back, do not latch.
+        // 500 "Workflow execution failed" lands here. Transient on their side,
+        // so it is a per-row miss — it must not pause the pass.
         const detail = (await response.text().catch(() => '')).slice(0, 200);
         return {
           ok: false,
-          via: 'official',
           reason: 'error',
           detail: `HTTP ${response.status} ${detail}`,
         };
@@ -171,136 +157,33 @@ async function viaOfficial(profileUrl: string): Promise<LinkFinderResult> {
       const data = (await response.json().catch(() => ({}))) as {
         status?: string;
         result?: string | null;
+        message?: string;
         job_id?: string;
       };
 
-      // An async fallback (202/job_id) is too slow to poll inline in a batch
-      // drain. Treat it as a miss so the caller can try the free worker.
+      // Any endpoint can fall back to async past their ~27s window. Polling a
+      // job inline would hold a drain slot for a minute per row, and the job
+      // expires in ten. Treat it as a miss; the extension can still try.
       if (data.job_id) {
         return {
           ok: false,
-          via: 'official',
           reason: 'error',
           detail: 'async job — not polled inline',
         };
       }
 
       const email = (data.result || '').trim();
-      if (email) return { ok: true, email, via: 'official' };
-      return { ok: false, via: 'official', reason: 'not_found' };
+      if (email) return { ok: true, email };
+      return { ok: false, reason: 'not_found', detail: data.message };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (/abort/i.test(message)) {
-        return {
-          ok: false,
-          via: 'official',
-          reason: 'error',
-          detail: 'timed out',
-        };
+        return { ok: false, reason: 'error', detail: 'timed out' };
       }
-      logger.error({ err }, '[EmailFinder] LinkFinder official request failed');
-      return { ok: false, via: 'official', reason: 'error', detail: message };
+      logger.error({ err }, '[EmailFinder] LinkFinder request failed');
+      return { ok: false, reason: 'error', detail: message };
     } finally {
       clearTimeout(timer);
     }
   }
-}
-
-// ─── Free worker (fallback) ──────────────────────────────────────
-async function viaFreeWorker(profileUrl: string): Promise<LinkFinderResult> {
-  const secret = freeSecret();
-  if (!secret)
-    return { ok: false, reason: 'disabled', detail: 'no free secret' };
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  try {
-    const response = await fetch(FREE_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: '*/*',
-        Origin: FREE_ORIGIN,
-        Referer: `${FREE_ORIGIN}/`,
-        'x-api-secret': secret,
-      },
-      body: JSON.stringify({
-        type: 'business_email_finder',
-        linkedin_url: profileUrl,
-      }),
-      signal: controller.signal,
-    });
-
-    // The free tool answers a rate-limit with 429 and a body that says
-    // "maximum 20 requests per hour". Surface it distinctly so the worker can
-    // hold the row for the next window instead of burning an attempt on it.
-    if (response.status === 429) {
-      return { ok: false, via: 'free', reason: 'rate_limited' };
-    }
-    if (response.status === 401 || response.status === 403) {
-      return { ok: false, via: 'free', reason: 'bad_key' };
-    }
-    if (!response.ok) {
-      const detail = (await response.text().catch(() => '')).slice(0, 200);
-      return {
-        ok: false,
-        via: 'free',
-        reason: 'error',
-        detail: `HTTP ${response.status} ${detail}`,
-      };
-    }
-
-    const data = (await response.json().catch(() => ({}))) as {
-      email?: string | null;
-    };
-    const email = (data.email || '').trim();
-    if (email) return { ok: true, email, via: 'free' };
-    return { ok: false, via: 'free', reason: 'not_found' };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (/abort/i.test(message)) {
-      return { ok: false, via: 'free', reason: 'error', detail: 'timed out' };
-    }
-    logger.error(
-      { err },
-      '[EmailFinder] LinkFinder free-worker request failed',
-    );
-    return { ok: false, via: 'free', reason: 'error', detail: message };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * Find a business email for a LinkedIn profile URL.
- *
- * Official API first; on anything short of a hit that is not a hard stop
- * (bad key / no credits / genuine not_found), fall back to the free worker.
- * A `rate_limited` result is propagated so the caller can hold the row rather
- * than spend an attempt on it.
- */
-export async function findEmailViaLinkFinder(
-  profileUrl: string,
-): Promise<LinkFinderResult> {
-  const official = await viaOfficial(profileUrl);
-  if (official.ok) return official;
-
-  // Nothing to gain from the free worker on these: the profile genuinely has no
-  // address, or the official layer is off. Everything else (500, timeout,
-  // rate_limited, async) is worth a fallback attempt.
-  const officialSettled =
-    official.reason === 'not_found' || official.reason === 'disabled';
-
-  if (!freeSecret() || (officialSettled && official.reason === 'not_found')) {
-    return official;
-  }
-
-  const free = await viaFreeWorker(profileUrl);
-  if (free.ok) return free;
-
-  // Neither found it. Prefer the more informative reason: a rate-limit or a
-  // real not_found tells the caller what to do; a bare "disabled" does not.
-  if (free.reason === 'rate_limited') return free;
-  if (official.reason && official.reason !== 'disabled') return official;
-  return free;
 }

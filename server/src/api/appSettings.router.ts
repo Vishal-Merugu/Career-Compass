@@ -19,6 +19,15 @@ import { requireAuth } from '../auth/middleware.js';
 import { prisma } from '../lib/prisma.js';
 import { NotFoundError, ValidationError } from '../errors/AppError.js';
 import { encryptSecret } from '../lib/secretBox.js';
+import {
+  getLinkFinderKey,
+  getLinkFinderState,
+  isPauseCode,
+  LINKFINDER_PAUSE_REASONS,
+  resumeLinkFinder,
+  sealLinkFinderKey,
+} from '../services/linkFinderAccount.service.js';
+import { findEmailViaLinkFinder } from '../services/emailFinder/linkfinder.js';
 import { env } from '../config/env.js';
 import { DEFAULT_SEARCH_PROMPT } from '../config/defaultPrompt.js';
 import { llmHealthCheck, LLM_PROVIDERS } from '../shared/llmClient.js';
@@ -52,6 +61,15 @@ const finderSchema = z.object({
   dailyLimit: z.number().int().min(1).max(100).optional(),
   emailFinderEnabled: z.boolean().optional(),
   userContext: z.string().max(5000).nullable().optional(),
+  // Absent means "leave unchanged"; explicit null clears it. The stored value
+  // is never sent to the client, so it cannot be echoed back by accident —
+  // the form sends a boolean `linkFinderApiKeySet` instead.
+  linkFinderApiKey: z.string().min(1).max(500).nullable().optional(),
+});
+
+/** An unsaved key from the form, or nothing to use the stored one. */
+const checkKeySchema = z.object({
+  apiKey: z.string().min(1).max(500).optional(),
 });
 
 /** Created on first read so a fresh account has something to edit. */
@@ -439,6 +457,9 @@ router.get('/settings/finder', requireAuth, async (req, res, next) => {
         dailyLimit: config.dailyLimit,
         emailFinderEnabled: config.emailFinderEnabled,
         userContext: config.userContext,
+        // Never the key itself.
+        linkFinderApiKeySet: Boolean(config.linkFinderApiKey),
+        linkFinder: await getLinkFinderState(req.user!.id),
       },
     });
   } catch (err) {
@@ -448,14 +469,35 @@ router.get('/settings/finder', requireAuth, async (req, res, next) => {
 
 router.put('/settings/finder', requireAuth, async (req, res, next) => {
   try {
-    const body = finderSchema.parse(req.body);
+    const { linkFinderApiKey, ...rest } = finderSchema.parse(req.body);
     const userId = req.user!.id;
+
+    // `undefined` leaves the stored key alone, `null` clears it, a string
+    // replaces it — and a replacement is always encrypted here, so no route
+    // can put a plaintext credential in the column by forgetting to.
+    const keyPatch =
+      linkFinderApiKey === undefined
+        ? {}
+        : {
+            linkFinderApiKey:
+              linkFinderApiKey === null
+                ? null
+                : sealLinkFinderKey(linkFinderApiKey),
+          };
 
     const config = await prisma.userConfig.upsert({
       where: { userId },
-      update: body,
-      create: { userId, ...body },
+      update: { ...rest, ...keyPatch },
+      create: { userId, ...rest, ...keyPatch },
     });
+
+    // Entering a key is the fix for a `bad_key` pause, so it clears it. The
+    // other two pauses are about a balance and a rate limit, which a new key
+    // says nothing about — those still need the Resume button, deliberately.
+    if (linkFinderApiKey) {
+      const state = await getLinkFinderState(userId);
+      if (state.pauseCode === 'bad_key') await resumeLinkFinder(userId);
+    }
 
     res.status(200).json({
       ok: true,
@@ -465,6 +507,8 @@ router.put('/settings/finder', requireAuth, async (req, res, next) => {
         dailyLimit: config.dailyLimit,
         emailFinderEnabled: config.emailFinderEnabled,
         userContext: config.userContext,
+        linkFinderApiKeySet: Boolean(config.linkFinderApiKey),
+        linkFinder: await getLinkFinderState(userId),
       },
     });
   } catch (err) {
@@ -474,6 +518,69 @@ router.put('/settings/finder', requireAuth, async (req, res, next) => {
     next(err);
   }
 });
+
+/**
+ * Check a LinkFinder key against the real API.
+ *
+ * **This spends one credit.** LinkFinder bills per request including misses,
+ * and has no free "whoami" endpoint, so there is no way to prove a key works
+ * without using it once. The UI says so on the button rather than hiding it —
+ * a check that quietly costs money is worse than no check.
+ *
+ * Takes the key from the body when the form has an unsaved one in it, so the
+ * user can verify before committing, and falls back to the stored key.
+ */
+router.post(
+  '/settings/finder/linkfinder/check',
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const userId = req.user!.id;
+      const supplied = checkKeySchema.parse(req.body).apiKey ?? null;
+      const key = supplied ?? (await getLinkFinderKey(userId));
+
+      if (!key) {
+        return res.status(200).json({
+          ok: false,
+          reason: 'disabled',
+          message: 'No LinkFinder API key saved yet.',
+        });
+      }
+
+      // A real, public profile. The result does not matter — only which of
+      // 200 / 401 / 402 came back does.
+      const result = await findEmailViaLinkFinder(
+        'https://www.linkedin.com/in/williamhgates/',
+        key,
+      );
+
+      if (result.ok || result.reason === 'not_found') {
+        // A miss still proves the key authenticated and had a credit to spend.
+        return res.status(200).json({
+          ok: true,
+          message: 'Key works. LinkFinder answered and the credit was spent.',
+        });
+      }
+
+      const message =
+        result.reason && isPauseCode(result.reason)
+          ? LINKFINDER_PAUSE_REASONS[result.reason].title
+          : `LinkFinder did not answer (${result.reason ?? 'error'}).`;
+
+      res.status(200).json({
+        ok: false,
+        reason: result.reason ?? 'error',
+        message,
+        detail: result.detail ?? null,
+      });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return next(new ValidationError('Invalid check payload', err.errors));
+      }
+      next(err);
+    }
+  },
+);
 
 // ─── Telegram ────────────────────────────────────────────────────
 //
