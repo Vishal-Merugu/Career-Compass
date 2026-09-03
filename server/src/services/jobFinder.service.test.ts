@@ -54,6 +54,15 @@ describe('jobFinder.service', () => {
       );
       expect(overridden.easyApplyOnly).toBe(true);
     });
+
+    it('ensures language requirements are stripped from LinkedIn search keywords and used only for JD filtering', async () => {
+      const criteria = await parseCriteriaFromPrompt(
+        'Golang backend engineer in Berlin without German or German optional, need 25 jobs',
+      );
+      expect(criteria.keywords.toLowerCase()).not.toContain('german');
+      expect(criteria.keywords.toLowerCase()).not.toContain('without');
+      expect(criteria.languageRule.germanRequirement).toBe('no_german');
+    });
   });
 
   describe('evaluateJobDescription', () => {
