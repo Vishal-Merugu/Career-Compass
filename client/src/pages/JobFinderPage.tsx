@@ -94,7 +94,9 @@ export function JobFinderPage() {
   const [runsList, setRunsList] = useState<RunSummary[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [runDetails, setRunDetails] = useState<RunStatus | null>(null);
-  const [filterTab, setFilterTab] = useState<'passed' | 'all' | 'rejected'>('passed');
+  const [filterTab, setFilterTab] = useState<'passed' | 'all' | 'rejected'>(
+    'passed',
+  );
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
 
   // Auto-toggle Easy Apply switch when user types "easy apply" in prompt
@@ -109,7 +111,9 @@ export function JobFinderPage() {
   // Fetch all runs
   const fetchRunsList = async () => {
     try {
-      const res = await api.get<{ success: boolean; runs: RunSummary[] }>('/api/easy-apply/runs');
+      const res = await api.get<{ success: boolean; runs: RunSummary[] }>(
+        '/api/easy-apply/runs',
+      );
       if (res.success && res.runs) {
         setRunsList(res.runs);
       }
@@ -180,7 +184,10 @@ export function JobFinderPage() {
   });
 
   return (
-    <Stack gap="lg" style={{ maxWidth: 1200, margin: '0 auto', paddingBottom: 60 }}>
+    <Stack
+      gap="lg"
+      style={{ maxWidth: 1200, margin: '0 auto', paddingBottom: 60 }}
+    >
       {/* Header */}
       <Group justify="space-between" align="flex-start">
         <Box>
@@ -191,7 +198,9 @@ export function JobFinderPage() {
             </Badge>
           </Group>
           <Text c="dimmed" size="sm" mt={4}>
-            Find matching jobs, inspect full Job Descriptions with AI, verify language requirements (e.g. without German or German optional), and save directly to database.
+            Find matching jobs, inspect full Job Descriptions with AI, verify
+            language requirements (e.g. without German or German optional), and
+            save directly to database.
           </Text>
         </Box>
       </Group>
@@ -237,7 +246,9 @@ export function JobFinderPage() {
                 label="Target Count (N)"
                 description="Defaults to 20 if omitted"
                 value={countOverride}
-                onChange={(val) => setCountOverride(typeof val === 'number' ? val : '')}
+                onChange={(val) =>
+                  setCountOverride(typeof val === 'number' ? val : '')
+                }
                 min={1}
                 max={200}
                 style={{ width: 160 }}
@@ -254,7 +265,13 @@ export function JobFinderPage() {
 
             <Button
               size="md"
-              leftSection={loading ? <IconRefresh className="spin" size={18} /> : <IconPlayerPlay size={18} />}
+              leftSection={
+                loading ? (
+                  <IconRefresh className="spin" size={18} />
+                ) : (
+                  <IconPlayerPlay size={18} />
+                )
+              }
               onClick={handleStartSearch}
               loading={loading}
               disabled={!prompt.trim()}
@@ -281,7 +298,8 @@ export function JobFinderPage() {
 
         {runsList.length === 0 ? (
           <Text c="dimmed" size="sm" ta="center" py="xl">
-            No searches run yet. Enter your criteria above and click 'Start New Search'!
+            No searches run yet. Enter your criteria above and click 'Start New
+            Search'!
           </Text>
         ) : (
           <Table verticalSpacing="xs" highlightOnHover>
@@ -291,7 +309,9 @@ export function JobFinderPage() {
                 <Table.Th style={{ width: 130 }}>Status</Table.Th>
                 <Table.Th style={{ width: 150 }}>Progress</Table.Th>
                 <Table.Th style={{ width: 120 }}>Started</Table.Th>
-                <Table.Th style={{ width: 220, textAlign: 'right' }}>Actions</Table.Th>
+                <Table.Th style={{ width: 220, textAlign: 'right' }}>
+                  Actions
+                </Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
@@ -299,20 +319,33 @@ export function JobFinderPage() {
                 const isSelected = selectedRunId === run.id;
                 const isRunning = run.status === 'running';
                 const isCompleted = run.status === 'completed';
-                const percent = Math.min(100, Math.round((run.qualifiedCount / (run.targetCount || 20)) * 100));
+                const percent = Math.min(
+                  100,
+                  Math.round(
+                    (run.qualifiedCount / (run.targetCount || 20)) * 100,
+                  ),
+                );
 
                 return (
                   <Table.Tr
                     key={run.id}
                     style={{
-                      backgroundColor: isSelected ? 'var(--mantine-color-blue-light)' : undefined,
+                      backgroundColor: isSelected
+                        ? 'var(--mantine-color-blue-light)'
+                        : undefined,
                     }}
                   >
                     <Table.Td>
                       <Text fw={600} size="sm">
-                        {run.criteria?.keywords || 'Job Discovery'} in {run.criteria?.location || 'Germany'}
+                        {run.criteria?.keywords || 'Job Discovery'} in{' '}
+                        {run.criteria?.location || 'Germany'}
                       </Text>
-                      <Text size="xs" c="dimmed" truncate style={{ maxWidth: 380 }}>
+                      <Text
+                        size="xs"
+                        c="dimmed"
+                        truncate
+                        style={{ maxWidth: 380 }}
+                      >
                         "{run.prompt}"
                       </Text>
                       <Group gap={4} mt={4}>
@@ -322,7 +355,8 @@ export function JobFinderPage() {
                           </Badge>
                         )}
                         <Badge size="xs" color="gray" variant="outline">
-                          {run.criteria?.languageRule?.germanRequirement || 'any language'}
+                          {run.criteria?.languageRule?.germanRequirement ||
+                            'any language'}
                         </Badge>
                       </Group>
                     </Table.Td>
@@ -362,7 +396,10 @@ export function JobFinderPage() {
                       <Group gap={4}>
                         <IconClock size={13} color="gray" />
                         <Text size="xs" c="dimmed">
-                          {new Date(run.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          {new Date(run.createdAt).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
                         </Text>
                       </Group>
                     </Table.Td>
@@ -416,13 +453,19 @@ export function JobFinderPage() {
                 Search Results: "{runDetails.prompt}"
               </Text>
               <Text size="xs" c="dimmed">
-                {runDetails.scannedCount} total jobs scanned · {runDetails.qualifiedCount} passed criteria · {runDetails.rejectedCount} rejected
+                {runDetails.scannedCount} total jobs scanned ·{' '}
+                {runDetails.qualifiedCount} passed criteria ·{' '}
+                {runDetails.rejectedCount} rejected
               </Text>
             </Box>
 
             {runDetails.qualifiedCount > 0 && (
               <Group gap="xs">
-                <Badge color="teal" variant="light" leftSection={<IconDatabase size={13} />}>
+                <Badge
+                  color="teal"
+                  variant="light"
+                  leftSection={<IconDatabase size={13} />}
+                >
                   Saved to Database ({runDetails.qualifiedCount})
                 </Badge>
                 <Button
@@ -483,7 +526,8 @@ export function JobFinderPage() {
               <Group gap="xs" mt={4}>
                 <IconBriefcase size={18} color="#7950f2" />
                 <Text fw={600} size="sm">
-                  {runDetails.qualifiedCount} / {runDetails.targetCount} qualified
+                  {runDetails.qualifiedCount} / {runDetails.targetCount}{' '}
+                  qualified
                 </Text>
               </Group>
             </Card>
@@ -536,7 +580,10 @@ export function JobFinderPage() {
                 <Table.Tbody>
                   {displayedJobs.length === 0 ? (
                     <Table.Tr>
-                      <Table.Td colSpan={6} style={{ textAlign: 'center', padding: '30px' }}>
+                      <Table.Td
+                        colSpan={6}
+                        style={{ textAlign: 'center', padding: '30px' }}
+                      >
                         <Text c="dimmed" size="sm">
                           {runDetails.status === 'running'
                             ? 'Evaluating candidate jobs from LinkedIn...'
@@ -551,16 +598,28 @@ export function JobFinderPage() {
                           key={job.jobId}
                           style={{ cursor: 'pointer' }}
                           onClick={() =>
-                            setExpandedJobId(expandedJobId === job.jobId ? null : job.jobId)
+                            setExpandedJobId(
+                              expandedJobId === job.jobId ? null : job.jobId,
+                            )
                           }
                         >
                           <Table.Td>
                             {job.passed ? (
-                              <ThemeIcon color="green" variant="light" size="sm" radius="xl">
+                              <ThemeIcon
+                                color="green"
+                                variant="light"
+                                size="sm"
+                                radius="xl"
+                              >
                                 <IconCheck size={14} />
                               </ThemeIcon>
                             ) : (
-                              <ThemeIcon color="red" variant="light" size="sm" radius="xl">
+                              <ThemeIcon
+                                color="red"
+                                variant="light"
+                                size="sm"
+                                radius="xl"
+                              >
                                 <IconX size={14} />
                               </ThemeIcon>
                             )}
@@ -610,12 +669,30 @@ export function JobFinderPage() {
                         {/* Collapsible JD preview */}
                         {expandedJobId === job.jobId && (
                           <Table.Tr key={`${job.jobId}_detail`}>
-                            <Table.Td colSpan={6} style={{ background: 'var(--mantine-color-dark-8, #f8f9fa)', padding: 16 }}>
+                            <Table.Td
+                              colSpan={6}
+                              style={{
+                                background:
+                                  'var(--mantine-color-dark-8, #f8f9fa)',
+                                padding: 16,
+                              }}
+                            >
                               <Text size="xs" fw={700} c="dimmed" mb={4}>
                                 Job Description Excerpt:
                               </Text>
-                              <Paper p="xs" radius="sm" withBorder style={{ maxHeight: 180, overflowY: 'auto' }}>
-                                <Text size="xs" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+                              <Paper
+                                p="xs"
+                                radius="sm"
+                                withBorder
+                                style={{ maxHeight: 180, overflowY: 'auto' }}
+                              >
+                                <Text
+                                  size="xs"
+                                  style={{
+                                    whiteSpace: 'pre-wrap',
+                                    lineHeight: 1.5,
+                                  }}
+                                >
                                   {job.jdSnippet || 'No description available.'}
                                 </Text>
                               </Paper>
