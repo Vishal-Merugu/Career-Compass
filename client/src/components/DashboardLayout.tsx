@@ -18,6 +18,7 @@ import { useDisclosure } from '@mantine/hooks';
 import {
   IconChecklist,
   IconChevronDown,
+  IconBriefcase,
   IconLogout,
   IconMail,
   IconMailSearch,
@@ -38,6 +39,7 @@ const NAV_SECTIONS = [
   {
     label: 'Pipeline',
     items: [
+      { to: '/jobs', label: 'Job Finder', icon: IconBriefcase },
       // Runs first: it is the live screen, and Results is what a run produces.
       { to: '/runs', label: 'Runs', icon: IconRadar },
       { to: '/results', label: 'Results', icon: IconTable },

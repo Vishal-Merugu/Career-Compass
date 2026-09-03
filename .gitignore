@@ -32,3 +32,7 @@ tasks/handoff.md
 # deployed copy lives in a Docker volume rather than the repo.
 server/uploads/
 uploads/
+
+# Local data / persistent fallback store
+server/data/
+data/
