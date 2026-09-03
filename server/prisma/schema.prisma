@@ -26,6 +26,7 @@ model User {
   campaigns    Campaign[]
   emailLookups EmailLookup[]
   llmCredentials LlmCredential[]
+  easyApplyJobs  EasyApplyJob[]
 }
 
 /// One model the account can call, and the key to call it with.
@@ -628,4 +629,29 @@ model CampaignContact {
   // selection silently queues a second email to the same person.
   @@unique([campaignId, profileId])
   @@index([campaignId, status])
+}
+
+/// Qualified Easy Apply job postings saved for user
+model EasyApplyJob {
+  id                 String   @id @default(uuid())
+  userId             String?
+  jobId              String   @unique
+  title              String
+  company            String
+  location           String
+  url                String
+  postedDate         String?
+  passed             Boolean  @default(true)
+  fitScore           Int      @default(0)
+  languageAssessment String
+  reason             String   @db.Text
+  jdSnippet          String?  @db.Text
+  searchPrompt       String?  @db.Text
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, passed])
+  @@index([createdAt])
 }

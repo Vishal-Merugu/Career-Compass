@@ -10,6 +10,7 @@ import { CampaignsPage } from './pages/CampaignsPage';
 import { CampaignDetailPage } from './pages/CampaignDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { SetupPage } from './pages/SetupPage';
+import { JobFinderPage } from './pages/JobFinderPage';
 
 export function App() {
   return (
@@ -19,6 +20,7 @@ export function App() {
 
       <Route element={<RequireAuth />}>
         <Route element={<DashboardLayout />}>
+          <Route path="/jobs" element={<JobFinderPage />} />
           <Route path="/runs" element={<RunsPage />} />
           <Route path="/runs/:id" element={<RunDetailPage />} />
           <Route path="/results" element={<ResultsPage />} />

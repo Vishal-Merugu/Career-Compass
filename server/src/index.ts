@@ -23,6 +23,7 @@ import { jobsRouter } from './api/jobs.router.js';
 import { syncRouter } from './api/sync.router.js';
 import { emailLookupsRouter } from './api/emailLookups.router.js';
 import { sessionRouter } from './api/session.router.js';
+import { jobFinderRouter } from './api/jobFinder.router.js';
 import { SchedulerService } from './services/scheduler.service.js';
 import { telegramBotService } from './telegram/bot.js';
 import { initRedis, redisClient } from './lib/redis.js';
@@ -116,6 +117,8 @@ app.use('/api/session', sessionRouter);
 app.use('/api', jobsRouter);
 // Paths inside are already prefixed /email-lookups.
 app.use('/api', emailLookupsRouter);
+app.use('/api/easy-apply', jobFinderRouter);
+app.use('/api/jobs-finder', jobFinderRouter);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
