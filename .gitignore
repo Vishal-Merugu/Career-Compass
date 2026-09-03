@@ -36,3 +36,6 @@ uploads/
 # Local data / persistent fallback store
 server/data/
 data/
+
+# Never commit CSV files
+*.csv
