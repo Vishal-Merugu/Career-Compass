@@ -225,6 +225,9 @@ export async function parseCriteriaFromPrompt(
     }
   }
 
+  // Ensure language constraints never pollute the LinkedIn search query
+  keywords = sanitizeSearchKeywords(keywords) || 'working student';
+
   const defaultCriteria: ParsedSearchCriteria = {
     keywords,
     location,
@@ -259,6 +262,10 @@ export async function parseCriteriaFromPrompt(
   "mustHaveKeywords": string[],
   "excludedKeywords": string[]
 }
+
+CRITICAL RULES:
+1. "keywords": This string is passed directly into LinkedIn's search bar. It MUST ONLY contain the job title, skill, or role (e.g. "React developer", "working student", "DevOps Engineer").
+2. NEVER include language constraints (e.g. "without german", "no german", "german optional") in "keywords" or "excludedKeywords". Language constraints belong EXCLUSIVELY in "germanRequirement" and are used only to evaluate the Job Description text.
 Output valid JSON only.`;
 
       const parsedJson = await withLlmFallback(userId, async (target) => {
@@ -275,9 +282,11 @@ Output valid JSON only.`;
       });
 
       if (parsedJson && parsedJson.keywords) {
+        const cleanLlmKw = sanitizeSearchKeywords(parsedJson.keywords);
         return {
           ...defaultCriteria,
-          keywords: parsedJson.keywords || defaultCriteria.keywords,
+          keywords:
+            cleanLlmKw.length >= 2 ? cleanLlmKw : defaultCriteria.keywords,
           location: parsedJson.location || defaultCriteria.location,
           targetCount:
             countOverride && countOverride > 0
@@ -303,6 +312,22 @@ Output valid JSON only.`;
   }
 
   return defaultCriteria;
+}
+
+/**
+ * Strips language requirement phrases out of search query keywords
+ * so LinkedIn search bar receives only the role/specialization.
+ */
+export function sanitizeSearchKeywords(raw: string): string {
+  if (!raw) return '';
+  return raw
+    .replace(
+      /\b(without german|german optional|german is optional|german is just optional|no german|german not required|non-german|exclude german|with german|german required|german speaking|english only|english speaking|german|deutsch)\b/gi,
+      '',
+    )
+    .replace(/[,.]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /**
@@ -371,8 +396,10 @@ export async function searchEasyApplyJobs(
     date: string;
   }>
 > {
+  const cleanKeywords =
+    sanitizeSearchKeywords(criteria.keywords) || criteria.keywords;
   const params = new URLSearchParams({
-    keywords: criteria.keywords,
+    keywords: cleanKeywords,
     start: String(start),
   });
 
@@ -768,6 +795,7 @@ export async function runEasyApplyDiscovery(
   easyApplyOverride?: boolean,
   onProgress?: (run: EasyApplyRun) => void,
   waitForCompletion = false,
+  timeFilterOverride?: string,
 ): Promise<EasyApplyRun> {
   const criteria = await parseCriteriaFromPrompt(
     prompt,
@@ -791,6 +819,11 @@ export async function runEasyApplyDiscovery(
     jobs: [],
     createdAt: new Date(),
   };
+  // Scheduled discovery is intentionally restricted to the last 24 hours.
+  // Keep this separate from the prompt so the saved search remains legible.
+  if (timeFilterOverride) {
+    run.criteria.timeFilter = timeFilterOverride;
+  }
 
   activeRuns.set(runId, run);
   if (onProgress) onProgress(run);

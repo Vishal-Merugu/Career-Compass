@@ -1,6 +1,26 @@
 import cron from 'node-cron';
 import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
+import { runEasyApplyDiscovery } from './jobFinder.service.js';
+
+function localDateAndTime(timezone: string, now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(now);
+  const value = (type: string) =>
+    parts.find((part) => part.type === type)?.value;
+  return {
+    date: `${value('year')}-${value('month')}-${value('day')}`,
+    hour: value('hour'),
+    minute: value('minute'),
+  };
+}
 
 export class SchedulerService {
   /**
@@ -46,6 +66,74 @@ export class SchedulerService {
         }
       } catch (err) {
         logger.error(err, '[Scheduler] Hourly log cleanup cron failed');
+      }
+    });
+
+    // Check once per minute so every account can run at 09:00 in its own
+    // IANA timezone. `lastRunOn` makes restarts and repeated ticks idempotent.
+    cron.schedule('* * * * *', async () => {
+      try {
+        const schedules = await prisma.easyApplySchedule.findMany({
+          where: { enabled: true },
+          select: {
+            id: true,
+            userId: true,
+            prompt: true,
+            targetCount: true,
+            timezone: true,
+          },
+        });
+
+        for (const schedule of schedules) {
+          let local;
+          try {
+            local = localDateAndTime(schedule.timezone);
+          } catch {
+            await prisma.easyApplySchedule.update({
+              where: { id: schedule.id },
+              data: {
+                lastError:
+                  'Invalid timezone. Choose a valid timezone in the Easy Apply schedule.',
+              },
+            });
+            continue;
+          }
+          if (local.hour !== '09' || local.minute !== '00') continue;
+
+          const claimed = await prisma.easyApplySchedule.updateMany({
+            where: {
+              id: schedule.id,
+              OR: [{ lastRunOn: null }, { lastRunOn: { not: local.date } }],
+            },
+            data: {
+              lastRunOn: local.date,
+              lastRunAt: new Date(),
+              lastError: null,
+            },
+          });
+          if (claimed.count === 0) continue;
+
+          logger.info(
+            `[Scheduler] Starting daily Easy Apply discovery for user ${schedule.userId}`,
+          );
+          runEasyApplyDiscovery(
+            schedule.prompt,
+            schedule.userId,
+            schedule.targetCount,
+            true,
+            undefined,
+            false,
+            'r86400',
+          ).catch(async (err: Error) => {
+            logger.error(err, '[Scheduler] Daily Easy Apply discovery failed');
+            await prisma.easyApplySchedule.update({
+              where: { id: schedule.id },
+              data: { lastError: err.message },
+            });
+          });
+        }
+      } catch (err) {
+        logger.error(err, '[Scheduler] Daily Easy Apply scheduler failed');
       }
     });
   }
