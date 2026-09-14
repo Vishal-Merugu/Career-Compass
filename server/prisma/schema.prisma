@@ -27,6 +27,7 @@ model User {
   emailLookups EmailLookup[]
   llmCredentials LlmCredential[]
   easyApplyJobs  EasyApplyJob[]
+  easyApplySchedule EasyApplySchedule?
 }
 
 /// One model the account can call, and the key to call it with.
@@ -654,4 +655,24 @@ model EasyApplyJob {
 
   @@index([userId, passed])
   @@index([createdAt])
+}
+
+/// A user's saved daily Easy Apply discovery. Applications are deliberately
+/// not submitted here: a person must review every job and its questions first.
+model EasyApplySchedule {
+  id           String   @id @default(uuid())
+  userId       String   @unique
+  enabled      Boolean  @default(false)
+  prompt       String   @db.Text
+  targetCount  Int      @default(20)
+  timezone     String   @default("UTC")
+  lastRunOn    String?
+  lastRunAt    DateTime?
+  lastError    String?  @db.Text
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([enabled])
 }

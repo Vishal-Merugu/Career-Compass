@@ -23,6 +23,7 @@ import {
 } from '@mantine/core';
 import {
   IconBriefcase,
+  IconCalendar,
   IconCheck,
   IconClock,
   IconDatabase,
@@ -79,17 +80,26 @@ interface RunStatus extends RunSummary {
   errorMessage?: string;
 }
 
+interface DailySchedule {
+  enabled: boolean;
+  prompt: string;
+  targetCount: number;
+  timezone: string;
+  lastRunAt?: string | null;
+  lastError?: string | null;
+}
+
 const PRESET_PROMPTS = [
-  'working student in Germany without German or German optional 20 jobs',
+  'Software Engineer Intern or Junior Backend Developer in Germany or remote, English only or German optional, TypeScript Node.js Python REST APIs PostgreSQL Redis, Easy Apply, target 20',
   'React developer in Berlin without German, Easy Apply, target 20',
   'Software Engineer intern in Germany, English only, need 20',
-  'Python Backend Developer remote or Germany, German optional 20 jobs',
+  'Python Backend Developer in Germany or remote, English only or German optional, Easy Apply, target 20',
 ];
 
 export function JobFinderPage() {
   const [prompt, setPrompt] = useState(PRESET_PROMPTS[0]);
   const [countOverride, setCountOverride] = useState<number | ''>(20);
-  const [easyApplyOnly, setEasyApplyOnly] = useState(false);
+  const [easyApplyOnly, setEasyApplyOnly] = useState(true);
   const [loading, setLoading] = useState(false);
   const [runsList, setRunsList] = useState<RunSummary[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
@@ -98,6 +108,11 @@ export function JobFinderPage() {
     'passed',
   );
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
+  const [dailySchedule, setDailySchedule] = useState<DailySchedule | null>(
+    null,
+  );
+  const [scheduleSaving, setScheduleSaving] = useState(false);
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 
   // Auto-toggle Easy Apply switch when user types "easy apply" in prompt
   const handlePromptChange = (val: string) => {
@@ -122,9 +137,22 @@ export function JobFinderPage() {
     }
   };
 
+  const fetchDailySchedule = async () => {
+    try {
+      const res = await api.get<{
+        success: boolean;
+        schedule: DailySchedule | null;
+      }>('/api/easy-apply/schedule');
+      if (res.success) setDailySchedule(res.schedule);
+    } catch {
+      // The regular search remains usable if the schedule has not been set up.
+    }
+  };
+
   // Poll runs list and active selected run
   useEffect(() => {
     fetchRunsList();
+    fetchDailySchedule();
     const interval = setInterval(async () => {
       await fetchRunsList();
 
@@ -148,6 +176,27 @@ export function JobFinderPage() {
 
     return () => clearInterval(interval);
   }, [selectedRunId]);
+
+  const saveDailySchedule = async (enabled: boolean) => {
+    if (!prompt.trim()) return;
+    setScheduleSaving(true);
+    try {
+      const res = await api.put<{ success: boolean; schedule: DailySchedule }>(
+        '/api/easy-apply/schedule',
+        {
+          enabled,
+          prompt,
+          targetCount: typeof countOverride === 'number' ? countOverride : 20,
+          timezone,
+        },
+      );
+      if (res.success) setDailySchedule(res.schedule);
+    } catch (err: any) {
+      alert('Could not save daily search: ' + (err.message || 'Unknown error'));
+    } finally {
+      setScheduleSaving(false);
+    }
+  };
 
   const handleStartSearch = async () => {
     if (!prompt.trim()) return;
@@ -280,6 +329,43 @@ export function JobFinderPage() {
             </Button>
           </Group>
         </Stack>
+      </Paper>
+
+      <Paper p="md" radius="md" withBorder>
+        <Group justify="space-between" align="center">
+          <Group gap="sm">
+            <ThemeIcon variant="light" color="blue" size="lg" radius="md">
+              <IconCalendar size={19} />
+            </ThemeIcon>
+            <Box>
+              <Text fw={700}>Daily Easy Apply search</Text>
+              <Text size="sm" c="dimmed">
+                At 9:00 AM ({timezone}), finds Easy Apply jobs posted in the
+                last 24 hours and adds qualified matches for your review.
+              </Text>
+            </Box>
+          </Group>
+          <Switch
+            aria-label="Run Easy Apply search daily at 9 AM"
+            checked={dailySchedule?.enabled ?? false}
+            onChange={(event) => saveDailySchedule(event.currentTarget.checked)}
+            disabled={scheduleSaving || !prompt.trim()}
+            label={dailySchedule?.enabled ? 'On' : 'Off'}
+          />
+        </Group>
+        {dailySchedule?.enabled && (
+          <Text
+            size="xs"
+            c={dailySchedule.lastError ? 'red' : 'dimmed'}
+            mt="sm"
+          >
+            {dailySchedule.lastError
+              ? `Last daily search issue: ${dailySchedule.lastError}`
+              : dailySchedule.lastRunAt
+                ? `Last daily search started ${new Date(dailySchedule.lastRunAt).toLocaleString()}.`
+                : 'Your first daily search will run at 9:00 AM.'}
+          </Text>
+        )}
       </Paper>
 
       {/* Searches List Card */}

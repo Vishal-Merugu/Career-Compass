@@ -795,6 +795,7 @@ export async function runEasyApplyDiscovery(
   easyApplyOverride?: boolean,
   onProgress?: (run: EasyApplyRun) => void,
   waitForCompletion = false,
+  timeFilterOverride?: string,
 ): Promise<EasyApplyRun> {
   const criteria = await parseCriteriaFromPrompt(
     prompt,
@@ -818,6 +819,11 @@ export async function runEasyApplyDiscovery(
     jobs: [],
     createdAt: new Date(),
   };
+  // Scheduled discovery is intentionally restricted to the last 24 hours.
+  // Keep this separate from the prompt so the saved search remains legible.
+  if (timeFilterOverride) {
+    run.criteria.timeFilter = timeFilterOverride;
+  }
 
   activeRuns.set(runId, run);
   if (onProgress) onProgress(run);
